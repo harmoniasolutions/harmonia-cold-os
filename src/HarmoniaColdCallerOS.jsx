@@ -189,7 +189,7 @@ export default function HarmoniaOS() {
   const [filter,   setFilter]   = useState("all");
   const [tab,      setTab]      = useState("intel");
   const [variant,  setVariant]  = useState("a");
-  const [caller,   setCaller]   = useState("Bryan");
+  const [caller,   setCaller]   = useState("+16178006699");
   const [sessRun,  setSessRun]  = useState(false);
   const [sessSecs, setSessSecs] = useState(0);
   const [callRun,  setCallRun]  = useState(false);
