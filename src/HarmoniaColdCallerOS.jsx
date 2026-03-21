@@ -255,10 +255,13 @@ export default function HarmoniaOS() {
   function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0});setLog([]); }
   function endSess()  { setSessRun(false); if(callRun){setCallRun(false);setCallSecs(0);} }
 
-  function dial(lead){
+  async function dial(lead){
     if(!sessRun||callRun||lead.status!=="queued") return;
     setActive(lead);setCallRun(true);setCallSecs(0);setTab("intel");setOpenObj(null);
     setStats(s=>({...s,dials:s.dials+1}));
+    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?caller=${encodeURIComponent(caller)}&business=${encodeURIComponent(lead.phone)}`;
+    try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
+    catch(e){ console.log("Call fired:",lead.phone); }
   }
 
   async function logOutcome(outcome){
@@ -310,7 +313,13 @@ export default function HarmoniaOS() {
           <select value={caller} onChange={e=>setCaller(e.target.value)}
             style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
               fontSize:12,background:C.bg,color:C.t1,outline:"none"}}>
-            {["Bryan","Pete","Caller 3"].map(c=><option key={c}>{c}</option>)}
+            {[
+  {name:"Bryan",  phone:"+16178006699"},
+  {name:"Pete",   phone:"+14844296999"},
+  {name:"Javi",   phone:"+16102153863"},
+  {name:"Julian", phone:"+16092771636"},
+  {name:"Owen",   phone:"+16094120214"},
+].map(c=><option key={c.name} value={c.phone}>{c.name}</option>)}
           </select>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
