@@ -259,8 +259,8 @@ export default function HarmoniaOS() {
     if(!sessRun||callRun||lead.status!=="queued") return;
     setActive(lead);setCallRun(true);setCallSecs(0);setTab("intel");setOpenObj(null);
     setStats(s=>({...s,dials:s.dials+1}));
-    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?caller=${encodeURIComponent(caller)}&business=${encodeURIComponent(lead.phone)}`;
-    try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
+    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call`;
+    try{ await fetch(url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({caller:caller,business:lead.phone})}); }
     catch(e){ console.log("Call fired:",lead.phone); }
   }
 
