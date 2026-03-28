@@ -1,0 +1,996 @@
+{
+  "name": "LinkedIn Post Generation & Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.LINKEDIN_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "filters": {
+          "conditions": [
+            {
+              "id": "filter-pending",
+              "leftValue": "={{ $json.Status }}",
+              "rightValue": "Pending",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "read-linkedin-sheet",
+      "name": "Read LinkedIn Posts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [500, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MARKETING_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "filters": {
+          "conditions": [
+            {
+              "id": "filter-ready",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "read-marketing-sheet",
+      "name": "Read Marketing Posts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [500, 420],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "id": "merge-sheets",
+      "name": "Merge Both Sheets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [740, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================\n// NORMALIZE DATA FROM BOTH SHEET FORMATS\n// Sheet 1: Post Description, Instructions, Image, Status, Output, Post Link\n// Sheet 2: name, idea, text, image, status\n// ============================================================\n\nconst items = $input.all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const row = items[i].json;\n  let normalized;\n\n  // Detect Sheet 1 format (has 'Post Description' column)\n  if (row['Post Description'] !== undefined || row['Instructions'] !== undefined) {\n    normalized = {\n      source: 'linkedin_posts',\n      rowNumber: row['row_number'] || i + 2,\n      title: (row['Post Description'] || '').substring(0, 60) + '...',\n      description: row['Post Description'] || '',\n      fullText: '',\n      instructions: row['Instructions'] || '',\n      imageUrl: (row['Image'] || '').trim() || null,\n      sheetId: 'linkedin_posts'\n    };\n  }\n  // Detect Sheet 2 format (has 'name' and 'idea' columns)\n  else if (row['name'] !== undefined || row['idea'] !== undefined || row['text'] !== undefined) {\n    normalized = {\n      source: 'marketing_posts',\n      rowNumber: row['row_number'] || i + 2,\n      title: row['name'] || 'Untitled Post',\n      description: row['idea'] || '',\n      fullText: row['text'] || '',\n      instructions: '',\n      imageUrl: (row['image'] || '').trim() || null,\n      sheetId: 'marketing_posts'\n    };\n  } else {\n    continue;\n  }\n\n  // Convert Google Drive view URLs to direct download URLs\n  if (normalized.imageUrl && normalized.imageUrl.includes('drive.google.com')) {\n    const match = normalized.imageUrl.match(/\\/d\\/([a-zA-Z0-9_-]+)/);\n    if (match) {\n      normalized.imageUrl = 'https://drive.google.com/uc?export=download&id=' + match[1];\n    }\n  }\n\n  // Skip rows with no content at all\n  if (!normalized.description && !normalized.fullText) {\n    continue;\n  }\n\n  results.push({ json: normalized });\n}\n\nreturn results;"
+      },
+      "id": "normalize-data",
+      "name": "Normalize Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-content",
+              "leftValue": "={{ $json.description || $json.fullText }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-empty",
+      "name": "Has Content?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1180, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-posts",
+      "name": "Loop Over Posts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "mode": "id",
+          "value": "claude-sonnet-4-5-20250929"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ 'Generate a LinkedIn post based on the following content.\\n\\n' + ($json.description ? '## Post Description / Idea:\\n' + $json.description + '\\n\\n' : '') + ($json.fullText ? '## Reference Content (use as inspiration, rewrite in your own engaging style):\\n' + $json.fullText + '\\n\\n' : '') + ($json.instructions ? '## Formatting Instructions:\\n' + $json.instructions + '\\n\\n' : '## Default Instructions:\\nWrite an engaging, professional LinkedIn post. Include relevant emojis sparingly. End with a call-to-action question.\\n\\n') + 'Generate ONLY the post content. No titles, no labels, no markdown formatting - just the raw post text ready to publish.' }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You are an expert LinkedIn content creator writing posts for a professional organization page. Your posts are:\n\n1. HOOK-FIRST: Start with a bold, attention-grabbing first line that stops the scroll\n2. STRUCTURED: Use short paragraphs (1-3 sentences), line breaks for readability\n3. ENGAGING: Include relevant emojis where appropriate but don't overdo it\n4. VALUE-DRIVEN: Provide actionable insights, data, or unique perspectives\n5. CONVERSATIONAL: Write in a warm, approachable tone - not corporate jargon\n6. CTA-ENDING: End with a thought-provoking question or call-to-action\n\nRULES:\n- Output ONLY the post text, nothing else\n- No markdown formatting (no ##, no **, no ```)\n- No 'Here is your post:' or similar labels\n- Keep posts between 150-400 words for optimal engagement\n- Use line breaks generously for mobile readability\n- If hashtags are appropriate, add 3-5 relevant ones at the end\n- Follow any specific formatting instructions provided by the user",
+          "maxTokens": 2048,
+          "temperature": 0.7
+        }
+      },
+      "id": "generate-content",
+      "name": "Generate Content (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [1620, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================\n// CLEAN AI OUTPUT & PREPARE FINAL POST CONTENT\n// ============================================================\n\nconst item = $input.first().json;\nconst postData = $('Loop Over Posts').first().json;\n\n// Get the generated text from Claude's response\nlet postContent = item.text || item.content || '';\n\n// Clean up common AI output artifacts\npostContent = postContent.trim();\npostContent = postContent.replace(/^[\"']|[\"']$/g, '');  // Strip surrounding quotes\npostContent = postContent.replace(/^(Here('s| is) (your |the |a )?(LinkedIn )?post:?\\s*\\n?)/i, '');  // Strip preamble\npostContent = postContent.replace(/^---\\n?/, '');  // Strip leading separator\npostContent = postContent.replace(/\\n?---$/, '');  // Strip trailing separator\npostContent = postContent.trim();\n\n// Validate content\nif (!postContent || postContent.length < 20) {\n  throw new Error('Generated content is too short or empty. Skipping this post.');\n}\n\nreturn {\n  json: {\n    postContent: postContent,\n    charCount: postContent.length,\n    wordCount: postContent.split(/\\s+/).filter(w => w.length > 0).length,\n    // Carry forward metadata for later nodes\n    source: postData.source,\n    rowNumber: postData.rowNumber,\n    title: postData.title,\n    imageUrl: postData.imageUrl,\n    sheetId: postData.sheetId\n  }\n};"
+      },
+      "id": "clean-content",
+      "name": "Clean & Format Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================\n// PREPARE HTML EMAIL PREVIEW FOR APPROVAL\n// ============================================================\n\nconst item = $input.first().json;\n\n// Convert newlines to <br> for HTML display\nconst contentHtml = item.postContent\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;')\n  .replace(/\\n/g, '<br>');\n\n// Build image preview section\nlet imageSection = '';\nif (item.imageUrl) {\n  imageSection = `\n    <div style=\"margin: 20px 0; text-align: center;\">\n      <p style=\"color: #666; font-size: 12px; margin-bottom: 8px;\">ATTACHED IMAGE:</p>\n      <img src=\"${item.imageUrl}\" alt=\"Post Image\" style=\"max-width: 100%; max-height: 400px; border-radius: 8px; border: 1px solid #e0e0e0;\" />\n    </div>`;\n}\n\n// Build the full HTML email\nconst emailHtml = `\n<div style=\"font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n  <div style=\"background: linear-gradient(135deg, #0077B5 0%, #00A0DC 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0;\">\n    <h2 style=\"margin: 0; font-size: 18px;\">LinkedIn Post Ready for Review</h2>\n    <p style=\"margin: 5px 0 0; opacity: 0.9; font-size: 13px;\">Source: ${item.source === 'linkedin_posts' ? 'LinkedIn Posts Sheet' : 'Marketing Posts Sheet'} | ${item.title}</p>\n  </div>\n  \n  <div style=\"background: #ffffff; border: 1px solid #e0e0e0; border-top: none; padding: 24px; border-radius: 0 0 12px 12px;\">\n    <div style=\"background: #f8f9fa; border-left: 4px solid #0077B5; padding: 16px 20px; border-radius: 0 8px 8px 0; margin-bottom: 20px;\">\n      <p style=\"margin: 0; font-size: 14px; line-height: 1.6; color: #333;\">${contentHtml}</p>\n    </div>\n    \n    ${imageSection}\n    \n    <div style=\"border-top: 1px solid #eee; padding-top: 16px; margin-top: 16px;\">\n      <table style=\"width: 100%; font-size: 12px; color: #888;\">\n        <tr>\n          <td>Characters: ${item.charCount}</td>\n          <td>Words: ${item.wordCount}</td>\n          <td>${item.imageUrl ? 'With Image' : 'Text Only'}</td>\n        </tr>\n      </table>\n    </div>\n  </div>\n</div>`;\n\nreturn {\n  json: {\n    ...item,\n    emailHtml: emailHtml,\n    emailSubject: '[LinkedIn Post Approval] ' + item.title\n  }\n};"
+      },
+      "id": "prepare-email",
+      "name": "Prepare Email Preview",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2060, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "sendTo": "={{ $env.APPROVAL_EMAIL }}",
+        "subject": "={{ $json.emailSubject }}",
+        "message": "={{ $json.emailHtml }}",
+        "approvalOptions": {
+          "approvalType": "double"
+        },
+        "options": {
+          "appendAttribution": false,
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 24,
+              "resumeUnit": "hours"
+            }
+          }
+        }
+      },
+      "id": "send-approval",
+      "name": "Send for Approval",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2280, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-approved",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "route-decision",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2500, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Carry forward post data from before the approval wait\nconst approvalResponse = $input.first().json;\nconst postData = $('Prepare Email Preview').first().json;\n\nreturn {\n  json: {\n    postContent: postData.postContent,\n    source: postData.source,\n    rowNumber: postData.rowNumber,\n    title: postData.title,\n    imageUrl: postData.imageUrl,\n    sheetId: postData.sheetId,\n    charCount: postData.charCount,\n    approved: approvalResponse.approved\n  }\n};"
+      },
+      "id": "restore-context",
+      "name": "Restore Post Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2720, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-image",
+              "leftValue": "={{ $json.imageUrl }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-image",
+      "name": "Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2940, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.imageUrl }}",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          }
+        }
+      },
+      "id": "download-image",
+      "name": "Download Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3160, 100],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "post",
+        "operation": "create",
+        "postAs": "organization",
+        "organization": "={{ $env.LINKEDIN_ORG_ID }}",
+        "text": "={{ $('Restore Post Data').first().json.postContent }}",
+        "shareMediaCategory": "IMAGE",
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "visibility": "PUBLIC"
+        }
+      },
+      "id": "post-linkedin-image",
+      "name": "Post to LinkedIn (Image)",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [3380, 100],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "post",
+        "operation": "create",
+        "postAs": "organization",
+        "organization": "={{ $env.LINKEDIN_ORG_ID }}",
+        "text": "={{ $json.postContent }}",
+        "shareMediaCategory": "NONE",
+        "additionalFields": {
+          "visibility": "PUBLIC"
+        }
+      },
+      "id": "post-linkedin-text",
+      "name": "Post to LinkedIn (Text)",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [3160, 320],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================\n// PREPARE UPDATE DATA FOR GOOGLE SHEETS\n// Handles both sheet formats with correct column names\n// ============================================================\n\nconst item = $input.first().json;\nconst postData = $('Restore Post Data').first().json;\n\n// Extract LinkedIn post URN from response\nconst linkedInResponse = item;\nconst postUrn = linkedInResponse.urn || linkedInResponse.id || '';\nconst shareUrn = linkedInResponse.activity || postUrn;\n\nreturn {\n  json: {\n    source: postData.source,\n    rowNumber: postData.rowNumber,\n    sheetId: postData.sheetId,\n    postUrn: postUrn,\n    shareUrn: shareUrn,\n    publishedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "prepare-update",
+      "name": "Prepare Sheet Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3600, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-linkedin-sheet",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "linkedin_posts",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "which-sheet",
+      "name": "Which Sheet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3820, 200]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.LINKEDIN_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Completed",
+            "Output": "={{ $json.postUrn }}",
+            "Post Link": "={{ $json.shareUrn }}"
+          },
+          "matchingColumns": ["row_number"]
+        },
+        "values": [{"Status": "Completed", "Output": "={{ $json.postUrn }}", "Post Link": "={{ $json.shareUrn }}"}],
+        "options": {}
+      },
+      "id": "update-linkedin-sheet-published",
+      "name": "Update LinkedIn Sheet (Published)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4040, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MARKETING_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "posted"
+          },
+          "matchingColumns": ["row_number"]
+        },
+        "values": [{"status": "posted"}],
+        "options": {}
+      },
+      "id": "update-marketing-sheet-published",
+      "name": "Update Marketing Sheet (Published)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4040, 320]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Carry forward post data for rejected sheet update\nconst approvalResponse = $input.first().json;\nconst postData = $('Prepare Email Preview').first().json;\n\nreturn {\n  json: {\n    source: postData.source,\n    rowNumber: postData.rowNumber,\n    sheetId: postData.sheetId\n  }\n};"
+      },
+      "id": "restore-context-rejected",
+      "name": "Restore Post Data (Rejected)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2720, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-linkedin-sheet-rejected",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "linkedin_posts",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "which-sheet-rejected",
+      "name": "Which Sheet? (Rejected)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2940, 440]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.LINKEDIN_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Rejected"
+          },
+          "matchingColumns": ["row_number"]
+        },
+        "values": [{"Status": "Rejected"}],
+        "options": {}
+      },
+      "id": "update-linkedin-sheet-rejected",
+      "name": "Update LinkedIn Sheet (Rejected)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3160, 440]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.MARKETING_POSTS_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "Sheet1!A:Z",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "rejected"
+          },
+          "matchingColumns": ["row_number"]
+        },
+        "values": [{"status": "rejected"}],
+        "options": {}
+      },
+      "id": "update-marketing-sheet-rejected",
+      "name": "Update Marketing Sheet (Rejected)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3160, 580]
+    },
+    {
+      "parameters": {},
+      "id": "continue-loop-published",
+      "name": "Continue (Published)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [4260, 200]
+    },
+    {
+      "parameters": {},
+      "id": "continue-loop-rejected",
+      "name": "Continue (Rejected)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3380, 500]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Batch complete summary\nconst allItems = $('Loop Over Posts').all();\n\nreturn {\n  json: {\n    batchComplete: true,\n    postsProcessed: allItems.length,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "batch-summary",
+      "name": "Batch Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1620, 500]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Read LinkedIn Posts Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Marketing Posts Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read LinkedIn Posts Sheet": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Both Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Marketing Posts Sheet": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Sheets",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Merge Both Sheets",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Both Sheets": {
+      "main": [
+        [
+          {
+            "node": "Normalize Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Data": {
+      "main": [
+        [
+          {
+            "node": "Has Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Content?": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Posts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Loop Over Posts": {
+      "main": [
+        [
+          {
+            "node": "Generate Content (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Batch Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Content (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Clean & Format Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Format Content": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email Preview": {
+      "main": [
+        [
+          {
+            "node": "Send for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send for Approval": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Restore Post Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Restore Post Data (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Post Data": {
+      "main": [
+        [
+          {
+            "node": "Has Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Image?": {
+      "main": [
+        [
+          {
+            "node": "Download Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post to LinkedIn (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Image": {
+      "main": [
+        [
+          {
+            "node": "Post to LinkedIn (Image)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post to LinkedIn (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to LinkedIn (Image)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Sheet Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Sheet Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to LinkedIn (Text)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Sheet Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Sheet Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sheet Update": {
+      "main": [
+        [
+          {
+            "node": "Which Sheet?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which Sheet?": {
+      "main": [
+        [
+          {
+            "node": "Update LinkedIn Sheet (Published)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Marketing Sheet (Published)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update LinkedIn Sheet (Published)": {
+      "main": [
+        [
+          {
+            "node": "Continue (Published)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Marketing Sheet (Published)": {
+      "main": [
+        [
+          {
+            "node": "Continue (Published)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue (Published)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Post Data (Rejected)": {
+      "main": [
+        [
+          {
+            "node": "Which Sheet? (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which Sheet? (Rejected)": {
+      "main": [
+        [
+          {
+            "node": "Update LinkedIn Sheet (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Marketing Sheet (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update LinkedIn Sheet (Rejected)": {
+      "main": [
+        [
+          {
+            "node": "Continue (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Marketing Sheet (Rejected)": {
+      "main": [
+        [
+          {
+            "node": "Continue (Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue (Rejected)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    {
+      "name": "linkedin"
+    },
+    {
+      "name": "automation"
+    },
+    {
+      "name": "content"
+    }
+  ],
+  "notes": "LinkedIn Post Generation & Automation Workflow\n\nReads pending posts from two Google Sheets (LinkedIn Posts + Marketing Posts),\ngenerates content via Claude Sonnet AI, sends email approval via Gmail,\nand publishes approved posts to LinkedIn as an organization.\n\nRequired credentials: Google Sheets OAuth2, Anthropic API, Gmail OAuth2, LinkedIn Community Management OAuth2\nRequired env vars: LINKEDIN_POSTS_SHEET_ID, MARKETING_POSTS_SHEET_ID, LINKEDIN_ORG_ID, APPROVAL_EMAIL"
+}

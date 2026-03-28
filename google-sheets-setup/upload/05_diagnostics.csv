@@ -1,0 +1,4 @@
+diagnostic_id,customer_name,phone,address,system_type,system_age,fuel_source,symptoms,access_location,vulnerable_residents,triage_result,priority,created_at
+D001,John Martinez,+15551234567,123 Oak Street Phoenix AZ,Central AC,8,Electric,Not cooling - warm air blowing,Attic,false,BLUE,P2,2026-01-30
+D002,Michael Chen,+15553456789,789 Pine Road Scottsdale AZ,Furnace,12,Gas,Loud banging noise when starting,Basement,false,BLUE,P3,2026-01-30
+D003,Robert Brown,+15555678901,654 Birch Drive Mesa AZ,Central AC,15,Gas,Routine maintenance,Closet,true,GREEN,P4,2026-01-31

@@ -1,0 +1,4 @@
+booking_id,customer_id,customer_name,phone,address,service_type,priority,issue,tech_notes,slot_id,appointment_date,appointment_time,technician,status,confirmation_sent,created_at
+B001,C001,John Martinez,+15551234567,123 Oak Street Phoenix AZ,REPAIR,P2,AC not cooling properly,Check refrigerant levels and compressor,SLOT-001,2026-02-03,9:00 AM - 11:00 AM,Mike Thompson,scheduled,true,2026-01-30
+B002,C003,Michael Chen,+15553456789,789 Pine Road Scottsdale AZ,DIAGNOSTIC,P3,Furnace making strange noise,12 year old gas furnace - possible heat exchanger,SLOT-002,2026-02-03,2:00 PM - 4:00 PM,Dave Wilson,scheduled,true,2026-01-30
+B003,C005,Robert Brown,+15555678901,654 Birch Drive Mesa AZ,MAINTENANCE,P4,Annual tune-up,Elderly resident - arrive on time,SLOT-003,2026-02-04,10:00 AM - 12:00 PM,Mike Thompson,scheduled,true,2026-01-31

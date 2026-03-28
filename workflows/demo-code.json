@@ -1,0 +1,351 @@
+{
+  "name": "Demo Code - Call Recording & Transcription",
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Vapi Call Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "demo-code-vapi",
+      "parameters": {
+        "path": "demo-code-vapi",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      }
+    },
+    {
+      "id": "filter-call-ended",
+      "name": "Filter Call Ended",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-call-ended",
+              "leftValue": "={{ $json.message.type }}",
+              "rightValue": "end-of-call-report",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "extract-call-data",
+      "name": "Extract Call Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 200],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "call-id",
+              "name": "callId",
+              "value": "={{ $json.message.call.id }}",
+              "type": "string"
+            },
+            {
+              "id": "assistant-name",
+              "name": "assistantName",
+              "value": "={{ $json.message.call.assistant?.name ?? 'Unknown' }}",
+              "type": "string"
+            },
+            {
+              "id": "phone-number",
+              "name": "phoneNumber",
+              "value": "={{ $json.message.call.customer?.number ?? 'N/A' }}",
+              "type": "string"
+            },
+            {
+              "id": "call-duration",
+              "name": "durationSeconds",
+              "value": "={{ Math.round(($json.message.durationSeconds ?? 0)) }}",
+              "type": "number"
+            },
+            {
+              "id": "recording-url",
+              "name": "recordingUrl",
+              "value": "={{ $json.message.recordingUrl ?? $json.message.artifact?.recordingUrl ?? 'No recording' }}",
+              "type": "string"
+            },
+            {
+              "id": "transcript",
+              "name": "transcript",
+              "value": "={{ $json.message.transcript ?? $json.message.artifact?.transcript ?? 'No transcript available' }}",
+              "type": "string"
+            },
+            {
+              "id": "summary",
+              "name": "summary",
+              "value": "={{ $json.message.summary ?? $json.message.analysis?.summary ?? 'No summary' }}",
+              "type": "string"
+            },
+            {
+              "id": "ended-reason",
+              "name": "endedReason",
+              "value": "={{ $json.message.endedReason ?? 'Unknown' }}",
+              "type": "string"
+            },
+            {
+              "id": "timestamp",
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "call-type",
+              "name": "callType",
+              "value": "={{ $json.message.call.type ?? 'inbound' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "google-sheets-append",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, 200],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.timestamp }}",
+            "Call ID": "={{ $json.callId }}",
+            "Assistant": "={{ $json.assistantName }}",
+            "Phone Number": "={{ $json.phoneNumber }}",
+            "Call Type": "={{ $json.callType }}",
+            "Duration (sec)": "={{ $json.durationSeconds }}",
+            "Ended Reason": "={{ $json.endedReason }}",
+            "Recording URL": "={{ $json.recordingUrl }}",
+            "Transcript": "={{ $json.transcript }}",
+            "Summary": "={{ $json.summary }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Call ID",
+              "displayName": "Call ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Assistant",
+              "displayName": "Assistant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone Number",
+              "displayName": "Phone Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Call Type",
+              "displayName": "Call Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Duration (sec)",
+              "displayName": "Duration (sec)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Ended Reason",
+              "displayName": "Ended Reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Recording URL",
+              "displayName": "Recording URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Transcript",
+              "displayName": "Transcript",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Summary",
+              "displayName": "Summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "send-email",
+      "name": "Send Email Notification",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [1120, 200],
+      "parameters": {
+        "fromEmail": "notifications@harmonia.ai",
+        "toEmail": "jlaba.llc@gmail.com",
+        "subject": "=New Call Completed - {{ $('Extract Call Data').item.json.assistantName }}",
+        "contentType": "text/html",
+        "contentHtml": "=<html>\n<body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n  <h2 style=\"color: #2563eb;\">Call Recording & Transcription</h2>\n  \n  <table style=\"width: 100%; border-collapse: collapse; margin: 20px 0;\">\n    <tr style=\"background: #f3f4f6;\">\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Call ID</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.callId }}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Assistant</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.assistantName }}</td>\n    </tr>\n    <tr style=\"background: #f3f4f6;\">\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Phone Number</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.phoneNumber }}</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Call Type</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.callType }}</td>\n    </tr>\n    <tr style=\"background: #f3f4f6;\">\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Duration</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.durationSeconds }} seconds</td>\n    </tr>\n    <tr>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Ended Reason</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.endedReason }}</td>\n    </tr>\n    <tr style=\"background: #f3f4f6;\">\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb; font-weight: bold;\">Timestamp</td>\n      <td style=\"padding: 10px; border: 1px solid #e5e7eb;\">{{ $('Extract Call Data').item.json.timestamp }}</td>\n    </tr>\n  </table>\n\n  <h3 style=\"color: #1f2937;\">Recording</h3>\n  <p><a href=\"{{ $('Extract Call Data').item.json.recordingUrl }}\" style=\"color: #2563eb;\">Listen to Recording</a></p>\n\n  <h3 style=\"color: #1f2937;\">Summary</h3>\n  <p style=\"background: #f9fafb; padding: 15px; border-radius: 8px; border-left: 4px solid #2563eb;\">\n    {{ $('Extract Call Data').item.json.summary }}\n  </p>\n\n  <h3 style=\"color: #1f2937;\">Full Transcript</h3>\n  <div style=\"background: #f9fafb; padding: 15px; border-radius: 8px; white-space: pre-wrap; font-size: 14px; line-height: 1.6;\">\n{{ $('Extract Call Data').item.json.transcript }}\n  </div>\n\n  <hr style=\"margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;\">\n  <p style=\"color: #6b7280; font-size: 12px;\">This notification was sent by Harmonia Demo Code workflow.</p>\n</body>\n</html>"
+      }
+    },
+    {
+      "id": "no-action",
+      "name": "No Action (Not End of Call)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [680, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Vapi Call Webhook": {
+      "main": [
+        [
+          {
+            "node": "Filter Call Ended",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Call Ended": {
+      "main": [
+        [
+          {
+            "node": "Extract Call Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Action (Not End of Call)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Call Data": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Send Email Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "demo"
+    },
+    {
+      "name": "vapi"
+    },
+    {
+      "name": "recording"
+    }
+  ],
+  "triggerCount": 1,
+  "meta": {
+    "instanceId": "harmonia-demo"
+  }
+}

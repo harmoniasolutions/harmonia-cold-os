@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200">
+  <defs>
+    <linearGradient id="mb1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1a5276;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#2e86c1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#48c9b0;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="mb2" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#1a5276;stop-opacity:0.4" />
+      <stop offset="100%" style="stop-color:#48c9b0;stop-opacity:0.4" />
+    </linearGradient>
+  </defs>
+  <!-- Möbius strip - front face -->
+  <path d="M145 90 C145 55, 185 45, 210 65 C235 85, 265 85, 265 65 C265 45, 285 45, 285 65 C285 85, 265 105, 240 95 C215 85, 185 85, 170 100 C155 115, 145 115, 145 90 Z"
+        fill="none" stroke="url(#mb1)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Back twist hint -->
+  <path d="M170 100 C185 110, 215 105, 240 95"
+        fill="none" stroke="url(#mb2)" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 4"/>
+  <!-- Text -->
+  <text x="215" y="155" font-family="'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="300" fill="#1a5276" text-anchor="middle" letter-spacing="6">HARMONIA</text>
+</svg>

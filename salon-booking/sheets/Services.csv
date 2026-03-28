@@ -1,0 +1,13 @@
+service_id,name,duration_minutes,price,category,description
+SVC-001,Women's Haircut,45,65,Cuts,Shampoo cut and blowdry
+SVC-002,Men's Haircut,30,35,Cuts,Classic cut and style
+SVC-003,Kids Haircut,20,25,Cuts,Ages 12 and under
+SVC-004,Single Process Color,90,120,Color,Full head single color
+SVC-005,Highlights - Partial,120,150,Color,Face-framing highlights
+SVC-006,Highlights - Full,150,200,Color,Full head highlights
+SVC-007,Balayage,180,250,Color,Hand-painted color technique
+SVC-008,Blowout,30,45,Styling,Shampoo and blowdry
+SVC-009,Deep Conditioning,30,40,Treatments,Intensive moisture treatment
+SVC-010,Keratin Treatment,180,300,Treatments,Smoothing keratin treatment
+SVC-011,Beard Trim,15,15,Grooming,Shape and trim
+SVC-012,Hot Towel Shave,30,35,Grooming,Traditional straight razor shave

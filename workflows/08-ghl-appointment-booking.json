@@ -1,0 +1,852 @@
+{
+  "name": "Harmonia - GHL Appointment Booking",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ghl-appointment",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "appointment-webhook",
+      "name": "Appointment Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HARMONIA GHL APPOINTMENT DATA NORMALIZER\n// Standardizes appointment data from Vapi or internal triggers\n// ============================================================\n\nconst input = $input.first().json.body || $input.first().json;\n\nconst normalized = {\n  customerName: input.customer_name || input.customerName || input.name || '',\n  firstName: input.first_name || input.firstName || '',\n  lastName: input.last_name || input.lastName || '',\n  phone: '',\n  email: input.email || '',\n  address: input.address || input.service_address || '',\n  city: input.city || '',\n  state: input.state || '',\n  zip: input.zip || input.postal_code || '',\n  appointmentStart: input.selected_slot?.start || input.appointment_start || input.start || '',\n  appointmentEnd: input.selected_slot?.end || input.appointment_end || input.end || '',\n  jobType: input.job_type || input.jobType || 'diagnostic',\n  issueDescription: input.issue_description || input.issueDescription || input.notes || 'HVAC Service',\n  isEmergency: input.is_emergency || input.isEmergency || false,\n  bookedBy: input.booked_by || input.bookedBy || 'Vapi AI',\n  vapiCallId: input.vapi_call_id || input.vapiCallId || null,\n  serviceTitanBookingId: input.st_booking_id || input.serviceTitanBookingId || null,\n  airtableLeadId: input.airtable_lead_id || input.airtableLeadId || null,\n  ghlContactId: input.ghl_contact_id || input.ghlContactId || null,\n  leadScore: input.lead_score || input.leadScore || null,\n  leadTier: input.lead_tier || input.leadTier || null\n};\n\n// Clean phone number to E.164 format\nlet phone = (input.phone || input.customer_phone || '').replace(/\\D/g, '');\nif (phone.length === 10) phone = '+1' + phone;\nelse if (phone.length === 11 && phone.startsWith('1')) phone = '+' + phone;\nnormalized.phone = phone;\n\n// Build name from parts if full name not provided\nif (!normalized.firstName && normalized.customerName) {\n  const parts = normalized.customerName.trim().split(/\\s+/);\n  normalized.firstName = parts[0] || '';\n  normalized.lastName = parts.slice(1).join(' ') || '';\n}\n\n// Build full name if only parts provided\nif (!normalized.customerName) {\n  normalized.customerName = `${normalized.firstName} ${normalized.lastName}`.trim();\n}\n\nreturn { json: normalized };"
+      },
+      "id": "normalize-appointment",
+      "name": "Normalize Appointment Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-emergency",
+              "leftValue": "={{ $json.isEmergency }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "emergency-check",
+      "name": "Emergency Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PREPARE EMERGENCY BOOKING\n// Sets emergency calendar, urgent priority, dispatch confirmation\n// ============================================================\n\nconst data = $input.first().json;\n\nreturn {\n  json: {\n    ...data,\n    ghlCalendarId: $env.GHL_EMERGENCY_CALENDAR_ID || $env.GHL_DEFAULT_CALENDAR_ID,\n    ghlPipelineId: $env.GHL_PIPELINE_ID || '',\n    ghlStageId: $env.GHL_EMERGENCY_STAGE_ID || '',\n    appointmentTitle: `EMERGENCY: ${data.issueDescription}`,\n    priority: 'urgent',\n    confirmationMessage: `EMERGENCY CONFIRMED: ${$env.COMPANY_NAME || 'Our team'} has a technician dispatching to ${data.address || 'your location'} NOW. Expected arrival: 30-60 minutes. If you smell gas, leave the building and call 911.`,\n    tags: ['emergency', 'booked', 'harmonia-booked', 'priority-dispatch']\n  }\n};"
+      },
+      "id": "prepare-emergency-booking",
+      "name": "Prepare Emergency Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PREPARE ROUTINE BOOKING\n// Sets default calendar, normal priority, standard confirmation\n// ============================================================\n\nconst data = $input.first().json;\n\nconst startDate = new Date(data.appointmentStart);\nconst dateStr = startDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });\nconst timeStr = startDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });\n\nreturn {\n  json: {\n    ...data,\n    ghlCalendarId: $env.GHL_DEFAULT_CALENDAR_ID || '',\n    ghlPipelineId: $env.GHL_PIPELINE_ID || '',\n    ghlStageId: $env.GHL_BOOKED_STAGE_ID || '',\n    appointmentTitle: `${data.jobType.charAt(0).toUpperCase() + data.jobType.slice(1)}: ${data.customerName}`,\n    priority: 'normal',\n    confirmationMessage: `Hi ${data.firstName || 'there'}! Your ${data.jobType} appointment with ${$env.COMPANY_NAME || 'us'} is confirmed for ${dateStr} at ${timeStr}. Our tech will call 30 min before arrival. Reply HELP for support or STOP to cancel.`,\n    tags: ['booked', 'harmonia-booked']\n  }\n};"
+      },
+      "id": "prepare-routine-booking",
+      "name": "Prepare Routine Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 550]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-booking-prep",
+      "name": "Merge Booking Prep",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://services.leadconnectorhq.com/contacts/",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "locationId",
+              "value": "={{ $env.GHL_LOCATION_ID }}"
+            },
+            {
+              "name": "query",
+              "value": "={{ $json.phone }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "find-ghl-contact",
+      "name": "Find GHL Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "contact-exists",
+              "leftValue": "={{ $json.contacts?.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ghl-contact-exists",
+      "name": "GHL Contact Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// USE EXISTING GHL CONTACT\n// Extract contact ID from search results\n// ============================================================\n\nconst searchResult = $input.first().json;\nconst bookingData = $('Merge Booking Prep').first().json;\nconst contact = searchResult.contacts[0];\n\nreturn {\n  json: {\n    ...bookingData,\n    ghlContactId: contact.id,\n    ghlContactExisted: true\n  }\n};"
+      },
+      "id": "use-existing-contact",
+      "name": "Use Existing Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1790, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/contacts/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $('Merge Booking Prep').item.json.firstName }}\",\n  \"lastName\": \"{{ $('Merge Booking Prep').item.json.lastName }}\",\n  \"name\": \"{{ $('Merge Booking Prep').item.json.customerName }}\",\n  \"phone\": \"{{ $('Merge Booking Prep').item.json.phone }}\",\n  \"email\": \"{{ $('Merge Booking Prep').item.json.email }}\",\n  \"address1\": \"{{ $('Merge Booking Prep').item.json.address }}\",\n  \"city\": \"{{ $('Merge Booking Prep').item.json.city }}\",\n  \"state\": \"{{ $('Merge Booking Prep').item.json.state }}\",\n  \"postalCode\": \"{{ $('Merge Booking Prep').item.json.zip }}\",\n  \"source\": \"Harmonia AI\",\n  \"tags\": [\"harmonia-lead\"]\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "create-ghl-contact",
+      "name": "Create GHL Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 550]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// EXTRACT NEW GHL CONTACT ID\n// Map created contact ID back into booking data\n// ============================================================\n\nconst newContact = $input.first().json;\nconst bookingData = $('Merge Booking Prep').first().json;\n\nreturn {\n  json: {\n    ...bookingData,\n    ghlContactId: newContact.contact?.id || newContact.id,\n    ghlContactExisted: false\n  }\n};"
+      },
+      "id": "extract-new-contact-id",
+      "name": "Extract New Contact ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 550]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-contact-result",
+      "name": "Merge Contact Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/calendars/events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"calendarId\": \"{{ $json.ghlCalendarId }}\",\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"contactId\": \"{{ $json.ghlContactId }}\",\n  \"title\": \"{{ $json.appointmentTitle }}\",\n  \"appointmentStatus\": \"confirmed\",\n  \"startTime\": \"{{ $json.appointmentStart }}\",\n  \"endTime\": \"{{ $json.appointmentEnd }}\",\n  \"notes\": \"Booked by: {{ $json.bookedBy }}\\nIssue: {{ $json.issueDescription }}\\nLead Score: {{ $json.leadScore || 'N/A' }}\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "create-ghl-calendar-event",
+      "name": "Create GHL Calendar Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/opportunities/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"pipelineId\": \"{{ $('Merge Contact Result').item.json.ghlPipelineId }}\",\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"name\": \"{{ $('Merge Contact Result').item.json.customerName }} - {{ $('Merge Contact Result').item.json.jobType }}\",\n  \"pipelineStageId\": \"{{ $('Merge Contact Result').item.json.ghlStageId }}\",\n  \"status\": \"open\",\n  \"contactId\": \"{{ $('Merge Contact Result').item.json.ghlContactId }}\",\n  \"monetaryValue\": 89,\n  \"source\": \"Harmonia AI\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "create-ghl-opportunity",
+      "name": "Create GHL Opportunity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $('Merge Contact Result').item.json.ghlContactId }}/tags",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"tags\": {{ JSON.stringify($('Merge Contact Result').item.json.tags) }}\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "update-ghl-contact-tags",
+      "name": "Update GHL Contact Tags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/conversations/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"type\": \"SMS\",\n  \"contactId\": \"{{ $('Merge Contact Result').item.json.ghlContactId }}\",\n  \"message\": \"{{ $('Merge Contact Result').item.json.confirmationMessage }}\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "send-ghl-confirmation-sms",
+      "name": "Send GHL Confirmation SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3110, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Merge Contact Result').item.json.airtableLeadId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Status",
+              "value": "Booked"
+            },
+            {
+              "fieldName": "GHL Contact ID",
+              "value": "={{ $('Merge Contact Result').item.json.ghlContactId }}"
+            },
+            {
+              "fieldName": "Appointment Start",
+              "value": "={{ $('Merge Contact Result').item.json.appointmentStart }}"
+            },
+            {
+              "fieldName": "Booked By",
+              "value": "={{ $('Merge Contact Result').item.json.bookedBy }}"
+            },
+            {
+              "fieldName": "Lead Score",
+              "value": "={{ $('Merge Contact Result').item.json.leadScore }}"
+            },
+            {
+              "fieldName": "Lead Tier",
+              "value": "={{ $('Merge Contact Result').item.json.leadTier }}"
+            }
+          ]
+        }
+      },
+      "id": "update-airtable-leads",
+      "name": "Update Airtable Leads",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [3330, 250]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Appointments",
+          "mode": "list"
+        },
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Customer Name",
+              "value": "={{ $('Merge Contact Result').item.json.customerName }}"
+            },
+            {
+              "fieldName": "Phone",
+              "value": "={{ $('Merge Contact Result').item.json.phone }}"
+            },
+            {
+              "fieldName": "Email",
+              "value": "={{ $('Merge Contact Result').item.json.email }}"
+            },
+            {
+              "fieldName": "Address",
+              "value": "={{ $('Merge Contact Result').item.json.address }}"
+            },
+            {
+              "fieldName": "Appointment Start",
+              "value": "={{ $('Merge Contact Result').item.json.appointmentStart }}"
+            },
+            {
+              "fieldName": "Appointment End",
+              "value": "={{ $('Merge Contact Result').item.json.appointmentEnd }}"
+            },
+            {
+              "fieldName": "Job Type",
+              "value": "={{ $('Merge Contact Result').item.json.jobType }}"
+            },
+            {
+              "fieldName": "Issue Description",
+              "value": "={{ $('Merge Contact Result').item.json.issueDescription }}"
+            },
+            {
+              "fieldName": "Is Emergency",
+              "value": "={{ $('Merge Contact Result').item.json.isEmergency }}"
+            },
+            {
+              "fieldName": "Booked By",
+              "value": "={{ $('Merge Contact Result').item.json.bookedBy }}"
+            },
+            {
+              "fieldName": "GHL Contact ID",
+              "value": "={{ $('Merge Contact Result').item.json.ghlContactId }}"
+            },
+            {
+              "fieldName": "Vapi Call ID",
+              "value": "={{ $('Merge Contact Result').item.json.vapiCallId }}"
+            },
+            {
+              "fieldName": "ServiceTitan Booking ID",
+              "value": "={{ $('Merge Contact Result').item.json.serviceTitanBookingId }}"
+            },
+            {
+              "fieldName": "Lead Score",
+              "value": "={{ $('Merge Contact Result').item.json.leadScore }}"
+            },
+            {
+              "fieldName": "Lead Tier",
+              "value": "={{ $('Merge Contact Result').item.json.leadTier }}"
+            },
+            {
+              "fieldName": "Priority",
+              "value": "={{ $('Merge Contact Result').item.json.priority }}"
+            }
+          ]
+        }
+      },
+      "id": "update-airtable-appointments",
+      "name": "Update Airtable Appointments",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [3330, 550]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-airtable-updates",
+      "name": "Merge Airtable Updates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3550, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"message\": \"GHL appointment booked successfully\",\n  \"ghlContactId\": \"{{ $('Merge Contact Result').item.json.ghlContactId }}\",\n  \"appointmentTitle\": \"{{ $('Merge Contact Result').item.json.appointmentTitle }}\",\n  \"appointmentStart\": \"{{ $('Merge Contact Result').item.json.appointmentStart }}\",\n  \"appointmentEnd\": \"{{ $('Merge Contact Result').item.json.appointmentEnd }}\",\n  \"priority\": \"{{ $('Merge Contact Result').item.json.priority }}\",\n  \"isEmergency\": {{ $('Merge Contact Result').item.json.isEmergency }},\n  \"confirmationSmsSent\": true,\n  \"airtableUpdated\": true\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [3770, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// DEAD LETTER QUEUE\n// Capture failed GHL calendar event creation for manual processing\n// ============================================================\n\nconst bookingData = $('Merge Contact Result').first().json;\nconst error = $input.first().json;\n\nreturn {\n  json: {\n    status: 'GHL_BOOKING_FAILED',\n    bookingData: {\n      customerName: bookingData.customerName,\n      phone: bookingData.phone,\n      email: bookingData.email,\n      address: bookingData.address,\n      appointmentStart: bookingData.appointmentStart,\n      appointmentEnd: bookingData.appointmentEnd,\n      jobType: bookingData.jobType,\n      issueDescription: bookingData.issueDescription,\n      isEmergency: bookingData.isEmergency,\n      ghlContactId: bookingData.ghlContactId,\n      priority: bookingData.priority,\n      leadScore: bookingData.leadScore,\n      leadTier: bookingData.leadTier\n    },\n    error: {\n      message: error.message || error.error || 'Unknown GHL API error',\n      statusCode: error.statusCode || error.code || null,\n      body: error.body || null\n    },\n    metadata: {\n      failedAt: new Date().toISOString(),\n      requiresManualBooking: true,\n      workflow: 'ghl-appointment-booking'\n    }\n  }\n};"
+      },
+      "id": "dead-letter-queue",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2670, 650]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=GHL BOOKING FAILED\n\nCustomer: {{ $json.bookingData.customerName }}\nPhone: {{ $json.bookingData.phone }}\nJob: {{ $json.bookingData.jobType }}\nEmergency: {{ $json.bookingData.isEmergency }}\nTime: {{ $json.bookingData.appointmentStart }}\n\nError: {{ $json.error.message }}\n\nManual GHL booking required.\nFailed at: {{ $json.metadata.failedAt }}"
+      },
+      "id": "alert-manager",
+      "name": "Alert Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2890, 650]
+    }
+  ],
+  "connections": {
+    "Appointment Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Appointment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Appointment Data": {
+      "main": [
+        [
+          {
+            "node": "Emergency Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emergency Check": {
+      "main": [
+        [
+          {
+            "node": "Prepare Emergency Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Routine Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Emergency Booking": {
+      "main": [
+        [
+          {
+            "node": "Merge Booking Prep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Routine Booking": {
+      "main": [
+        [
+          {
+            "node": "Merge Booking Prep",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Booking Prep": {
+      "main": [
+        [
+          {
+            "node": "Find GHL Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find GHL Contact": {
+      "main": [
+        [
+          {
+            "node": "GHL Contact Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GHL Contact Exists?": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create GHL Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Existing Contact": {
+      "main": [
+        [
+          {
+            "node": "Merge Contact Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL Contact": {
+      "main": [
+        [
+          {
+            "node": "Extract New Contact ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract New Contact ID": {
+      "main": [
+        [
+          {
+            "node": "Merge Contact Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Contact Result": {
+      "main": [
+        [
+          {
+            "node": "Create GHL Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Create GHL Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL Opportunity": {
+      "main": [
+        [
+          {
+            "node": "Update GHL Contact Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update GHL Contact Tags": {
+      "main": [
+        [
+          {
+            "node": "Send GHL Confirmation SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send GHL Confirmation SMS": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Airtable Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable Leads": {
+      "main": [
+        [
+          {
+            "node": "Merge Airtable Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable Appointments": {
+      "main": [
+        [
+          {
+            "node": "Merge Airtable Updates",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Airtable Updates": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [
+          {
+            "node": "Alert Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "ghl"
+    },
+    {
+      "name": "booking"
+    }
+  ]
+}

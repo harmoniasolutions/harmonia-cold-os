@@ -1,0 +1,372 @@
+{
+  "name": "Harmonia - Lead Reactivation Part A: Initial SMS",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 9 AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Status} = 'Closed-Lost', DATETIME_DIFF(TODAY(), {Last Contact}, 'days') > 90, {Reactivation Attempts} < 3, {Do Not Contact} != TRUE(), {Phone} != '')",
+        "options": {
+          "maxRecords": 50
+        }
+      },
+      "id": "get-leads",
+      "name": "Get Stale Closed-Lost Leads",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-leads",
+              "leftValue": "={{ $json.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-leads-exist",
+      "name": "Any Leads Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-leads",
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare context for AI personalization\nconst lead = $input.first().json;\nconst currentMonth = new Date().toLocaleString('default', { month: 'long' });\nconst currentSeason = (() => {\n  const month = new Date().getMonth();\n  if (month >= 2 && month <= 4) return 'spring';\n  if (month >= 5 && month <= 7) return 'summer';\n  if (month >= 8 && month <= 10) return 'fall';\n  return 'winter';\n})();\n\n// Determine hook angle based on loss reason\nconst lossReason = (lead.fields['Loss Reason'] || '').toLowerCase();\nlet hookAngle = 'general';\n\nif (lossReason.includes('price') || lossReason.includes('expensive') || lossReason.includes('cost')) {\n  hookAngle = 'value_offer';\n} else if (lossReason.includes('timing') || lossReason.includes('busy') || lossReason.includes('later')) {\n  hookAngle = 'timing_check';\n} else if (lossReason.includes('competitor') || lossReason.includes('another')) {\n  hookAngle = 'service_quality';\n} else if (lossReason.includes('not ready') || lossReason.includes('thinking')) {\n  hookAngle = 'gentle_reminder';\n}\n\nreturn {\n  json: {\n    lead: lead,\n    context: {\n      firstName: lead.fields['First Name'] || 'there',\n      lastName: lead.fields['Last Name'] || '',\n      serviceNeeded: lead.fields['Service Needed'] || 'HVAC service',\n      lossReason: lead.fields['Loss Reason'] || 'no reason provided',\n      lastContact: lead.fields['Last Contact'],\n      hookAngle: hookAngle,\n      currentMonth: currentMonth,\n      currentSeason: currentSeason,\n      daysSinceContact: Math.floor((new Date() - new Date(lead.fields['Last Contact'])) / (1000 * 60 * 60 * 24))\n    }\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare AI Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a master copywriter for an HVAC company. Generate a single personalized SMS message to re-engage a lost lead.\n\nRULES:\n1. MUST be under 155 characters (SMS limit)\n2. Start with their first name\n3. Be warm and conversational, NOT salesy\n4. Reference the season or their specific situation naturally\n5. End with a soft CTA like 'Reply YES if interested' or 'Text back if you need us'\n6. NEVER mention they didn't book before or that they're a 'lost lead'\n7. NEVER use exclamation marks more than once\n8. Sound like a friendly neighbor, not a corporation\n\nHOOK ANGLES:\n- value_offer: Mention a special or seasonal discount\n- timing_check: Ask if now is a better time\n- service_quality: Emphasize reliability/expertise\n- gentle_reminder: Soft check-in about their system\n- general: Seasonal maintenance reminder\n\nOUTPUT: Only the SMS text, nothing else."
+            },
+            {
+              "role": "user",
+              "content": "=Lead Info:\n- First Name: {{ $json.context.firstName }}\n- Service Needed: {{ $json.context.serviceNeeded }}\n- Reason They Didn't Book: {{ $json.context.lossReason }}\n- Days Since Contact: {{ $json.context.daysSinceContact }}\n- Hook Angle: {{ $json.context.hookAngle }}\n- Current Season: {{ $json.context.currentSeason }}\n- Current Month: {{ $json.context.currentMonth }}\n\nGenerate the SMS:"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "maxTokens": 80
+        }
+      },
+      "id": "generate-sms",
+      "name": "AI Generate Personalized SMS",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean and validate the SMS\nconst rawSms = $input.first().json.message?.content || $input.first().json.text || '';\nlet cleanedSms = rawSms.trim();\n\n// Remove any quotes that GPT might add\ncleanedSms = cleanedSms.replace(/^\"|\"$/g, '');\ncleanedSms = cleanedSms.replace(/^'|'$/g, '');\n\n// Ensure under 160 chars (SMS limit)\nif (cleanedSms.length > 160) {\n  // Find last complete sentence under 155 chars\n  const truncated = cleanedSms.substring(0, 155);\n  const lastPeriod = truncated.lastIndexOf('.');\n  const lastQuestion = truncated.lastIndexOf('?');\n  const cutPoint = Math.max(lastPeriod, lastQuestion);\n  \n  if (cutPoint > 100) {\n    cleanedSms = truncated.substring(0, cutPoint + 1);\n  } else {\n    cleanedSms = truncated + '...';\n  }\n}\n\nconst leadData = $('Prepare AI Context').first().json;\n\nreturn {\n  json: {\n    smsContent: cleanedSms,\n    charCount: cleanedSms.length,\n    lead: leadData.lead,\n    context: leadData.context\n  }\n};"
+      },
+      "id": "clean-sms",
+      "name": "Clean SMS Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $json.lead.fields['Phone'] }}",
+        "message": "={{ $json.smsContent }}"
+      },
+      "id": "send-sms",
+      "name": "Send Twilio SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Clean SMS Content').item.json.lead.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Last Contact",
+              "value": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldName": "Reactivation Attempts",
+              "value": "={{ ($('Clean SMS Content').item.json.lead.fields['Reactivation Attempts'] || 0) + 1 }}"
+            },
+            {
+              "fieldName": "Last SMS Sent",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "SMS Message Sent",
+              "value": "={{ $('Clean SMS Content').item.json.smsContent }}"
+            },
+            {
+              "fieldName": "Twilio SID",
+              "value": "={{ $json.sid }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "SMS Sent - Awaiting Reply"
+            }
+          ]
+        }
+      },
+      "id": "update-airtable",
+      "name": "Update Lead Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "rate-limit-delay",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2230, 300],
+      "webhookId": "rate-limit"
+    },
+    {
+      "parameters": {},
+      "id": "loop-done",
+      "name": "Continue Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summary of batch processing\nconst allItems = $('Loop Over Leads').all();\n\nreturn {\n  json: {\n    batchComplete: true,\n    leadsProcessed: allItems.length,\n    timestamp: new Date().toISOString(),\n    nextBatchIn: '24 hours'\n  }\n};"
+      },
+      "id": "batch-summary",
+      "name": "Batch Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 500]
+    }
+  ],
+  "connections": {
+    "Daily 9 AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Stale Closed-Lost Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Stale Closed-Lost Leads": {
+      "main": [
+        [
+          {
+            "node": "Any Leads Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Leads Found?": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Batch Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Context": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Personalized SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Personalized SMS": {
+      "main": [
+        [
+          {
+            "node": "Clean SMS Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean SMS Content": {
+      "main": [
+        [
+          {
+            "node": "Send Twilio SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Twilio SMS": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead Record": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "Continue Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "reactivation"
+    }
+  ]
+}

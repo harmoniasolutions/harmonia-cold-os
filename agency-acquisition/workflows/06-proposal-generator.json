@@ -1,0 +1,272 @@
+{
+  "name": "Agency - AI Proposal Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-proposal",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Generate Proposal Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "generate-proposal"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.prospectId }}"
+      },
+      "id": "get-prospect",
+      "name": "Get Prospect Details",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build proposal context from prospect data and discovery call notes\nconst prospect = $input.first().json;\nconst request = $('Generate Proposal Request').first().json;\n\nconst f = prospect.fields || {};\n\n// Calculate recommended package based on company size\nlet recommendedPackage = 'starter';\nlet monthlyPrice = 497;\nlet setupFee = 997;\n\nconst reviewCount = f['Review Count'] || 0;\nconst hasCommunicationPain = f['Has Communication Pain'] || false;\n\nif (reviewCount > 200 || request.package === 'growth') {\n  recommendedPackage = 'growth';\n  monthlyPrice = 997;\n  setupFee = 1997;\n} else if (reviewCount > 500 || request.package === 'scale') {\n  recommendedPackage = 'scale';\n  monthlyPrice = 1997;\n  setupFee = 2997;\n}\n\n// Calculate ROI projections\nconst avgJobValue = request.avgJobValue || 350;\nconst missedCallsPerWeek = request.missedCallsPerWeek || 15;\nconst conversionRate = 0.3; // 30% of answered calls become jobs\n\nconst monthlyMissedCalls = missedCallsPerWeek * 4;\nconst recoverableJobs = Math.round(monthlyMissedCalls * conversionRate);\nconst monthlyRevenueLost = recoverableJobs * avgJobValue;\nconst annualRevenueLost = monthlyRevenueLost * 12;\nconst roi = Math.round((monthlyRevenueLost - monthlyPrice) / monthlyPrice * 100);\n\nreturn {\n  json: {\n    // Company info\n    prospectId: prospect.id,\n    companyName: f['Company Name'] || 'Your Company',\n    contactName: f['Contact Name'] || request.contactName || '',\n    city: f['City'] || '',\n    state: f['State'] || '',\n    phone: f['Phone'] || '',\n    email: f['Verified Email'] || '',\n    website: f['Website'] || '',\n    \n    // Pain points discovered\n    painPoints: f['Pain Points'] || '',\n    negativeReviews: f['Negative Reviews'] || '',\n    hasCommunicationPain: hasCommunicationPain,\n    \n    // Discovery notes (from webhook or manual entry)\n    discoveryNotes: request.discoveryNotes || '',\n    currentChallenges: request.currentChallenges || 'Missed calls, after-hours inquiries, slow follow-up',\n    goals: request.goals || 'Never miss a call, book more jobs, increase reviews',\n    \n    // Package recommendation\n    recommendedPackage: recommendedPackage,\n    monthlyPrice: monthlyPrice,\n    setupFee: setupFee,\n    \n    // ROI calculations\n    avgJobValue: avgJobValue,\n    missedCallsPerWeek: missedCallsPerWeek,\n    monthlyMissedCalls: monthlyMissedCalls,\n    recoverableJobs: recoverableJobs,\n    monthlyRevenueLost: monthlyRevenueLost,\n    annualRevenueLost: annualRevenueLost,\n    roi: roi,\n    \n    // Timeline\n    proposalDate: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),\n    validUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })\n  }\n};"
+      },
+      "id": "build-context",
+      "name": "Build Proposal Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a world-class B2B proposal writer for an AI automation agency selling to HVAC companies. Write compelling, personalized proposals that close deals.\n\nSTYLE:\n- Professional but not corporate\n- Focus on THEIR problems and outcomes, not features\n- Use specific numbers and ROI calculations provided\n- Create urgency without being pushy\n- Make the decision feel easy and low-risk\n\nOUTPUT FORMAT (JSON):\n{\n  \"executiveSummary\": \"2-3 sentences max\",\n  \"situationAnalysis\": \"Their current pain points and challenges (2-3 bullets)\",\n  \"proposedSolution\": \"What we'll implement and why it solves their problems\",\n  \"deliverables\": [\"List of 5-7 specific deliverables\"],\n  \"investment\": \"Pricing section with ROI focus\",\n  \"timeline\": \"Implementation timeline\",\n  \"guarantee\": \"Risk-reversal statement\",\n  \"nextSteps\": \"Clear call to action\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "=Create a proposal for:\n\nCOMPANY: {{ $json.companyName }}\nCONTACT: {{ $json.contactName }}\nLOCATION: {{ $json.city }}, {{ $json.state }}\n\nDISCOVERY NOTES:\n{{ $json.discoveryNotes || 'Standard HVAC company challenges' }}\n\nCURRENT CHALLENGES:\n{{ $json.currentChallenges }}\n\nTHEIR GOALS:\n{{ $json.goals }}\n\nPAIN POINTS FROM REVIEWS:\n{{ $json.painPoints }}\n\nRECOMMENDED PACKAGE: {{ $json.recommendedPackage }}\n- Monthly: ${{ $json.monthlyPrice }}/mo\n- Setup: ${{ $json.setupFee }} one-time\n\nROI NUMBERS:\n- Missed calls/week: {{ $json.missedCallsPerWeek }}\n- Avg job value: ${{ $json.avgJobValue }}\n- Monthly revenue currently lost: ${{ $json.monthlyRevenueLost }}\n- Annual revenue lost: ${{ $json.annualRevenueLost }}\n- Projected ROI: {{ $json.roi }}%\n\nWHAT WE'RE SELLING:\n1. AI Phone Agent - Answers 100% of calls 24/7, books appointments\n2. AI Text Agent - Handles SMS inquiries and follow-ups\n3. Lead Reactivation - Automatically follows up with old leads\n4. Review Generation - Asks happy customers for reviews\n5. Missed Call Text-Back - Instant text when calls are missed\n\nProposal valid until: {{ $json.validUntil }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "response_format": {"type": "json_object"}
+        }
+      },
+      "id": "generate-proposal",
+      "name": "AI Generate Proposal",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and format the proposal\nconst response = $input.first().json.message?.content || $input.first().json.text || '{}';\nlet proposal;\n\ntry {\n  proposal = JSON.parse(response);\n} catch (e) {\n  const match = response.match(/\\{[\\s\\S]*\\}/);\n  proposal = match ? JSON.parse(match[0]) : { error: 'Could not parse proposal' };\n}\n\nconst context = $('Build Proposal Context').first().json;\n\n// Format as HTML for PDF generation\nconst htmlProposal = `\n<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 40px; color: #333; }\n    h1 { color: #1a1a2e; border-bottom: 3px solid #4361ee; padding-bottom: 10px; }\n    h2 { color: #4361ee; margin-top: 30px; }\n    .header { text-align: center; margin-bottom: 40px; }\n    .logo { font-size: 28px; font-weight: bold; color: #4361ee; }\n    .date { color: #666; margin-top: 10px; }\n    .summary { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }\n    .highlight { background: linear-gradient(135deg, #4361ee 0%, #3a0ca3 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0; }\n    .highlight h3 { margin-top: 0; }\n    .roi-box { display: flex; justify-content: space-around; text-align: center; }\n    .roi-item { padding: 15px; }\n    .roi-number { font-size: 32px; font-weight: bold; }\n    .deliverables { background: #f8f9fa; padding: 20px; border-radius: 8px; }\n    .deliverables li { margin: 10px 0; }\n    .pricing { border: 2px solid #4361ee; border-radius: 8px; padding: 20px; margin: 20px 0; }\n    .guarantee { background: #d4edda; border: 1px solid #28a745; padding: 15px; border-radius: 8px; margin: 20px 0; }\n    .cta { background: #4361ee; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-top: 30px; }\n    .footer { text-align: center; margin-top: 40px; color: #666; font-size: 14px; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <div class=\"logo\">HARMONIA</div>\n    <p>AI Automation Solutions for HVAC Companies</p>\n    <div class=\"date\">Proposal Date: ${context.proposalDate}</div>\n  </div>\n  \n  <h1>Proposal for ${context.companyName}</h1>\n  <p>Prepared for: ${context.contactName || 'Owner/Manager'}</p>\n  \n  <div class=\"summary\">\n    <h2>Executive Summary</h2>\n    <p>${proposal.executiveSummary}</p>\n  </div>\n  \n  <div class=\"highlight\">\n    <h3>The Opportunity</h3>\n    <div class=\"roi-box\">\n      <div class=\"roi-item\">\n        <div class=\"roi-number\">$${context.monthlyRevenueLost.toLocaleString()}</div>\n        <div>Monthly Revenue Lost</div>\n      </div>\n      <div class=\"roi-item\">\n        <div class=\"roi-number\">$${context.annualRevenueLost.toLocaleString()}</div>\n        <div>Annual Opportunity</div>\n      </div>\n      <div class=\"roi-item\">\n        <div class=\"roi-number\">${context.roi}%</div>\n        <div>Projected ROI</div>\n      </div>\n    </div>\n  </div>\n  \n  <h2>Current Situation</h2>\n  <p>${proposal.situationAnalysis}</p>\n  \n  <h2>Proposed Solution</h2>\n  <p>${proposal.proposedSolution}</p>\n  \n  <div class=\"deliverables\">\n    <h2>What You Get</h2>\n    <ul>\n      ${proposal.deliverables.map(d => `<li>${d}</li>`).join('')}\n    </ul>\n  </div>\n  \n  <div class=\"pricing\">\n    <h2>Investment</h2>\n    <p>${proposal.investment}</p>\n    <table style=\"width: 100%; margin-top: 15px;\">\n      <tr>\n        <td><strong>Setup Fee (one-time):</strong></td>\n        <td style=\"text-align: right;\"><strong>$${context.setupFee.toLocaleString()}</strong></td>\n      </tr>\n      <tr>\n        <td><strong>Monthly Investment:</strong></td>\n        <td style=\"text-align: right;\"><strong>$${context.monthlyPrice.toLocaleString()}/month</strong></td>\n      </tr>\n    </table>\n  </div>\n  \n  <h2>Timeline</h2>\n  <p>${proposal.timeline}</p>\n  \n  <div class=\"guarantee\">\n    <h2>Our Guarantee</h2>\n    <p>${proposal.guarantee}</p>\n  </div>\n  \n  <div class=\"cta\">\n    <h2>Next Steps</h2>\n    <p>${proposal.nextSteps}</p>\n    <p style=\"margin-top: 15px;\"><strong>This proposal is valid until ${context.validUntil}</strong></p>\n  </div>\n  \n  <div class=\"footer\">\n    <p>Questions? Call us at [YOUR_PHONE] or email [YOUR_EMAIL]</p>\n    <p>© ${new Date().getFullYear()} Harmonia - AI That Works While You Sleep</p>\n  </div>\n</body>\n</html>\n`;\n\nreturn {\n  json: {\n    ...context,\n    proposal: proposal,\n    htmlProposal: htmlProposal,\n    fileName: `Harmonia_Proposal_${context.companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.html`\n  }\n};"
+      },
+      "id": "format-proposal",
+      "name": "Format as HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.prospectId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Proposal Generated",
+              "value": "true"
+            },
+            {
+              "fieldName": "Proposal Date",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "Proposed Package",
+              "value": "={{ $json.recommendedPackage }}"
+            },
+            {
+              "fieldName": "Proposed Monthly",
+              "value": "={{ $json.monthlyPrice }}"
+            },
+            {
+              "fieldName": "Proposed Setup",
+              "value": "={{ $json.setupFee }}"
+            },
+            {
+              "fieldName": "Lead Status",
+              "value": "Proposal Sent"
+            }
+          ]
+        }
+      },
+      "id": "update-prospect",
+      "name": "Update Prospect",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.OUTREACH_FROM_EMAIL }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.companyName }} - Your Custom AI Proposal",
+        "contentType": "text/html",
+        "content": "=<p>Hi {{ $json.contactName || 'there' }},</p>\n\n<p>Great speaking with you. As promised, I've put together a custom proposal based on our conversation.</p>\n\n<p>Quick highlights:</p>\n<ul>\n<li>You're currently losing approximately <strong>${{ $json.monthlyRevenueLost.toLocaleString() }}/month</strong> from missed calls</li>\n<li>Our system can recover most of this with a <strong>{{ $json.roi }}% projected ROI</strong></li>\n<li>You'll be fully operational in under 2 weeks</li>\n</ul>\n\n<p>I've attached the full proposal below. It's valid until {{ $json.validUntil }}.</p>\n\n<p>Ready to move forward? Just reply to this email or book a quick call to finalize: [CALENDLY_LINK]</p>\n\n<p>Talk soon,<br>[YOUR NAME]<br>Harmonia</p>\n\n<hr>\n\n{{ $json.htmlProposal }}"
+      },
+      "id": "send-proposal",
+      "name": "Send Proposal Email",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=📄 Proposal Sent!\n\n{{ $json.companyName }}\nPackage: {{ $json.recommendedPackage }}\nMonthly: ${{ $json.monthlyPrice }}\nROI: {{ $json.roi }}%\n\nFollow up in 24h if no response!"
+      },
+      "id": "notify",
+      "name": "SMS Notification",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, proposalId: $json.prospectId, companyName: $json.companyName }) }}"
+      },
+      "id": "respond",
+      "name": "Return Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2010, 300]
+    }
+  ],
+  "connections": {
+    "Generate Proposal Request": {
+      "main": [
+        [
+          {
+            "node": "Get Prospect Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Prospect Details": {
+      "main": [
+        [
+          {
+            "node": "Build Proposal Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Proposal Context": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Proposal": {
+      "main": [
+        [
+          {
+            "node": "Format as HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format as HTML": {
+      "main": [
+        [
+          {
+            "node": "Update Prospect",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Prospect": {
+      "main": [
+        [
+          {
+            "node": "Send Proposal Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Proposal Email": {
+      "main": [
+        [
+          {
+            "node": "SMS Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS Notification": {
+      "main": [
+        [
+          {
+            "node": "Return Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "proposals"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+lead_id,customer_name,phone,email,address,interest,timeline,system_age,budget,is_homeowner,status,score,assigned_to,created_at,notes
+L001,David Kim,+15556789012,dkim@email.com,987 Elm Street Phoenix AZ,REPLACEMENT,THIS_MONTH,18,15000,true,new,85,Sales Team,2026-01-29,Current system failing - hot lead
+L002,Jennifer Lopez,+15557890123,jlopez@email.com,246 Walnut Ave Scottsdale AZ,NEW_SYSTEM,PLANNING,0,20000,true,contacted,72,Sales Team,2026-01-28,New home construction
+L003,Thomas Anderson,+15558901234,tanderson@email.com,135 Spruce Blvd Tempe AZ,EFFICIENCY,THIS_WEEK,10,8000,true,qualified,78,Sales Team,2026-01-30,Wants more efficient system - high bills

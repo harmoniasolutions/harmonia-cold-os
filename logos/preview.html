@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harmonia Logo Concepts</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    background: #f8f9fa;
+    color: #1a5276;
+    padding: 40px 20px;
+  }
+  h1 {
+    text-align: center;
+    font-weight: 300;
+    font-size: 32px;
+    letter-spacing: 4px;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #7f8c8d;
+    font-size: 14px;
+    margin-bottom: 48px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .card {
+    background: white;
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 2px 20px rgba(0,0,0,0.06);
+    text-align: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+  }
+  .card img {
+    width: 100%;
+    max-width: 400px;
+    height: auto;
+  }
+  .card h3 {
+    font-weight: 500;
+    font-size: 18px;
+    margin-top: 16px;
+    color: #1a5276;
+  }
+  .card p {
+    font-size: 13px;
+    color: #7f8c8d;
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+  .polo-test {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 16px;
+  }
+  .polo-test .mini {
+    width: 48px;
+    height: 48px;
+    background: #1a5276;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
+  }
+  .polo-test .mini.light {
+    background: #f0f0f0;
+  }
+  .polo-test .mini img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+</style>
+</head>
+<body>
+  <h1>HARMONIA</h1>
+  <p class="subtitle">Logo Concept Exploration &mdash; 6 Directions</p>
+
+  <div class="grid">
+    <div class="card">
+      <img src="01-infinity-airflow.svg" alt="Infinity Airflow">
+      <h3>01 &mdash; Infinity Airflow</h3>
+      <p>Continuous loop with airflow tapering. Represents 24/7 always-on automation. Clean, modern, embroiders well.</p>
+    </div>
+
+    <div class="card">
+      <img src="02-overlapping-circles.svg" alt="Overlapping Circles">
+      <h3>02 &mdash; Overlapping Circles</h3>
+      <p>Three systems (Voice, CRM, Scheduling) converging at a harmony point. Minimal and versatile at any size.</p>
+    </div>
+
+    <div class="card">
+      <img src="03-triquetra.svg" alt="Triquetra">
+      <h3>03 &mdash; Triquetra Knot</h3>
+      <p>Celtic triple knot representing three pillars woven together. Premium feel, strong brand mark.</p>
+    </div>
+
+    <div class="card">
+      <img src="04-sine-wave.svg" alt="Dual Sine Wave">
+      <h3>04 &mdash; Dual Wave</h3>
+      <p>Two waves in harmony &mdash; voice + airflow. Musical harmony meets HVAC. Simple and iconic.</p>
+    </div>
+
+    <div class="card">
+      <img src="05-mobius.svg" alt="Möbius Strip">
+      <h3>05 &mdash; M&ouml;bius Strip</h3>
+      <p>Twisted continuous loop, no beginning or end. Represents seamless lead flow. Distinctive 3D feel.</p>
+    </div>
+
+    <div class="card">
+      <img src="06-golden-spiral.svg" alt="Golden Spiral">
+      <h3>06 &mdash; Golden Spiral</h3>
+      <p>Fibonacci growth curve. Natural harmony and expansion. Suggests leads flowing in and growing.</p>
+    </div>
+  </div>
+</body>
+</html>

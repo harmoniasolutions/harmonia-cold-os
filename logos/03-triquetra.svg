@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200">
+  <defs>
+    <linearGradient id="tg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a5276;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#2e86c1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#48c9b0;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Triquetra / triple knot - continuous path -->
+  <g transform="translate(200, 82) scale(0.9)">
+    <!-- Three interlocking vesica piscis arcs -->
+    <path d="M0,-40 C22,-40 40,-22 40,0 C40,22 22,40 0,40 C-22,40 -40,22 -40,0 C-40,-22 -22,-40 0,-40"
+          fill="none" stroke="url(#tg)" stroke-width="4" opacity="0.3"/>
+    <path d="M0,-40 Q30,-10 15,25 Q0,50 -15,25 Q-30,-10 0,-40"
+          fill="none" stroke="#1a5276" stroke-width="4.5" stroke-linecap="round"/>
+    <path d="M-15,25 Q-45,10 -30,-20 Q-15,-50 0,-40 Q15,-50 30,-20 Q45,10 15,25"
+          fill="none" stroke="#2e86c1" stroke-width="4.5" stroke-linecap="round" opacity="0.8"/>
+    <!-- Center circle -->
+    <circle cx="0" cy="0" r="4" fill="#48c9b0"/>
+  </g>
+  <!-- Text -->
+  <text x="200" y="165" font-family="'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="300" fill="#1a5276" text-anchor="middle" letter-spacing="6">HARMONIA</text>
+</svg>

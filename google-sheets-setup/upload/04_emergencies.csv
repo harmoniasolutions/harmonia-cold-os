@@ -1,0 +1,3 @@
+emergency_id,customer_name,phone,address,emergency_type,description,safety_confirmed,status,escalated_to,response_time,created_at
+E001,Maria Garcia,+15559012345,753 Aspen Way Mesa AZ,GAS_LEAK,Strong gas smell near furnace,true,resolved,On-call Tech,15 min,2026-01-25
+E002,James Wilson,+15550123456,159 Willow St Phoenix AZ,NO_HEAT,No heat with infant in home,true,resolved,Priority Dispatch,22 min,2026-01-27

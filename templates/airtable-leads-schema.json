@@ -1,0 +1,485 @@
+{
+  "name": "Harmonia Leads Database",
+  "description": "Airtable base schema for HVAC lead management",
+  "tables": [
+    {
+      "name": "Leads",
+      "description": "Main leads table for tracking all prospects",
+      "fields": [
+        {
+          "name": "Lead ID",
+          "type": "autonumber",
+          "description": "Auto-generated unique ID"
+        },
+        {
+          "name": "First Name",
+          "type": "singleLineText",
+          "required": true
+        },
+        {
+          "name": "Last Name",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Phone",
+          "type": "phoneNumber",
+          "required": true,
+          "description": "Primary contact number in E.164 format"
+        },
+        {
+          "name": "Email",
+          "type": "email"
+        },
+        {
+          "name": "Address",
+          "type": "singleLineText"
+        },
+        {
+          "name": "City",
+          "type": "singleLineText"
+        },
+        {
+          "name": "State",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Zip",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Status",
+          "type": "singleSelect",
+          "options": [
+            "New",
+            "Contacted",
+            "Qualified",
+            "Booked",
+            "Completed",
+            "Closed-Lost",
+            "Closed-Won",
+            "Nurture-Later",
+            "Do Not Contact",
+            "Hot Lead - Callback"
+          ],
+          "default": "New"
+        },
+        {
+          "name": "Service Needed",
+          "type": "singleLineText",
+          "description": "Type of HVAC service requested"
+        },
+        {
+          "name": "Notes",
+          "type": "multilineText",
+          "description": "Customer notes and issue description"
+        },
+        {
+          "name": "Source",
+          "type": "singleSelect",
+          "options": [
+            "google_lsa",
+            "facebook_lead",
+            "elementor_form",
+            "referral",
+            "phone_inbound",
+            "website_chat",
+            "manual_entry",
+            "ghl_crm"
+          ]
+        },
+        {
+          "name": "Lead Score",
+          "type": "number",
+          "description": "Harmonia lead score (1-100)"
+        },
+        {
+          "name": "Lead Tier",
+          "type": "singleSelect",
+          "options": ["HOT", "WARM", "COOL", "COLD"]
+        },
+        {
+          "name": "Is Emergency",
+          "type": "checkbox"
+        },
+        {
+          "name": "Last Contact",
+          "type": "date",
+          "description": "Date of last contact attempt"
+        },
+        {
+          "name": "Created At",
+          "type": "dateTime",
+          "description": "When lead was first captured"
+        },
+        {
+          "name": "Loss Reason",
+          "type": "singleSelect",
+          "options": [
+            "Price too high",
+            "Timing not right",
+            "Went with competitor",
+            "No longer needed",
+            "Could not reach",
+            "Not qualified",
+            "Other"
+          ]
+        },
+        {
+          "name": "Reactivation Attempts",
+          "type": "number",
+          "default": 0
+        },
+        {
+          "name": "Reactivation Status",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Last SMS Sent",
+          "type": "dateTime"
+        },
+        {
+          "name": "SMS Message Sent",
+          "type": "multilineText"
+        },
+        {
+          "name": "Twilio SID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Email Follow-up Sent",
+          "type": "checkbox"
+        },
+        {
+          "name": "Email Sent At",
+          "type": "dateTime"
+        },
+        {
+          "name": "Has Replied",
+          "type": "checkbox"
+        },
+        {
+          "name": "Reply Intent",
+          "type": "singleSelect",
+          "options": ["INTERESTED", "NOT_INTERESTED", "STOP", "QUESTION"]
+        },
+        {
+          "name": "Reply Message",
+          "type": "multilineText"
+        },
+        {
+          "name": "Reply Timestamp",
+          "type": "dateTime"
+        },
+        {
+          "name": "Do Not Contact",
+          "type": "checkbox"
+        },
+        {
+          "name": "DNC Date",
+          "type": "dateTime"
+        },
+        {
+          "name": "Next Reactivation Date",
+          "type": "date"
+        },
+        {
+          "name": "ServiceTitan Lead ID",
+          "type": "singleLineText",
+          "description": "ID from ServiceTitan CRM"
+        },
+        {
+          "name": "ServiceTitan Customer ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Vapi Call ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Vapi Call Outcome",
+          "type": "singleSelect",
+          "options": [
+            "booked",
+            "callback_scheduled",
+            "not_interested",
+            "voicemail",
+            "no_answer",
+            "wrong_number"
+          ]
+        },
+        {
+          "name": "Assigned To",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Appointment Date",
+          "type": "dateTime"
+        },
+        {
+          "name": "Booking ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "GHL Contact ID",
+          "type": "singleLineText",
+          "description": "GoHighLevel contact ID"
+        },
+        {
+          "name": "GHL Opportunity ID",
+          "type": "singleLineText",
+          "description": "GoHighLevel opportunity ID"
+        },
+        {
+          "name": "GHL Last Synced",
+          "type": "dateTime",
+          "description": "Last successful GHL sync timestamp"
+        },
+        {
+          "name": "GHL Calendar Event ID",
+          "type": "singleLineText",
+          "description": "GoHighLevel calendar event ID"
+        }
+      ],
+      "views": [
+        {
+          "name": "All Leads",
+          "type": "grid",
+          "sort": [{"field": "Created At", "direction": "desc"}]
+        },
+        {
+          "name": "Hot Leads",
+          "type": "grid",
+          "filter": {"field": "Lead Tier", "operator": "equals", "value": "HOT"},
+          "sort": [{"field": "Lead Score", "direction": "desc"}]
+        },
+        {
+          "name": "Ready for Reactivation",
+          "type": "grid",
+          "filter": {
+            "and": [
+              {"field": "Status", "operator": "equals", "value": "Closed-Lost"},
+              {"field": "Reactivation Attempts", "operator": "lessThan", "value": 3},
+              {"field": "Do Not Contact", "operator": "isFalse"}
+            ]
+          }
+        },
+        {
+          "name": "Awaiting Reply",
+          "type": "grid",
+          "filter": {
+            "and": [
+              {"field": "Last SMS Sent", "operator": "isNotEmpty"},
+              {"field": "Has Replied", "operator": "isFalse"}
+            ]
+          }
+        },
+        {
+          "name": "Do Not Contact",
+          "type": "grid",
+          "filter": {"field": "Do Not Contact", "operator": "isTrue"}
+        }
+      ]
+    },
+    {
+      "name": "DNC List",
+      "description": "Do Not Contact registry for compliance",
+      "fields": [
+        {
+          "name": "Phone",
+          "type": "phoneNumber",
+          "required": true
+        },
+        {
+          "name": "Email",
+          "type": "email"
+        },
+        {
+          "name": "Reason",
+          "type": "singleSelect",
+          "options": [
+            "Customer requested",
+            "Replied STOP",
+            "Bounced/Invalid",
+            "Legal request"
+          ]
+        },
+        {
+          "name": "Added Date",
+          "type": "dateTime"
+        },
+        {
+          "name": "Original Lead",
+          "type": "link",
+          "linkedTable": "Leads"
+        },
+        {
+          "name": "Notes",
+          "type": "multilineText"
+        }
+      ]
+    },
+    {
+      "name": "Appointments",
+      "description": "Booked appointments tracking",
+      "fields": [
+        {
+          "name": "Appointment ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Lead",
+          "type": "link",
+          "linkedTable": "Leads"
+        },
+        {
+          "name": "Customer Name",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Phone",
+          "type": "phoneNumber"
+        },
+        {
+          "name": "Address",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Appointment Time",
+          "type": "dateTime"
+        },
+        {
+          "name": "Job Type",
+          "type": "singleSelect",
+          "options": ["Diagnostic", "Maintenance", "Installation", "Estimate"]
+        },
+        {
+          "name": "Issue Description",
+          "type": "multilineText"
+        },
+        {
+          "name": "Is Emergency",
+          "type": "checkbox"
+        },
+        {
+          "name": "Booked By",
+          "type": "singleSelect",
+          "options": ["Vapi AI", "Human Dispatcher", "Website", "Manual"]
+        },
+        {
+          "name": "ServiceTitan Booking ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Technician Assigned",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Status",
+          "type": "singleSelect",
+          "options": [
+            "Scheduled",
+            "Confirmed",
+            "En Route",
+            "In Progress",
+            "Completed",
+            "Cancelled",
+            "Rescheduled"
+          ]
+        },
+        {
+          "name": "Confirmation Sent",
+          "type": "checkbox"
+        },
+        {
+          "name": "Created At",
+          "type": "dateTime"
+        }
+      ]
+    },
+    {
+      "name": "Call Logs",
+      "description": "Vapi call history and outcomes",
+      "fields": [
+        {
+          "name": "Call ID",
+          "type": "singleLineText"
+        },
+        {
+          "name": "Lead",
+          "type": "link",
+          "linkedTable": "Leads"
+        },
+        {
+          "name": "Direction",
+          "type": "singleSelect",
+          "options": ["Inbound", "Outbound"]
+        },
+        {
+          "name": "Phone Number",
+          "type": "phoneNumber"
+        },
+        {
+          "name": "Assistant Type",
+          "type": "singleSelect",
+          "options": ["Inbound Receptionist", "Outbound Booking", "Emergency Dispatcher"]
+        },
+        {
+          "name": "Started At",
+          "type": "dateTime"
+        },
+        {
+          "name": "Duration Seconds",
+          "type": "number"
+        },
+        {
+          "name": "Outcome",
+          "type": "singleSelect",
+          "options": [
+            "booked",
+            "callback_scheduled",
+            "not_interested",
+            "voicemail",
+            "no_answer",
+            "transferred",
+            "error"
+          ]
+        },
+        {
+          "name": "Transcript",
+          "type": "multilineText"
+        },
+        {
+          "name": "Recording URL",
+          "type": "url"
+        },
+        {
+          "name": "Summary",
+          "type": "multilineText"
+        },
+        {
+          "name": "Appointment Created",
+          "type": "checkbox"
+        },
+        {
+          "name": "Appointment",
+          "type": "link",
+          "linkedTable": "Appointments"
+        }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "name": "Auto-calculate Lead Age",
+      "description": "Formula field to show days since lead created"
+    },
+    {
+      "name": "Move to DNC on STOP",
+      "description": "When Reply Intent = STOP, copy to DNC List"
+    },
+    {
+      "name": "Alert on Hot Lead",
+      "description": "Send Slack/SMS when Lead Score >= 80"
+    }
+  ]
+}

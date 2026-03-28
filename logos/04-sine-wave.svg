@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200">
+  <defs>
+    <linearGradient id="sw1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1a5276;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2e86c1;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="sw2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#2e86c1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#48c9b0;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Dual sine wave - harmony + airflow -->
+  <path d="M120 85 C145 55, 170 55, 195 85 C220 115, 245 115, 270 85"
+        fill="none" stroke="url(#sw1)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M130 85 C155 115, 180 115, 205 85 C230 55, 255 55, 280 85"
+        fill="none" stroke="url(#sw2)" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Intersection dots -->
+  <circle cx="165" cy="85" r="4" fill="#1a5276" opacity="0.6"/>
+  <circle cx="232" cy="85" r="4" fill="#48c9b0" opacity="0.6"/>
+  <!-- Text -->
+  <text x="200" y="150" font-family="'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="300" fill="#1a5276" text-anchor="middle" letter-spacing="6">HARMONIA</text>
+</svg>

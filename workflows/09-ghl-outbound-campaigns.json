@@ -1,0 +1,996 @@
+{
+  "name": "Harmonia - GHL Outbound Reactivation Campaigns",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 9 AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Status}='Closed-Lost', DATETIME_DIFF(TODAY(),{Last Contact},'days')>90, {Reactivation Attempts}<3, {Do Not Contact}!=TRUE(), {Phone}!='')",
+        "options": {
+          "maxRecords": 50
+        }
+      },
+      "id": "get-eligible-leads",
+      "name": "Get Eligible Leads",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-leads",
+              "leftValue": "={{ $json.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-leads-exist",
+      "name": "Any Leads Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-leads",
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare context for AI personalization\nconst lead = $input.first().json;\nconst currentMonth = new Date().toLocaleString('default', { month: 'long' });\nconst currentSeason = (() => {\n  const month = new Date().getMonth();\n  if (month >= 2 && month <= 4) return 'spring';\n  if (month >= 5 && month <= 7) return 'summer';\n  if (month >= 8 && month <= 10) return 'fall';\n  return 'winter';\n})();\n\n// Determine hook angle based on loss reason\nconst lossReason = (lead.fields['Loss Reason'] || '').toLowerCase();\nlet hookAngle = 'general';\n\nif (lossReason.includes('price') || lossReason.includes('cost')) {\n  hookAngle = 'value_offer';\n} else if (lossReason.includes('timing') || lossReason.includes('busy')) {\n  hookAngle = 'timing_check';\n} else if (lossReason.includes('competitor')) {\n  hookAngle = 'service_quality';\n} else if (lossReason.includes('not ready') || lossReason.includes('thinking')) {\n  hookAngle = 'gentle_reminder';\n}\n\nreturn {\n  json: {\n    lead: lead,\n    context: {\n      firstName: lead.fields['First Name'] || 'there',\n      lastName: lead.fields['Last Name'] || '',\n      phone: lead.fields['Phone'],\n      email: lead.fields['Email'] || null,\n      serviceNeeded: lead.fields['Service Needed'] || 'HVAC service',\n      lossReason: lead.fields['Loss Reason'] || 'no reason provided',\n      lastContact: lead.fields['Last Contact'],\n      hookAngle: hookAngle,\n      currentMonth: currentMonth,\n      currentSeason: currentSeason,\n      daysSinceContact: Math.floor((new Date() - new Date(lead.fields['Last Contact'])) / (1000 * 60 * 60 * 24)),\n      reactivationAttempt: (lead.fields['Reactivation Attempts'] || 0) + 1,\n      companyName: $env.COMPANY_NAME || 'our team'\n    }\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare AI Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://services.leadconnectorhq.com/contacts/?locationId={{ $env.GHL_LOCATION_ID }}&query={{ encodeURIComponent($json.context.phone) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "check-ghl-dnc",
+      "name": "Check GHL DNC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check DNC status from GHL contact lookup\nconst response = $input.first().json;\nconst contacts = response.contacts || [];\nconst contact = contacts[0];\n\nif (!contact) {\n  return { json: { isDNC: false, ghlContactId: null } };\n}\n\nconst tags = (contact.tags || []).map(t => t.toLowerCase());\nconst isDNC = tags.includes('dnc') || tags.includes('do-not-contact') || tags.includes('unsubscribed') || tags.includes('stop');\n\nreturn {\n  json: {\n    isDNC: isDNC,\n    ghlContactId: contact.id,\n    tags: contact.tags || []\n  }\n};"
+      },
+      "id": "parse-dnc-response",
+      "name": "Parse DNC Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-dnc",
+              "leftValue": "={{ $json.isDNC }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-is-dnc",
+      "name": "Is DNC?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Prepare AI Context').item.json.lead.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Do Not Contact",
+              "value": true
+            }
+          ]
+        }
+      },
+      "id": "mark-dnc-airtable",
+      "name": "Mark DNC in Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 150]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a master copywriter for an HVAC company. Generate a single personalized SMS message to re-engage a lost lead.\n\nRULES:\n1. MUST be under 155 characters (SMS limit)\n2. Start with their first name\n3. Be warm and conversational, NOT salesy\n4. Reference the season or their specific situation naturally\n5. End with a soft CTA like 'Reply YES if interested' or 'Text back if you need us'\n6. NEVER mention they didn't book before or that they're a 'lost lead'\n7. NEVER use exclamation marks more than once\n8. Sound like a friendly neighbor, not a corporation\n\nHOOK ANGLES:\n- value_offer: Mention a special or seasonal discount\n- timing_check: Ask if now is a better time\n- service_quality: Emphasize reliability/expertise\n- gentle_reminder: Soft check-in about their system\n- general: Seasonal maintenance reminder\n\nOUTPUT: Only the SMS text, nothing else."
+            },
+            {
+              "role": "user",
+              "content": "=Lead Info:\n- First Name: {{ $('Prepare AI Context').item.json.context.firstName }}\n- Service Needed: {{ $('Prepare AI Context').item.json.context.serviceNeeded }}\n- Reason They Didn't Book: {{ $('Prepare AI Context').item.json.context.lossReason }}\n- Days Since Contact: {{ $('Prepare AI Context').item.json.context.daysSinceContact }}\n- Hook Angle: {{ $('Prepare AI Context').item.json.context.hookAngle }}\n- Current Season: {{ $('Prepare AI Context').item.json.context.currentSeason }}\n- Current Month: {{ $('Prepare AI Context').item.json.context.currentMonth }}\n\nGenerate the SMS:"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "maxTokens": 80
+        }
+      },
+      "id": "generate-sms",
+      "name": "AI Generate SMS",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [2010, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean and validate the SMS\nconst rawSms = $input.first().json.message?.content || $input.first().json.text || '';\nlet cleanedSms = rawSms.trim();\n\n// Remove any quotes that GPT might add\ncleanedSms = cleanedSms.replace(/^\"|\"$/g, '');\ncleanedSms = cleanedSms.replace(/^'|'$/g, '');\n\n// Ensure under 160 chars (SMS limit)\nif (cleanedSms.length > 160) {\n  const truncated = cleanedSms.substring(0, 155);\n  const lastPeriod = truncated.lastIndexOf('.');\n  const lastQuestion = truncated.lastIndexOf('?');\n  const cutPoint = Math.max(lastPeriod, lastQuestion);\n\n  if (cutPoint > 100) {\n    cleanedSms = truncated.substring(0, cutPoint + 1);\n  } else {\n    cleanedSms = truncated + '...';\n  }\n}\n\nconst leadData = $('Prepare AI Context').first().json;\n\nreturn {\n  json: {\n    smsContent: cleanedSms,\n    charCount: cleanedSms.length,\n    lead: leadData.lead,\n    context: leadData.context\n  }\n};"
+      },
+      "id": "clean-sms",
+      "name": "Clean SMS Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/contacts/upsert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $json.context.firstName }}\",\n  \"lastName\": \"{{ $json.context.lastName }}\",\n  \"phone\": \"{{ $json.context.phone }}\",\n  \"email\": \"{{ $json.context.email || '' }}\",\n  \"tags\": [\"reactivation-campaign\", \"harmonia-outbound\"],\n  \"source\": \"Harmonia Reactivation\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "upsert-ghl-contact",
+      "name": "Upsert GHL Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/conversations/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"type\": \"SMS\",\n  \"contactId\": \"{{ $('Upsert GHL Contact').item.json.contact?.id || $('Parse DNC Response').item.json.ghlContactId }}\",\n  \"message\": \"{{ $('Clean SMS Content').item.json.smsContent }}\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "send-ghl-sms",
+      "name": "Send GHL SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-email",
+              "leftValue": "={{ $('Prepare AI Context').item.json.context.email }}",
+              "rightValue": "@",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-email",
+      "name": "Has Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2890, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a master copywriter for an HVAC company. Generate a brief, personalized email to re-engage a lost lead. RULES: 1. Subject line under 50 chars 2. Body under 150 words 3. Warm and professional tone 4. Reference their specific situation 5. Include a clear CTA 6. Sign off as the company name. OUTPUT as JSON: {\"subject\": \"...\", \"body\": \"...\"}"
+            },
+            {
+              "role": "user",
+              "content": "=Lead Info:\n- First Name: {{ $('Prepare AI Context').item.json.context.firstName }}\n- Service Needed: {{ $('Prepare AI Context').item.json.context.serviceNeeded }}\n- Reason They Didn't Book: {{ $('Prepare AI Context').item.json.context.lossReason }}\n- Days Since Contact: {{ $('Prepare AI Context').item.json.context.daysSinceContact }}\n- Hook Angle: {{ $('Prepare AI Context').item.json.context.hookAngle }}\n- Current Season: {{ $('Prepare AI Context').item.json.context.currentSeason }}\n- Current Month: {{ $('Prepare AI Context').item.json.context.currentMonth }}\n- Company Name: {{ $('Prepare AI Context').item.json.context.companyName }}\n\nGenerate the email:"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 300
+        }
+      },
+      "id": "generate-email",
+      "name": "AI Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [3110, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/conversations/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"type\": \"Email\",\n  \"contactId\": \"{{ $('Upsert GHL Contact').item.json.contact?.id || $('Parse DNC Response').item.json.ghlContactId }}\",\n  \"subject\": \"{{ $json.message?.content ? JSON.parse($json.message.content).subject : 'Checking in on your HVAC needs' }}\",\n  \"message\": \"{{ $json.message?.content ? JSON.parse($json.message.content).body : '' }}\",\n  \"emailFrom\": \"{{ $env.SENDGRID_FROM_EMAIL }}\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "send-ghl-email",
+      "name": "Send GHL Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3330, 300]
+    },
+    {
+      "parameters": {},
+      "id": "skip-email",
+      "name": "Skip Email",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3110, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-send-results",
+      "name": "Merge Send Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3550, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $('Upsert GHL Contact').item.json.contact?.id || $('Parse DNC Response').item.json.ghlContactId }}/tags",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"tags\": [\n    \"reactivation-campaign-{{ $now.toISODate() }}\",\n    \"attempt-{{ $('Prepare AI Context').item.json.context.reactivationAttempt }}\"\n  ]\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "add-ghl-campaign-tags",
+      "name": "Add GHL Campaign Tags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3770, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/opportunities/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"pipelineId\": \"{{ $env.GHL_REACTIVATION_PIPELINE_ID }}\",\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"name\": \"{{ $('Prepare AI Context').item.json.context.firstName }} {{ $('Prepare AI Context').item.json.context.lastName }} - Reactivation\",\n  \"pipelineStageId\": \"{{ $env.GHL_REACTIVATION_CONTACTED_STAGE_ID }}\",\n  \"status\": \"open\",\n  \"contactId\": \"{{ $('Upsert GHL Contact').item.json.contact?.id || $('Parse DNC Response').item.json.ghlContactId }}\",\n  \"monetaryValue\": 89,\n  \"source\": \"Harmonia Reactivation Campaign\"\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "create-ghl-opportunity",
+      "name": "Create GHL Opportunity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3990, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Prepare AI Context').item.json.lead.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Last Contact",
+              "value": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldName": "Reactivation Attempts",
+              "value": "={{ $('Prepare AI Context').item.json.context.reactivationAttempt }}"
+            },
+            {
+              "fieldName": "Last SMS Sent",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "SMS Message Sent",
+              "value": "={{ $('Clean SMS Content').item.json.smsContent }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "GHL Campaign Sent - Awaiting Reply"
+            },
+            {
+              "fieldName": "Email Follow-up Sent",
+              "value": "={{ $('Has Email?').item.json ? true : false }}"
+            },
+            {
+              "fieldName": "Email Sent At",
+              "value": "={{ $('Has Email?').item.json ? $now.toISO() : '' }}"
+            }
+          ]
+        }
+      },
+      "id": "update-airtable-tracking",
+      "name": "Update Airtable Tracking",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [4210, 400]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "rate-limit-delay",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [4430, 400],
+      "webhookId": "rate-limit-ghl"
+    },
+    {
+      "parameters": {},
+      "id": "continue-loop",
+      "name": "Continue Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [4650, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Summary of batch processing\nconst allItems = $('Loop Over Leads').all();\n\nreturn {\n  json: {\n    batchComplete: true,\n    leadsProcessed: allItems.length,\n    timestamp: new Date().toISOString(),\n    nextBatchIn: '24 hours'\n  }\n};"
+      },
+      "id": "batch-summary",
+      "name": "Batch Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 600]
+    },
+    {
+      "parameters": {},
+      "id": "dnc-to-rate-limit",
+      "name": "DNC Skip to Rate Limit",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2230, 150]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dead Letter Queue - Capture failed GHL SMS sends for manual processing\nconst leadData = $('Prepare AI Context').first().json;\nconst error = $input.first().json;\n\nreturn {\n  json: {\n    status: 'GHL_SMS_FAILED',\n    leadData: {\n      name: leadData.context.firstName + ' ' + leadData.context.lastName,\n      phone: leadData.context.phone,\n      email: leadData.context.email,\n      serviceNeeded: leadData.context.serviceNeeded,\n      source: 'GHL Reactivation Campaign',\n      reactivationAttempt: leadData.context.reactivationAttempt\n    },\n    error: {\n      message: error.message || error.error || 'Unknown GHL API error',\n      statusCode: error.statusCode || error.code || null,\n      body: error.body || null\n    },\n    metadata: {\n      failedAt: new Date().toISOString(),\n      workflow: 'ghl-outbound-campaigns',\n      requiresManualReview: true\n    }\n  }\n};"
+      },
+      "id": "dead-letter-queue",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2890, 650]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.DEAD_LETTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Failed Syncs",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.metadata.failedAt }}",
+            "Name": "={{ $json.leadData.name }}",
+            "Phone": "={{ $json.leadData.phone }}",
+            "Email": "={{ $json.leadData.email }}",
+            "Service Needed": "={{ $json.leadData.serviceNeeded }}",
+            "Source": "={{ $json.leadData.source }}",
+            "Attempt": "={{ $json.leadData.reactivationAttempt }}",
+            "Error": "={{ $json.error.message }}",
+            "Status Code": "={{ $json.error.statusCode }}",
+            "Status": "Pending Manual Review"
+          }
+        }
+      },
+      "id": "log-to-sheet",
+      "name": "Log to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [3110, 650]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=GHL SMS FAILED\n\n{{ $json.leadData.name }}\n{{ $json.leadData.phone }}\nAttempt: {{ $json.leadData.reactivationAttempt }}\n\nError: {{ $json.error.message }}\n\nManual follow-up required.\nCheck Dead Letter sheet."
+      },
+      "id": "alert-manager",
+      "name": "Alert Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [3330, 650]
+    }
+  ],
+  "connections": {
+    "Daily 9 AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Eligible Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Eligible Leads": {
+      "main": [
+        [
+          {
+            "node": "Any Leads Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Leads Found?": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Batch Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Context": {
+      "main": [
+        [
+          {
+            "node": "Check GHL DNC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check GHL DNC": {
+      "main": [
+        [
+          {
+            "node": "Parse DNC Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse DNC Response": {
+      "main": [
+        [
+          {
+            "node": "Is DNC?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is DNC?": {
+      "main": [
+        [
+          {
+            "node": "Mark DNC in Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Generate SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark DNC in Airtable": {
+      "main": [
+        [
+          {
+            "node": "DNC Skip to Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DNC Skip to Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate SMS": {
+      "main": [
+        [
+          {
+            "node": "Clean SMS Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean SMS Content": {
+      "main": [
+        [
+          {
+            "node": "Upsert GHL Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert GHL Contact": {
+      "main": [
+        [
+          {
+            "node": "Send GHL SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send GHL SMS": {
+      "main": [
+        [
+          {
+            "node": "Has Email?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Email?": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Send GHL Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send GHL Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Send Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Send Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Send Results": {
+      "main": [
+        [
+          {
+            "node": "Add GHL Campaign Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add GHL Campaign Tags": {
+      "main": [
+        [
+          {
+            "node": "Create GHL Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL Opportunity": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable Tracking": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "Continue Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [
+          {
+            "node": "Log to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Alert Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "ghl"
+    },
+    {
+      "name": "reactivation"
+    }
+  ]
+}

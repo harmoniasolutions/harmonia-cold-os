@@ -1,0 +1,565 @@
+{
+  "name": "Harmonia - Voice Receptionist (Inbound Interceptor)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vapi-inbound",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Vapi Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://auth.servicetitan.io/connect/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $env.ST_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.ST_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "st-auth",
+      "name": "Get ST Auth Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/customers",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "phone",
+              "value": "={{ $('Vapi Webhook Trigger').item.json.message.call.customer.number.replace(/\\D/g, '').slice(-10) }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Auth Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "customer-lookup",
+      "name": "Lookup Customer by Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "customer-exists",
+              "leftValue": "={{ $json.data?.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "customer-check",
+      "name": "Customer Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Existing customer - extract their data with full history\nconst customerData = $input.first().json.data[0];\nconst vapiData = $('Vapi Webhook Trigger').first().json;\n\n// Calculate customer value tier\nlet valueTier = 'STANDARD';\nconst jobsCount = customerData.jobsCount || 0;\nconst membershipStatus = customerData.membershipStatus || 'None';\n\nif (membershipStatus !== 'None' || jobsCount >= 5) {\n  valueTier = 'VIP';\n} else if (jobsCount >= 2) {\n  valueTier = 'RETURNING';\n}\n\nreturn {\n  json: {\n    customerId: customerData.id,\n    customerName: customerData.name,\n    firstName: customerData.name?.split(' ')[0] || 'there',\n    isNewCustomer: false,\n    locationId: customerData.locations?.[0]?.id || null,\n    address: customerData.locations?.[0]?.address || null,\n    valueTier: valueTier,\n    customerHistory: {\n      totalJobs: jobsCount,\n      membershipStatus: membershipStatus,\n      lastServiceDate: customerData.lastServiceDate || null,\n      totalRevenue: customerData.totalRevenue || 0\n    },\n    callerPhone: vapiData.message?.call?.customer?.number,\n    extractedData: vapiData.extracted_data || {}\n  }\n};"
+      },
+      "id": "existing-customer",
+      "name": "Extract Existing Customer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/customers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Auth Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.caller_name || 'New Prospect' }}\",\n  \"type\": \"Residential\",\n  \"doNotMail\": false,\n  \"doNotService\": false,\n  \"address\": {\n    \"street\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.address || '' }}\",\n    \"city\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.city || '' }}\",\n    \"state\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.state || '' }}\",\n    \"zip\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.zip || '' }}\"\n  },\n  \"phoneSettings\": {\n    \"phoneNumber\": \"{{ $('Vapi Webhook Trigger').item.json.message.call.customer.number }}\",\n    \"doNotText\": false\n  }\n}",
+        "options": {}
+      },
+      "id": "create-customer",
+      "name": "Create New Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// New customer created - extract ID and prepare for booking\nconst newCustomer = $input.first().json;\nconst vapiData = $('Vapi Webhook Trigger').first().json;\n\nreturn {\n  json: {\n    customerId: newCustomer.id,\n    customerName: newCustomer.name,\n    firstName: newCustomer.name?.split(' ')[0] || 'there',\n    isNewCustomer: true,\n    locationId: newCustomer.locations?.[0]?.id || null,\n    address: newCustomer.locations?.[0]?.address || null,\n    valueTier: 'NEW',\n    customerHistory: {\n      totalJobs: 0,\n      membershipStatus: 'None',\n      lastServiceDate: null,\n      totalRevenue: 0\n    },\n    callerPhone: vapiData.message?.call?.customer?.number,\n    extractedData: vapiData.extracted_data || {}\n  }\n};"
+      },
+      "id": "new-customer-extract",
+      "name": "Extract New Customer ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-customer",
+      "name": "Merge Customer Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.servicetitan.io/dispatch/v2/tenant/{{ $env.ST_TENANT_ID }}/capacity/availability",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "startsOnOrAfter",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "name": "endsOnOrBefore",
+              "value": "={{ $now.plus({hours: 48}).toISO() }}"
+            },
+            {
+              "name": "jobTypeId",
+              "value": "={{ $env.DIAGNOSTIC_JOB_TYPE_ID }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Auth Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-availability",
+      "name": "Get Availability Slots",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform ServiceTitan availability to human-readable format\n// Optimized for voice AI consumption\n\nconst availabilityData = $input.first().json.availability || [];\nconst customerData = $('Merge Customer Data').first().json;\nconst maxSlotsToOffer = 3;\nconst diagnosticFee = parseInt($env.DIAGNOSTIC_FEE) || 89;\n\nfunction formatTimeSlot(isoString) {\n  const date = new Date(isoString);\n  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];\n  const dayName = days[date.getDay()];\n  \n  let hours = date.getHours();\n  const minutes = date.getMinutes();\n  const ampm = hours >= 12 ? 'PM' : 'AM';\n  hours = hours % 12;\n  hours = hours ? hours : 12;\n  \n  const timeStr = minutes > 0 ? `${hours}:${minutes.toString().padStart(2, '0')} ${ampm}` : `${hours} ${ampm}`;\n  return `${dayName} at ${timeStr}`;\n}\n\nfunction getRelativeDay(isoString) {\n  const slotDate = new Date(isoString);\n  const today = new Date();\n  const tomorrow = new Date(today);\n  tomorrow.setDate(tomorrow.getDate() + 1);\n  \n  slotDate.setHours(0, 0, 0, 0);\n  const todayMidnight = new Date(today);\n  todayMidnight.setHours(0, 0, 0, 0);\n  const tomorrowMidnight = new Date(tomorrow);\n  tomorrowMidnight.setHours(0, 0, 0, 0);\n  \n  if (slotDate.getTime() === todayMidnight.getTime()) {\n    return 'today';\n  } else if (slotDate.getTime() === tomorrowMidnight.getTime()) {\n    return 'tomorrow';\n  }\n  return null;\n}\n\n// Flatten all slots and sort by date\nconst allSlots = [];\n\nfor (const day of availabilityData) {\n  if (day.slots && Array.isArray(day.slots)) {\n    for (const slot of day.slots) {\n      allSlots.push({\n        start: slot.start,\n        end: slot.end,\n        technicianId: slot.technicianId || null,\n        technicianName: slot.technicianName || null,\n        date: day.date,\n        arrivalWindowStart: slot.arrivalWindowStart || slot.start,\n        arrivalWindowEnd: slot.arrivalWindowEnd || slot.end\n      });\n    }\n  }\n}\n\n// Sort by start time\nallSlots.sort((a, b) => new Date(a.start) - new Date(b.start));\n\n// Take top slots\nconst topSlots = allSlots.slice(0, maxSlotsToOffer);\n\nif (topSlots.length === 0) {\n  return {\n    json: {\n      hasAvailability: false,\n      speakableSlots: null,\n      rawSlots: [],\n      customerData: customerData,\n      errorMessage: \"No diagnostic appointments available in the next 48 hours.\",\n      fallbackAction: 'CALLBACK_PROMISE'\n    }\n  };\n}\n\n// Build speakable string with natural language\nconst speakableParts = topSlots.map((slot, index) => {\n  const formatted = formatTimeSlot(slot.start);\n  const relative = getRelativeDay(slot.start);\n  \n  if (relative) {\n    const time = formatted.split(' at ')[1];\n    return `${relative} at ${time}`;\n  }\n  return formatted;\n});\n\nlet speakableString;\nif (speakableParts.length === 1) {\n  speakableString = `I have an opening ${speakableParts[0]}.`;\n} else if (speakableParts.length === 2) {\n  speakableString = `I have openings ${speakableParts[0]} or ${speakableParts[1]}.`;\n} else {\n  const lastSlot = speakableParts.pop();\n  speakableString = `I have openings ${speakableParts.join(', ')}, or ${lastSlot}.`;\n}\n\n// Customize fee messaging based on customer tier\nlet feeMessage;\nswitch (customerData.valueTier) {\n  case 'VIP':\n    feeMessage = `As a valued customer, the diagnostic fee is just $${diagnosticFee}, and we'll apply that toward any repair.`;\n    break;\n  case 'RETURNING':\n    feeMessage = `The diagnostic fee is $${diagnosticFee}, and that gets our best technician to your door with a fully-stocked truck.`;\n    break;\n  case 'NEW':\n    feeMessage = `The diagnostic fee is $${diagnosticFee}, which ensures a licensed technician arrives ready to diagnose and likely fix the issue on the spot.`;\n    break;\n  default:\n    feeMessage = `The diagnostic fee is $${diagnosticFee}, and that gets a technician to your door with everything needed to fix most issues on the spot.`;\n}\n\nspeakableString += ` ${feeMessage} Which time works best for you?`;\n\n// Build slot details for booking\nconst slotsOffered = topSlots.map((s, idx) => ({\n  index: idx + 1,\n  displayTime: formatTimeSlot(s.start),\n  relativeDay: getRelativeDay(s.start),\n  isoStart: s.start,\n  isoEnd: s.end,\n  technicianId: s.technicianId,\n  technicianName: s.technicianName,\n  arrivalWindow: {\n    start: s.arrivalWindowStart,\n    end: s.arrivalWindowEnd\n  }\n}));\n\nreturn {\n  json: {\n    hasAvailability: true,\n    speakableSlots: speakableString,\n    slotsOffered: slotsOffered,\n    totalAvailableSlots: allSlots.length,\n    allSlots: allSlots,\n    customerData: customerData,\n    diagnosticFee: diagnosticFee\n  }\n};"
+      },
+      "id": "transform-availability",
+      "name": "Transform to Speakable Slots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-slots",
+              "leftValue": "={{ $json.hasAvailability }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "availability-check",
+      "name": "Slots Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2230, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/bookings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Auth Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source\": \"Harmonia AI Receptionist\",\n  \"customerId\": {{ $('Transform to Speakable Slots').item.json.customerData.customerId }},\n  \"locationId\": {{ $('Transform to Speakable Slots').item.json.customerData.locationId || 'null' }},\n  \"jobTypeId\": {{ $env.DIAGNOSTIC_JOB_TYPE_ID }},\n  \"start\": \"{{ $('Transform to Speakable Slots').item.json.slotsOffered[0].isoStart }}\",\n  \"end\": \"{{ $('Transform to Speakable Slots').item.json.slotsOffered[0].isoEnd }}\",\n  \"summary\": \"{{ $('Vapi Webhook Trigger').item.json.extracted_data.issue_description || 'HVAC Diagnostic - AI Booked' }}\",\n  \"isFirstTimeClient\": {{ $('Transform to Speakable Slots').item.json.customerData.isNewCustomer }}\n}",
+        "options": {}
+      },
+      "id": "create-booking",
+      "name": "Create Booking",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2450, 200]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $('Transform to Speakable Slots').item.json.customerData.callerPhone }}",
+        "message": "=Confirmed! {{ $env.COMPANY_NAME }} appointment booked for {{ $('Transform to Speakable Slots').item.json.slotsOffered[0].displayTime }}. A technician will arrive in a fully-stocked truck. Reply HELP for assistance or STOP to opt out."
+      },
+      "id": "confirmation-sms",
+      "name": "Send Confirmation SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2670, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"action\": \"speak_and_end\",\n  \"message\": \"Perfect! I've booked your diagnostic appointment for {{ $('Transform to Speakable Slots').item.json.slotsOffered[0].displayTime }}. A technician will arrive in a fully-stocked truck ready to diagnose and likely fix the issue on the spot. You'll receive a confirmation text shortly. Is there anything else I can help you with today?\",\n  \"booking_id\": \"{{ $('Create Booking').item.json.id }}\",\n  \"customer_id\": \"{{ $('Transform to Speakable Slots').item.json.customerData.customerId }}\",\n  \"status\": \"success\",\n  \"slot_booked\": {\n    \"start\": \"{{ $('Transform to Speakable Slots').item.json.slotsOffered[0].isoStart }}\",\n    \"display\": \"{{ $('Transform to Speakable Slots').item.json.slotsOffered[0].displayTime }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond to Vapi - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2890, 200]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $json.customerData.callerPhone }}",
+        "message": "=Hi {{ $json.customerData.firstName }}, we're currently experiencing high demand and are fully booked for the next 48 hours. A manager from {{ $env.COMPANY_NAME }} will call you back within 10 minutes to find a solution. We appreciate your patience!"
+      },
+      "id": "no-slots-sms-customer",
+      "name": "SMS Customer - No Availability",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=🚨 CALLBACK NEEDED (10 min)\n\nCaller: {{ $json.customerData.customerName }}\nPhone: {{ $json.customerData.callerPhone }}\nTier: {{ $json.customerData.valueTier }}\nIssue: {{ $('Vapi Webhook Trigger').item.json.extracted_data.issue_description || 'HVAC Issue' }}\n\n⚠️ No slots available. AI promised callback in 10 min.\n\nCustomer History:\n- Jobs: {{ $json.customerData.customerHistory.totalJobs }}\n- Membership: {{ $json.customerData.customerHistory.membershipStatus }}"
+      },
+      "id": "manager-alert",
+      "name": "SMS Manager - Callback Alert",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2670, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"action\": \"speak_and_end\",\n  \"message\": \"I apologize, but we're fully booked for the next 48 hours due to high demand. I've just sent you a text confirmation, and one of our managers will personally call you back within 10 minutes to find a solution for you. We really appreciate your patience. Is there anything else I should note for the manager?\",\n  \"status\": \"no_availability\",\n  \"callback_promised\": true,\n  \"callback_deadline_minutes\": 10,\n  \"customer_id\": \"{{ $json.customerData.customerId }}\"\n}",
+        "options": {}
+      },
+      "id": "respond-no-slots",
+      "name": "Respond to Vapi - No Slots",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2890, 400]
+    }
+  ],
+  "connections": {
+    "Vapi Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get ST Auth Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ST Auth Token": {
+      "main": [
+        [
+          {
+            "node": "Lookup Customer by Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Customer by Phone": {
+      "main": [
+        [
+          {
+            "node": "Customer Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Customer Exists?": {
+      "main": [
+        [
+          {
+            "node": "Extract Existing Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Existing Customer": {
+      "main": [
+        [
+          {
+            "node": "Merge Customer Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Customer": {
+      "main": [
+        [
+          {
+            "node": "Extract New Customer ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract New Customer ID": {
+      "main": [
+        [
+          {
+            "node": "Merge Customer Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Customer Data": {
+      "main": [
+        [
+          {
+            "node": "Get Availability Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Availability Slots": {
+      "main": [
+        [
+          {
+            "node": "Transform to Speakable Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform to Speakable Slots": {
+      "main": [
+        [
+          {
+            "node": "Slots Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slots Available?": {
+      "main": [
+        [
+          {
+            "node": "Create Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SMS Customer - No Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Booking": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation SMS": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS Customer - No Availability": {
+      "main": [
+        [
+          {
+            "node": "SMS Manager - Callback Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS Manager - Callback Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond to Vapi - No Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "harmonia",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "name": "hvac",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "name": "inbound",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "google-sheets": {
+      "command": "/Users/labster/.local/bin/uvx",
+      "args": ["mcp-google-sheets@latest"],
+      "env": {
+        "CREDENTIALS_PATH": "/Users/labster/.config/google-sheets-credentials.json",
+        "TOKEN_PATH": "/Users/labster/.config/google-sheets-token.json"
+      }
+    },
+    "n8n-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "supergateway",
+        "--streamableHttp",
+        "https://infoharmonia.app.n8n.cloud/mcp-server/http",
+        "--header",
+        "authorization:Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4YmJiMTgzZi02ZmMzLTRlMjMtYjcyMi1lNmE3ODg3MzFmZTkiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6IjM2NjkwMjI0LWFhMzMtNDUyMC04NWIyLTAxOWYwNWMwNTNkOSIsImlhdCI6MTc3MjMzODk0Mn0.04xlm1q748jLG4JzpHEpPU9elWvlsv5cdT5sL1ndIGM"
+      ]
+    }
+  }
+}

@@ -1,0 +1,208 @@
+{
+  "name": "Podcast Transcriber → Sheets + LinkedIn & X",
+  "id": "KwMgeDw4JvIQTf9N",
+  "nodes": [
+    {
+      "id": "rss-trigger-01",
+      "name": "RSS Feed Trigger",
+      "type": "n8n-nodes-base.rssFeedReadTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "feedUrl": "https://feeds.megaphone.fm/HS2300184645"
+      }
+    },
+    {
+      "id": "http-download-02",
+      "name": "Download Episode Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [260, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.enclosure.url }}",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-split-03",
+      "name": "Check Size & Split Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 0],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split audio into <25MB chunks for OpenAI Whisper API limit\nconst items = $input.all();\nconst MAX_CHUNK = 24 * 1024 * 1024; // 24MB safe limit\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const buffer = await this.helpers.getBinaryDataBuffer(i, 'data');\n  \n  if (buffer.length <= MAX_CHUNK) {\n    // Small enough \u2014 pass through as single chunk\n    results.push({\n      json: { chunkIndex: 0, totalChunks: 1 },\n      binary: items[i].binary\n    });\n    continue;\n  }\n  \n  // Split into multiple chunks\n  const totalChunks = Math.ceil(buffer.length / MAX_CHUNK);\n  for (let c = 0; c < totalChunks; c++) {\n    const start = c * MAX_CHUNK;\n    const end = Math.min(start + MAX_CHUNK, buffer.length);\n    const chunk = Buffer.from(buffer.subarray(start, end));\n    results.push({\n      json: { chunkIndex: c, totalChunks },\n      binary: {\n        data: await this.helpers.prepareBinaryData(\n          chunk, 'chunk_' + c + '.mp3', 'audio/mpeg'\n        )\n      }\n    });\n  }\n}\n\nreturn results;"
+      }
+    },
+    {
+      "id": "openai-transcribe-04",
+      "name": "Transcribe with Whisper",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [780, 0],
+      "parameters": {
+        "resource": "audio",
+        "operation": "transcribe",
+        "binaryPropertyName": "data",
+        "options": {
+          "language": "en"
+        }
+      }
+    },
+    {
+      "id": "code-merge-05",
+      "name": "Merge Transcripts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 0],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Merge transcript chunks and attach episode metadata\nconst items = $input.all();\nconst rssData = $('RSS Feed Trigger').first().json;\n\n// Chunks arrive in order \u2014 join them\nconst transcript = items\n  .map(item => item.json.text || '')\n  .join('\\n\\n')\n  .trim();\n\nreturn [{\n  json: {\n    title: rssData.title || 'Untitled Episode',\n    date: rssData.isoDate || rssData.pubDate || new Date().toISOString(),\n    link: rssData.link || '',\n    transcript: transcript,\n    wordCount: transcript.split(/\\s+/).filter(w => w.length > 0).length,\n    transcribedAt: new Date().toISOString()\n  }\n}];"
+      }
+    },
+    {
+      "id": "gsheets-append-06",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1300, 0],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "claude-linkedin-07",
+      "name": "Claude: LinkedIn Copy",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [1560, -180],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": { "mode": "id", "value": "claude-sonnet-4-5-20250929" },
+        "messages": {
+          "values": [{
+            "content": "={{ \"Write a LinkedIn post about this podcast episode. Extract 2-3 key insights from the discussion.\\n\\nTitle: \" + $json.title + \"\\nDate: \" + $json.date + \"\\nEpisode link: \" + $json.link + \"\\n\\nTranscript excerpt:\\n\" + $json.transcript.slice(0, 15000) }}",
+            "role": "user"
+          }]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You are a professional thought leader writing LinkedIn posts about top-tier podcast episodes (Dwarkesh Patel, All-In, etc.). Write in a professional yet conversational tone. Structure the post with:\n- A compelling hook (first line that grabs attention)\n- 2-3 key insights or takeaways from the episode\n- A brief personal reflection or call-to-action\n- Include the episode link naturally in the text\n- End with 3-5 relevant hashtags\n\nKeep the post between 150-250 words. Use line breaks for readability. Do NOT overuse emojis. Write as someone genuinely excited about the ideas discussed. Output ONLY the post text, nothing else.",
+          "maxTokens": 2048,
+          "temperature": 0.7
+        }
+      }
+    },
+    {
+      "id": "claude-x-08",
+      "name": "Claude: X Copy",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [1560, 180],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": { "mode": "id", "value": "claude-sonnet-4-5-20250929" },
+        "messages": {
+          "values": [{
+            "content": "={{ \"Write a single tweet about this podcast episode. Include the link at the end.\\n\\nTitle: \" + $json.title + \"\\nLink: \" + $json.link + \"\\n\\nKey content:\\n\" + $json.transcript.slice(0, 5000) }}",
+            "role": "user"
+          }]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You are a sharp, concise writer for X (Twitter). Write a single tweet about a podcast episode. Rules:\n- Maximum 280 characters total INCLUDING the episode link\n- Be direct \u2014 one punchy takeaway or hot take\n- No hashtags unless they genuinely add value\n- Place the episode link at the very end\n- Sound like a real person, not a brand\n\nOutput ONLY the tweet text, nothing else.",
+          "maxTokens": 256,
+          "temperature": 0.8
+        }
+      }
+    },
+    {
+      "id": "post-linkedin-09",
+      "name": "Post to LinkedIn",
+      "type": "n8n-nodes-base.linkedIn",
+      "typeVersion": 1,
+      "position": [1820, -180],
+      "parameters": {
+        "resource": "post",
+        "operation": "create",
+        "postAs": "person",
+        "person": "",
+        "text": "={{ $json.text }}",
+        "shareMediaCategory": "NONE",
+        "additionalFields": {
+          "visibility": "PUBLIC"
+        }
+      }
+    },
+    {
+      "id": "post-x-10",
+      "name": "Post to X",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [1820, 180],
+      "parameters": {
+        "resource": "tweet",
+        "operation": "create",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      }
+    }
+  ],
+  "connections": {
+    "RSS Feed Trigger": {
+      "main": [[{"node": "Download Episode Audio", "type": "main", "index": 0}]]
+    },
+    "Download Episode Audio": {
+      "main": [[{"node": "Check Size & Split Audio", "type": "main", "index": 0}]]
+    },
+    "Check Size & Split Audio": {
+      "main": [[{"node": "Transcribe with Whisper", "type": "main", "index": 0}]]
+    },
+    "Transcribe with Whisper": {
+      "main": [[{"node": "Merge Transcripts", "type": "main", "index": 0}]]
+    },
+    "Merge Transcripts": {
+      "main": [[{"node": "Save to Google Sheets", "type": "main", "index": 0}]]
+    },
+    "Save to Google Sheets": {
+      "main": [[
+        {"node": "Claude: LinkedIn Copy", "type": "main", "index": 0},
+        {"node": "Claude: X Copy", "type": "main", "index": 0}
+      ]]
+    },
+    "Claude: LinkedIn Copy": {
+      "main": [[{"node": "Post to LinkedIn", "type": "main", "index": 0}]]
+    },
+    "Claude: X Copy": {
+      "main": [[{"node": "Post to X", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

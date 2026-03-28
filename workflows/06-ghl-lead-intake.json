@@ -1,0 +1,995 @@
+{
+  "name": "Harmonia - GHL Lead Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ghl-lead-intake",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "ghl-webhook",
+      "name": "GHL Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "ghl-schedule",
+      "name": "Poll Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 700]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GHL_BASE_URL }}/contacts/?locationId={{ $env.GHL_LOCATION_ID }}&limit=20&query=&tag=new-lead",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ghl-poll-contacts",
+      "name": "Poll GHL Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter out contacts that already have the harmonia-processed tag\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const contacts = item.json.contacts || item.json.body?.contacts || [item.json];\n  for (const contact of contacts) {\n    const tags = contact.tags || [];\n    if (!tags.includes('harmonia-processed')) {\n      results.push({ json: { contact } });\n    }\n  }\n}\n\nif (results.length === 0) {\n  results.push({ json: { _empty: true } });\n}\n\nreturn results;"
+      },
+      "id": "filter-already-processed",
+      "name": "Filter Already Processed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 700]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-contact",
+              "leftValue": "={{ $json._empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-new-leads",
+      "name": "Has New Leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [910, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HARMONIA GHL CONTACT NORMALIZER\n// Maps GHL contact fields to Harmonia unified schema\n// ============================================================\n\nconst input = $input.first().json;\nconst contact = input.body?.contact || input.contact || input;\n\nlet phone = contact.phone || contact.phoneNumber || '';\nif (phone) {\n  phone = phone.replace(/\\D/g, '');\n  if (phone.length === 10) phone = '+1' + phone;\n  else if (phone.length === 11 && phone.startsWith('1')) phone = '+' + phone;\n  else if (phone.length > 0 && !phone.startsWith('+')) phone = '+' + phone;\n}\n\nconst firstName = contact.firstName || contact.first_name || '';\nconst lastName = contact.lastName || contact.last_name || '';\nconst fullName = contact.name || `${firstName} ${lastName}`.trim();\nconst address = contact.address1 || contact.address || '';\nconst city = contact.city || '';\nconst state = contact.state || '';\nconst zip = contact.postalCode || contact.postal_code || '';\n\nlet serviceNeeded = '', notes = '';\nconst customFields = contact.customFields || contact.customField || [];\nif (Array.isArray(customFields)) {\n  for (const cf of customFields) {\n    const fn = (cf.field_name || cf.name || cf.key || '').toLowerCase();\n    const fv = cf.value || cf.field_value || '';\n    if (fn.includes('service') || fn.includes('issue')) serviceNeeded = fv;\n    if (fn.includes('note') || fn.includes('message')) notes = fv;\n  }\n}\n\nconst allText = `${notes} ${serviceNeeded}`.toLowerCase();\nconst emergencyKeywords = ['no heat', 'no cooling', 'no ac', 'not working', 'emergency', 'urgent', 'freezing', 'gas smell', 'water leak', 'smoke'];\nconst urgency = emergencyKeywords.some(kw => allText.includes(kw)) ? 'emergency' : 'normal';\n\nreturn { json: {\n  name: fullName || `${firstName} ${lastName}`.trim(),\n  firstName: firstName || (fullName ? fullName.split(/\\s+/)[0] : ''),\n  lastName: lastName || (fullName ? fullName.split(/\\s+/).slice(1).join(' ') : ''),\n  phone, email: contact.email || '',\n  address: [address, city, state, zip].filter(Boolean).join(', ') || address,\n  city, state, zip,\n  notes: notes || contact.notes || '',\n  serviceType: serviceNeeded,\n  urgency, source: 'ghl_crm',\n  sourceDetails: { ghlContactId: contact.id || contact.contactId || null, ghlLocationId: contact.locationId || $env.GHL_LOCATION_ID, tags: contact.tags || [] },\n  rawPayload: contact, receivedAt: new Date().toISOString()\n}};"
+      },
+      "id": "normalize-ghl",
+      "name": "Normalize GHL Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HARMONIA LEAD SCORING ENGINE\n// Assigns value 1-100 based on multiple weighted factors\n// ============================================================\n\nconst lead = $input.first().json;\n\n// Base score\nlet score = 50;\nconst factors = {};\n\nconst notesLower = (lead.notes || '').toLowerCase();\nconst serviceLower = (lead.serviceType || '').toLowerCase();\n\n// ============================================================\n// FACTOR 1: HOMEOWNER STATUS (+20 / -10)\n// ============================================================\nconst homeownerKeywords = ['owner', 'homeowner', 'my house', 'my home', 'we own', 'i own', 'our home'];\nconst renterKeywords = ['renting', 'tenant', 'landlord', 'apartment', 'lease', 'property manager'];\n\nconst isHomeowner = homeownerKeywords.some(kw => notesLower.includes(kw));\nconst isRenter = renterKeywords.some(kw => notesLower.includes(kw));\n\nif (isHomeowner) {\n  score += 20;\n  factors.homeowner = { bonus: 20, detected: 'homeowner' };\n} else if (isRenter) {\n  score -= 10;\n  factors.homeowner = { bonus: -10, detected: 'renter' };\n} else {\n  factors.homeowner = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 2: SYSTEM AGE (+15 for old systems = replacement potential)\n// ============================================================\nconst ageKeywords = ['old', 'years old', '10 year', '15 year', '20 year', 'original', 'builder grade', 'ancient', 'outdated'];\nconst hasOldSystem = ageKeywords.some(kw => notesLower.includes(kw));\n\nif (hasOldSystem) {\n  score += 15;\n  factors.systemAge = { bonus: 15, detected: 'old_system' };\n} else {\n  factors.systemAge = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 3: EMERGENCY (+25 - highest urgency)\n// ============================================================\nconst emergencyKeywords = [\n  'no heat', 'no cooling', 'no ac', 'not working', 'broken', 'stopped working',\n  'emergency', 'urgent', 'asap', 'today', 'right now', 'immediately',\n  'freezing', 'sweating', 'too hot', 'too cold',\n  'water leak', 'gas smell', 'smoke', 'burning smell', 'electrical smell'\n];\n\nconst isEmergency = emergencyKeywords.some(kw => notesLower.includes(kw)) || lead.urgency === 'emergency';\n\nif (isEmergency) {\n  score += 25;\n  factors.emergency = { bonus: 25, detected: true };\n} else {\n  factors.emergency = { bonus: 0, detected: false };\n}\n\n// ============================================================\n// FACTOR 4: SERVICE TYPE VALUE (+5 to +20)\n// ============================================================\nconst highValueServices = ['replacement', 'install', 'new unit', 'new system', 'upgrade', 'change out', 'changeout'];\nconst mediumValueServices = ['repair', 'fix', 'diagnostic', 'not cooling', 'not heating'];\nconst lowValueServices = ['tune up', 'tune-up', 'maintenance', 'cleaning', 'filter'];\n\nconst combinedService = notesLower + ' ' + serviceLower;\n\nif (highValueServices.some(kw => combinedService.includes(kw))) {\n  score += 20;\n  factors.serviceValue = { bonus: 20, detected: 'high_value' };\n} else if (mediumValueServices.some(kw => combinedService.includes(kw))) {\n  score += 10;\n  factors.serviceValue = { bonus: 10, detected: 'medium_value' };\n} else if (lowValueServices.some(kw => combinedService.includes(kw))) {\n  score += 5;\n  factors.serviceValue = { bonus: 5, detected: 'low_value' };\n} else {\n  factors.serviceValue = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 5: TIME OF DAY (+5 for business hours)\n// ============================================================\nconst hour = new Date().getHours();\nconst isBusinessHours = hour >= 8 && hour <= 18;\n\nif (isBusinessHours) {\n  score += 5;\n  factors.timing = { bonus: 5, detected: 'business_hours' };\n} else {\n  factors.timing = { bonus: 0, detected: 'after_hours' };\n}\n\n// ============================================================\n// FACTOR 6: LEAD SOURCE QUALITY\n// ============================================================\nconst sourceScores = {\n  'google_lsa': 15,\n  'google_ads': 12,\n  'ghl_crm': 10,\n  'elementor_form': 10,\n  'facebook_lead': 5,\n  'referral': 20,\n  'webhook_generic': 5\n};\n\nconst sourceBonus = sourceScores[lead.source] || 5;\nscore += sourceBonus;\nfactors.source = { bonus: sourceBonus, detected: lead.source };\n\n// ============================================================\n// FACTOR 7: CONTACT INFO COMPLETENESS (+10)\n// ============================================================\nconst hasPhone = lead.phone && lead.phone.length >= 10;\nconst hasEmail = lead.email && lead.email.includes('@');\nconst hasAddress = lead.address && lead.address.length > 10;\n\nlet contactBonus = 0;\nif (hasPhone && hasEmail && hasAddress) {\n  contactBonus = 10;\n} else if (hasPhone && hasAddress) {\n  contactBonus = 7;\n} else if (hasPhone) {\n  contactBonus = 3;\n}\n\nscore += contactBonus;\nfactors.contactInfo = {\n  bonus: contactBonus,\n  hasPhone: hasPhone,\n  hasEmail: hasEmail,\n  hasAddress: hasAddress\n};\n\n// ============================================================\n// NORMALIZE & CLASSIFY\n// ============================================================\n\n// Cap score at 1-100\nscore = Math.max(1, Math.min(100, Math.round(score)));\n\n// Determine tier\nlet tier, tierDescription;\nif (score >= 85) {\n  tier = 'HOT';\n  tierDescription = 'High-value lead, immediate action required';\n} else if (score >= 70) {\n  tier = 'WARM';\n  tierDescription = 'Good lead, prioritize follow-up';\n} else if (score >= 50) {\n  tier = 'COOL';\n  tierDescription = 'Standard lead, normal follow-up';\n} else {\n  tier = 'COLD';\n  tierDescription = 'Low-value lead, nurture sequence';\n}\n\n// Determine action\nlet recommendedAction;\nif (isEmergency) {\n  recommendedAction = 'IMMEDIATE_CALL';\n} else if (tier === 'HOT') {\n  recommendedAction = 'PRIORITY_CALL';\n} else if (tier === 'WARM') {\n  recommendedAction = 'STANDARD_CALL';\n} else {\n  recommendedAction = 'SMS_FIRST';\n}\n\nreturn {\n  json: {\n    ...lead,\n    scoring: {\n      score: score,\n      tier: tier,\n      tierDescription: tierDescription,\n      isEmergency: isEmergency,\n      recommendedAction: recommendedAction,\n      factors: factors,\n      calculatedAt: new Date().toISOString()\n    }\n  }\n};"
+      },
+      "id": "lead-score",
+      "name": "Calculate Lead Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "={Phone} = '{{ $json.phone }}'"
+      },
+      "id": "airtable-check-dup",
+      "name": "Check Duplicate in Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-duplicate",
+              "leftValue": "={{ $json.records?.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "duplicate-check",
+      "name": "Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Check Duplicate in Airtable').item.json.records[0].id }}",
+        "fields": {
+          "Name": "={{ $('Calculate Lead Score').item.json.name }}",
+          "Phone": "={{ $('Calculate Lead Score').item.json.phone }}",
+          "Email": "={{ $('Calculate Lead Score').item.json.email }}",
+          "Address": "={{ $('Calculate Lead Score').item.json.address }}",
+          "Notes": "={{ $('Calculate Lead Score').item.json.notes }}",
+          "Service Type": "={{ $('Calculate Lead Score').item.json.serviceType }}",
+          "Source": "={{ $('Calculate Lead Score').item.json.source }}",
+          "Lead Score": "={{ $('Calculate Lead Score').item.json.scoring.score }}",
+          "Tier": "={{ $('Calculate Lead Score').item.json.scoring.tier }}",
+          "Is Emergency": "={{ $('Calculate Lead Score').item.json.scoring.isEmergency }}",
+          "Last Updated": "={{ $now.toISO() }}"
+        }
+      },
+      "id": "airtable-update-lead",
+      "name": "Update Airtable Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "fields": {
+          "Name": "={{ $('Calculate Lead Score').item.json.name }}",
+          "Phone": "={{ $('Calculate Lead Score').item.json.phone }}",
+          "Email": "={{ $('Calculate Lead Score').item.json.email }}",
+          "Address": "={{ $('Calculate Lead Score').item.json.address }}",
+          "City": "={{ $('Calculate Lead Score').item.json.city }}",
+          "State": "={{ $('Calculate Lead Score').item.json.state }}",
+          "Zip": "={{ $('Calculate Lead Score').item.json.zip }}",
+          "Notes": "={{ $('Calculate Lead Score').item.json.notes }}",
+          "Service Type": "={{ $('Calculate Lead Score').item.json.serviceType }}",
+          "Source": "={{ $('Calculate Lead Score').item.json.source }}",
+          "Lead Score": "={{ $('Calculate Lead Score').item.json.scoring.score }}",
+          "Tier": "={{ $('Calculate Lead Score').item.json.scoring.tier }}",
+          "Is Emergency": "={{ $('Calculate Lead Score').item.json.scoring.isEmergency }}",
+          "GHL Contact ID": "={{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}",
+          "Created At": "={{ $now.toISO() }}"
+        }
+      },
+      "id": "airtable-create-lead",
+      "name": "Create Airtable Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-airtable",
+      "name": "Merge Airtable Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-emergency",
+              "leftValue": "={{ $('Calculate Lead Score').item.json.scoring.isEmergency }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "emergency-check",
+      "name": "Emergency?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.TECH_LEAD_PHONE }}",
+        "message": "=\ud83d\udea8 EMERGENCY LEAD \ud83d\udea8\n\nScore: {{ $('Calculate Lead Score').item.json.scoring.score }}/100 ({{ $('Calculate Lead Score').item.json.scoring.tier }})\n\n\ud83d\udc64 {{ $('Calculate Lead Score').item.json.name }}\n\ud83d\udcde {{ $('Calculate Lead Score').item.json.phone }}\n\ud83d\udccd {{ $('Calculate Lead Score').item.json.address || 'No address' }}\n\n\ud83d\udd27 Issue: {{ $('Calculate Lead Score').item.json.notes || $('Calculate Lead Score').item.json.serviceType || 'Not specified' }}\n\n\ud83d\udcca Source: {{ $('Calculate Lead Score').item.json.source }}\n\n\u26a1 Vapi is calling them NOW.\nBe ready for immediate dispatch!"
+      },
+      "id": "emergency-sms",
+      "name": "SMS Tech Lead",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2670, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vapi.ai/call/phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.VAPI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"assistantId\": \"{{ $env.VAPI_EMERGENCY_ASSISTANT_ID }}\",\n  \"phoneNumberId\": \"{{ $env.VAPI_PHONE_NUMBER_ID }}\",\n  \"customer\": {\n    \"number\": \"{{ $('Calculate Lead Score').item.json.phone }}\",\n    \"name\": \"{{ $('Calculate Lead Score').item.json.name }}\"\n  },\n  \"assistantOverrides\": {\n    \"firstMessage\": \"Hi {{ $('Calculate Lead Score').item.json.firstName || 'there' }}, this is Sam from {{ $env.COMPANY_NAME }}. I can see you have an urgent HVAC situation and I want to get you help right away. Can you tell me what's happening?\",\n    \"metadata\": {\n      \"leadScore\": {{ $('Calculate Lead Score').item.json.scoring.score }},\n      \"leadTier\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\",\n      \"isEmergency\": true,\n      \"source\": \"{{ $('Calculate Lead Score').item.json.source }}\",\n      \"ghlContactId\": \"{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}\",\n      \"originalNotes\": \"{{ $('Calculate Lead Score').item.json.notes }}\"\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "vapi-emergency-call",
+      "name": "Vapi Emergency Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 250]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "tier-check",
+              "leftValue": "={{ $('Calculate Lead Score').item.json.scoring.score }}",
+              "rightValue": 70,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "tier-check",
+      "name": "Tier Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2670, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vapi.ai/call/phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.VAPI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"assistantId\": \"{{ $env.VAPI_BOOKING_ASSISTANT_ID }}\",\n  \"phoneNumberId\": \"{{ $env.VAPI_PHONE_NUMBER_ID }}\",\n  \"customer\": {\n    \"number\": \"{{ $('Calculate Lead Score').item.json.phone }}\",\n    \"name\": \"{{ $('Calculate Lead Score').item.json.name }}\"\n  },\n  \"assistantOverrides\": {\n    \"firstMessage\": \"Hi {{ $('Calculate Lead Score').item.json.firstName || 'there' }}, this is Sam from {{ $env.COMPANY_NAME }}! I saw you just reached out about your HVAC system and I wanted to personally help you get scheduled. Do you have a quick moment?\",\n    \"metadata\": {\n      \"leadScore\": {{ $('Calculate Lead Score').item.json.scoring.score }},\n      \"leadTier\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\",\n      \"isEmergency\": false,\n      \"source\": \"{{ $('Calculate Lead Score').item.json.source }}\",\n      \"ghlContactId\": \"{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}\",\n      \"originalNotes\": \"{{ $('Calculate Lead Score').item.json.notes }}\"\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "vapi-routine-call",
+      "name": "Vapi Routine Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2890, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-all-paths",
+      "name": "Merge All Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3110, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://auth.servicetitan.io/connect/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $env.ST_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.ST_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "st-auth",
+      "name": "Get ST Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3330, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/leads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $('Calculate Lead Score').item.json.name || 'Unknown' }}\",\n  \"type\": \"Residential\",\n  \"status\": \"Open\",\n  \"source\": \"Harmonia - {{ $('Calculate Lead Score').item.json.source }}\",\n  \"priority\": \"{{ $('Calculate Lead Score').item.json.scoring.isEmergency ? 'Urgent' : 'Normal' }}\",\n  \"address\": {\n    \"street\": \"{{ $('Calculate Lead Score').item.json.address || '' }}\",\n    \"city\": \"{{ $('Calculate Lead Score').item.json.city || '' }}\",\n    \"state\": \"{{ $('Calculate Lead Score').item.json.state || '' }}\",\n    \"zip\": \"{{ $('Calculate Lead Score').item.json.zip || '' }}\"\n  },\n  \"notes\": \"HARMONIA SCORE: {{ $('Calculate Lead Score').item.json.scoring.score }}/100 ({{ $('Calculate Lead Score').item.json.scoring.tier }})\\n\\nNotes: {{ $('Calculate Lead Score').item.json.notes }}\\nSource: {{ $('Calculate Lead Score').item.json.source }}\\nGHL Contact: {{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "st-create-lead",
+      "name": "Create ST Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3550, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GHL_BASE_URL }}/contacts/{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}/tags",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"tags\": [\"harmonia-processed\", \"scored-{{ $('Calculate Lead Score').item.json.scoring.tier }}\"]\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ghl-update-tags",
+      "name": "Update GHL Tags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3770, 300]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.GHL_BASE_URL }}/contacts/{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"customFields\": [\n    {\n      \"key\": \"harmonia_lead_score\",\n      \"value\": \"{{ $('Calculate Lead Score').item.json.scoring.score }}\"\n    },\n    {\n      \"key\": \"harmonia_lead_tier\",\n      \"value\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\"\n    },\n    {\n      \"key\": \"harmonia_airtable_id\",\n      \"value\": \"{{ $('Merge Airtable Results').item.json.id || $('Merge Airtable Results').item.json.records?.[0]?.id || '' }}\"\n    },\n    {\n      \"key\": \"harmonia_st_id\",\n      \"value\": \"{{ $('Create ST Lead').item.json.id || '' }}\"\n    },\n    {\n      \"key\": \"harmonia_processed_at\",\n      \"value\": \"{{ $now.toISO() }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ghl-update-custom-fields",
+      "name": "Update GHL Custom Fields",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3990, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Merge Airtable Results').item.json.id || $('Merge Airtable Results').item.json.records?.[0]?.id || '' }}",
+        "fields": {
+          "GHL Contact ID": "={{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}",
+          "ST Lead ID": "={{ $('Create ST Lead').item.json.id || '' }}",
+          "Last Updated": "={{ $now.toISO() }}"
+        }
+      },
+      "id": "airtable-update-ghl-id",
+      "name": "Update Airtable GHL ID",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [4210, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"stLeadId\": \"{{ $('Create ST Lead').item.json.id }}\",\n  \"scoring\": {\n    \"score\": {{ $('Calculate Lead Score').item.json.scoring.score }},\n    \"tier\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\",\n    \"isEmergency\": {{ $('Calculate Lead Score').item.json.scoring.isEmergency }}\n  },\n  \"ghlContactId\": \"{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}\",\n  \"vapiCallInitiated\": true,\n  \"crmSynced\": true\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4430, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dead Letter Queue - Capture failed syncs for manual processing\nconst leadData = $('Calculate Lead Score').first().json;\nconst error = $input.first().json;\n\nreturn {\n  json: {\n    status: 'SYNC_FAILED',\n    leadData: {\n      name: leadData.name,\n      phone: leadData.phone,\n      email: leadData.email,\n      address: leadData.address,\n      notes: leadData.notes,\n      source: leadData.source,\n      score: leadData.scoring?.score,\n      tier: leadData.scoring?.tier,\n      isEmergency: leadData.scoring?.isEmergency,\n      ghlContactId: leadData.sourceDetails?.ghlContactId\n    },\n    error: {\n      message: error.message || error.error || 'Unknown API error',\n      statusCode: error.statusCode || error.code || null,\n      body: error.body || null\n    },\n    metadata: {\n      failedAt: new Date().toISOString(),\n      vapiCallInitiated: true,\n      requiresManualEntry: true\n    }\n  }\n};"
+      },
+      "id": "dead-letter",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3770, 550]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.DEAD_LETTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Failed Syncs",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.metadata.failedAt }}",
+            "Name": "={{ $json.leadData.name }}",
+            "Phone": "={{ $json.leadData.phone }}",
+            "Email": "={{ $json.leadData.email }}",
+            "Address": "={{ $json.leadData.address }}",
+            "Notes": "={{ $json.leadData.notes }}",
+            "Source": "={{ $json.leadData.source }}",
+            "Score": "={{ $json.leadData.score }}",
+            "Tier": "={{ $json.leadData.tier }}",
+            "Emergency": "={{ $json.leadData.isEmergency }}",
+            "GHL Contact ID": "={{ $json.leadData.ghlContactId }}",
+            "Error": "={{ $json.error.message }}",
+            "Status": "Pending Manual Entry"
+          }
+        }
+      },
+      "id": "log-dead-letter",
+      "name": "Log to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [3990, 550]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=\u26a0\ufe0f LEAD SYNC FAILED\n\n\ud83d\udc64 {{ $json.leadData.name }}\n\ud83d\udcde {{ $json.leadData.phone }}\n\ud83d\udcca Score: {{ $json.leadData.score }} ({{ $json.leadData.tier }})\n\ud83c\udfaf GHL: {{ $json.leadData.ghlContactId }}\n\n\u274c Error: {{ $json.error.message }}\n\n\u2705 Vapi DID call them\n\u26a0\ufe0f Manual CRM entry required\n\nCheck Dead Letter sheet."
+      },
+      "id": "alert-sync-failure",
+      "name": "Alert Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [4210, 550]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"partial_success\",\n  \"message\": \"Lead captured, CRM sync failed - logged for manual entry\",\n  \"scoring\": {\n    \"score\": {{ $('Calculate Lead Score').item.json.scoring.score }},\n    \"tier\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\"\n  },\n  \"ghlContactId\": \"{{ $('Calculate Lead Score').item.json.sourceDetails.ghlContactId }}\",\n  \"vapiCallInitiated\": true,\n  \"crmSynced\": false\n}",
+        "options": {}
+      },
+      "id": "respond-partial",
+      "name": "Respond Partial",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [4430, 550]
+    }
+  ],
+  "connections": {
+    "GHL Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize GHL Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Schedule": {
+      "main": [
+        [
+          {
+            "node": "Poll GHL Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll GHL Contacts": {
+      "main": [
+        [
+          {
+            "node": "Filter Already Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Already Processed": {
+      "main": [
+        [
+          {
+            "node": "Has New Leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has New Leads?": {
+      "main": [
+        [
+          {
+            "node": "Normalize GHL Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Normalize GHL Contact": {
+      "main": [
+        [
+          {
+            "node": "Calculate Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate in Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate in Airtable": {
+      "main": [
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Airtable Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Airtable Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Airtable Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge Airtable Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Airtable Results": {
+      "main": [
+        [
+          {
+            "node": "Emergency?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emergency?": {
+      "main": [
+        [
+          {
+            "node": "SMS Tech Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tier Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS Tech Lead": {
+      "main": [
+        [
+          {
+            "node": "Vapi Emergency Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vapi Emergency Call": {
+      "main": [
+        [
+          {
+            "node": "Merge All Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tier Check": {
+      "main": [
+        [
+          {
+            "node": "Vapi Routine Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge All Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Vapi Routine Call": {
+      "main": [
+        [
+          {
+            "node": "Merge All Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Paths": {
+      "main": [
+        [
+          {
+            "node": "Get ST Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ST Token": {
+      "main": [
+        [
+          {
+            "node": "Create ST Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create ST Lead": {
+      "main": [
+        [
+          {
+            "node": "Update GHL Tags",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update GHL Tags": {
+      "main": [
+        [
+          {
+            "node": "Update GHL Custom Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update GHL Custom Fields": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable GHL ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable GHL ID": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [
+          {
+            "node": "Log to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Alert Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Manager": {
+      "main": [
+        [
+          {
+            "node": "Respond Partial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "ghl"
+    },
+    {
+      "name": "lead-capture"
+    }
+  ]
+}

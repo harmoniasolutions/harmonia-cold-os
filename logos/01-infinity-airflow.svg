@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1a5276;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#2e86c1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#48c9b0;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Infinity / airflow symbol -->
+  <path d="M130 100 C130 70, 170 55, 200 75 C230 95, 270 95, 270 75 C270 55, 300 55, 300 75 C300 95, 270 115, 240 100 C210 85, 170 85, 170 100 C170 115, 130 130, 130 100 Z"
+        fill="none" stroke="url(#grad1)" stroke-width="6" stroke-linecap="round"/>
+  <!-- Subtle airflow lines -->
+  <path d="M155 88 C170 78, 185 78, 200 88" fill="none" stroke="#48c9b0" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+  <path d="M230 88 C245 78, 260 78, 275 88" fill="none" stroke="#2e86c1" stroke-width="2" opacity="0.5" stroke-linecap="round"/>
+  <!-- Text -->
+  <text x="215" y="160" font-family="'Helvetica Neue', Arial, sans-serif" font-size="28" font-weight="300" fill="#1a5276" text-anchor="middle" letter-spacing="6">HARMONIA</text>
+</svg>

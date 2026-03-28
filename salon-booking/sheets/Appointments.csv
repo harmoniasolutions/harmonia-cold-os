@@ -1,0 +1,4 @@
+appointment_id,customer_name,customer_email,customer_phone,service_id,service_name,stylist_id,stylist_name,date,start_time,end_time,status,created_at,notes
+APT-001,Sarah Wilson,sarah@email.com,555-1001,SVC-001,Women's Haircut,STY-001,Jessica Martinez,2026-03-28,09:00,09:45,confirmed,2026-03-27,First visit
+APT-002,Tom Brown,tom@email.com,555-1002,SVC-004,Single Process Color,STY-003,Ashley Chen,2026-03-28,10:00,11:30,confirmed,2026-03-27,
+APT-003,Lisa Park,lisa@email.com,555-1003,SVC-008,Blowout,STY-001,Jessica Martinez,2026-03-28,14:00,14:30,confirmed,2026-03-27,

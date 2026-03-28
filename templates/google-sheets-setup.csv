@@ -1,0 +1,11 @@
+Sheet: Call_Log
+call_id,timestamp,date,time,caller_phone,caller_name,service_address,city,state,zip_code,issue_category,issue_description,urgency_level,homeowner_status,call_outcome,appointment_id,call_duration_sec,diagnostic_fee_quoted,objections,existing_customer,lead_source,notes,follow_up_required,transcript_url,recording_url
+
+Sheet: Appointments
+appointment_id,call_id,created_at,appointment_date,time_slot,customer_name,customer_phone,customer_email,service_address,city,state,zip_code,job_type,issue_description,urgency_level,diagnostic_fee,special_instructions,confirmation_sent,reminder_sent,status,servicetitan_id,assigned_tech,estimated_revenue
+
+Sheet: Leads
+lead_id,call_id,created_at,caller_name,caller_phone,caller_email,service_address,city,state,zip_code,issue_category,issue_description,no_book_reason,objections,lead_score,lead_temperature,follow_up_status,follow_up_attempts,last_contact,next_follow_up,notes,converted,converted_date
+
+Sheet: Daily_Analytics
+date,total_calls,calls_answered,calls_booked,booking_rate,calls_transferred,emergency_calls,leads_captured,hot_leads,warm_leads,avg_call_duration,total_call_minutes,revenue_potential,diagnostic_fees,top_issue,peak_hour,top_objection,new_vs_returning

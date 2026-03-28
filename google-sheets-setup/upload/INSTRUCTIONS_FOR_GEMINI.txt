@@ -1,0 +1,34 @@
+SAM HVAC CRM - Google Sheets Setup Instructions
+
+TASK: Create a Google Spreadsheet named "SAM HVAC CRM" with 6 sheets.
+
+SHEETS TO CREATE:
+1. Customers (from 01_customers.csv)
+2. Bookings (from 02_bookings.csv)
+3. Leads (from 03_leads.csv)
+4. Emergencies (from 04_emergencies.csv)
+5. Diagnostics (from 05_diagnostics.csv)
+6. KnowledgeBase (from 06_knowledge_base.csv)
+
+INSTRUCTIONS:
+1. Create a new Google Spreadsheet named "SAM HVAC CRM"
+2. Rename the first sheet to "Customers" and import 01_customers.csv
+3. Create a new sheet named "Bookings" and import 02_bookings.csv
+4. Create a new sheet named "Leads" and import 03_leads.csv
+5. Create a new sheet named "Emergencies" and import 04_emergencies.csv
+6. Create a new sheet named "Diagnostics" and import 05_diagnostics.csv
+7. Create a new sheet named "KnowledgeBase" and import 06_knowledge_base.csv
+
+AFTER CREATION:
+Return the Spreadsheet ID from the URL.
+The URL format is: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit
+I need the SPREADSHEET_ID portion to configure n8n workflows.
+
+PURPOSE:
+This spreadsheet will serve as the CRM backend for SAM HVAC voice AI assistant.
+The n8n workflow will read/write to these sheets for:
+- Customer lookups by phone number
+- Booking appointments
+- Creating sales leads
+- Logging emergencies
+- Knowledge base queries for FAQs

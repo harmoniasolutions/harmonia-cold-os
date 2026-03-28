@@ -1,0 +1,1229 @@
+{
+  "name": "Harmonia - GHL Airtable Bidirectional Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-every-15-min",
+      "name": "Schedule Every 15 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// GET SYNC STATE\n// Read last sync timestamp from workflow static data\n// Default to 15 minutes ago if no previous sync\n// ============================================================\n\nconst staticData = $getWorkflowStaticData('global');\nconst lastSync = staticData.lastSyncTimestamp || new Date(Date.now() - 15 * 60 * 1000).toISOString();\nreturn { json: { lastSyncTimestamp: lastSync, lastSyncEpoch: new Date(lastSync).getTime(), currentRunTimestamp: new Date().toISOString() } };"
+      },
+      "id": "get-sync-state",
+      "name": "Get Sync State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://services.leadconnectorhq.com/contacts/?locationId={{ $env.GHL_LOCATION_ID }}&limit=100&startAfter={{ $json.lastSyncTimestamp }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "fetch-ghl-updated-contacts",
+      "name": "Fetch GHL Updated Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 200]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=IS_AFTER(LAST_MODIFIED_TIME(), '{{ $json.lastSyncTimestamp }}')"
+      },
+      "id": "fetch-airtable-updated-leads",
+      "name": "Fetch Airtable Updated Leads",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://services.leadconnectorhq.com/opportunities/search?location_id={{ $env.GHL_LOCATION_ID }}&limit=20",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "fetch-ghl-opportunities",
+      "name": "Fetch GHL Opportunities",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PROCESS GHL TO AIRTABLE\n// Extract contacts array and map to processing format\n// ============================================================\n\nconst response = $input.first().json;\nconst contacts = response.contacts || [];\n\nif (contacts.length === 0) {\n  return [{ json: { _empty: true, contacts: [] } }];\n}\n\nconst mapped = contacts.map(c => ({\n  json: {\n    id: c.id,\n    firstName: c.firstName || '',\n    lastName: c.lastName || '',\n    email: c.email || '',\n    phone: c.phone || '',\n    address1: c.address1 || '',\n    city: c.city || '',\n    state: c.state || '',\n    postalCode: c.postalCode || '',\n    tags: c.tags || [],\n    customFields: c.customFields || [],\n    dateAdded: c.dateAdded || '',\n    dateUpdated: c.dateUpdated || '',\n    source: c.source || ''\n  }\n}));\n\nreturn mapped;"
+      },
+      "id": "process-ghl-to-airtable",
+      "name": "Process GHL to Airtable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-ghl-updates",
+              "leftValue": "={{ $json._empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "any-ghl-updates",
+      "name": "Any GHL Updates?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-ghl-contacts",
+      "name": "Loop GHL Contacts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1350, 200]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=OR({Phone} = '{{ $json.phone }}', {GHL Contact ID} = '{{ $json.id }}')"
+      },
+      "id": "find-airtable-match",
+      "name": "Find Airtable Match",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "airtable-match-found",
+              "leftValue": "={{ $json.id ? true : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "airtable-match-found",
+      "name": "Airtable Match Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1790, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// RESOLVE CONFLICT GHL TO AIRTABLE\n// Compare timestamps - most recent wins\n// If GHL wins, map fields to Airtable format\n// If Airtable wins, return action: skip\n// ============================================================\n\nconst ghlContact = $input.first().json;\nconst airtableRecord = $('Find Airtable Match').first().json;\n\nconst ghlUpdated = new Date(ghlContact.dateUpdated || ghlContact.dateAdded || 0).getTime();\nconst atUpdated = new Date(airtableRecord.fields?.['Last Contact'] || airtableRecord.createdTime || 0).getTime();\n\nif (ghlUpdated < atUpdated) return { json: { action: 'skip', reason: 'airtable_more_recent' } };\n\nconst updateFields = {};\nif (ghlContact.firstName) updateFields['First Name'] = ghlContact.firstName;\nif (ghlContact.lastName) updateFields['Last Name'] = ghlContact.lastName;\nif (ghlContact.email) updateFields['Email'] = ghlContact.email;\nif (ghlContact.address1) updateFields['Address'] = ghlContact.address1;\nif (ghlContact.city) updateFields['City'] = ghlContact.city;\nif (ghlContact.state) updateFields['State'] = ghlContact.state;\nif (ghlContact.postalCode) updateFields['Zip'] = ghlContact.postalCode;\n\nconst tags = ghlContact.tags || [];\nif (tags.includes('booked')) updateFields['Status'] = 'Booked';\nelse if (tags.includes('closed-won')) updateFields['Status'] = 'Closed-Won';\nelse if (tags.includes('closed-lost')) updateFields['Status'] = 'Closed-Lost';\n\nupdateFields['GHL Last Synced'] = new Date().toISOString();\n\nreturn { json: { action: 'update', airtableRecordId: airtableRecord.id, updateFields, ghlContactId: ghlContact.id } };"
+      },
+      "id": "resolve-conflict-ghl-to-at",
+      "name": "Resolve Conflict GHL to AT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-update-at",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "skip",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "should-update-at",
+      "name": "Should Update AT?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2230, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $json.airtableRecordId }}",
+        "fields": {
+          "First Name": "={{ $json.updateFields['First Name'] || '' }}",
+          "Last Name": "={{ $json.updateFields['Last Name'] || '' }}",
+          "Email": "={{ $json.updateFields['Email'] || '' }}",
+          "Address": "={{ $json.updateFields['Address'] || '' }}",
+          "City": "={{ $json.updateFields['City'] || '' }}",
+          "State": "={{ $json.updateFields['State'] || '' }}",
+          "Zip": "={{ $json.updateFields['Zip'] || '' }}",
+          "Status": "={{ $json.updateFields['Status'] || '' }}",
+          "GHL Contact ID": "={{ $json.ghlContactId }}",
+          "GHL Last Synced": "={{ $json.updateFields['GHL Last Synced'] }}"
+        }
+      },
+      "id": "update-airtable-from-ghl",
+      "name": "Update Airtable from GHL",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2450, 50]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "fields": {
+          "First Name": "={{ $json.firstName }}",
+          "Last Name": "={{ $json.lastName }}",
+          "Phone": "={{ $json.phone }}",
+          "Email": "={{ $json.email }}",
+          "Address": "={{ $json.address1 }}",
+          "City": "={{ $json.city }}",
+          "State": "={{ $json.state }}",
+          "Zip": "={{ $json.postalCode }}",
+          "Source": "ghl_sync",
+          "GHL Contact ID": "={{ $json.id }}",
+          "GHL Last Synced": "={{ $now.toISO() }}",
+          "Created At": "={{ $now.toISO() }}"
+        }
+      },
+      "id": "create-airtable-from-ghl",
+      "name": "Create Airtable from GHL",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {
+        "amount": 0.2,
+        "unit": "seconds"
+      },
+      "id": "ghl-rate-limit-wait",
+      "name": "GHL Rate Limit Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2670, 200]
+    },
+    {
+      "parameters": {},
+      "id": "continue-ghl-loop",
+      "name": "Continue GHL Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2890, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PROCESS AIRTABLE TO GHL\n// Extract leads and filter out those with recent GHL sync\n// ============================================================\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const record = item.json;\n  if (!record.id || !record.fields) continue;\n\n  // Skip records that were just synced from GHL (within last 60 seconds)\n  const lastSynced = record.fields['GHL Last Synced'];\n  if (lastSynced) {\n    const syncAge = Date.now() - new Date(lastSynced).getTime();\n    if (syncAge < 60000) continue;\n  }\n\n  results.push({ json: record });\n}\n\nif (results.length === 0) {\n  return [{ json: { _empty: true } }];\n}\n\nreturn results;"
+      },
+      "id": "process-airtable-to-ghl",
+      "name": "Process Airtable to GHL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-at-updates",
+              "leftValue": "={{ $json._empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "any-airtable-updates",
+      "name": "Any Airtable Updates?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-airtable-leads",
+      "name": "Loop Airtable Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PREPARE AT LEAD\n// Extract current lead data for downstream reference\n// ============================================================\n\nconst item = $input.first().json;\nreturn { json: item };"
+      },
+      "id": "prepare-at-lead",
+      "name": "Prepare AT Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://services.leadconnectorhq.com/contacts/?locationId={{ $env.GHL_LOCATION_ID }}&query={{ encodeURIComponent($json.fields['Phone'] || '') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "find-ghl-match",
+      "name": "Find GHL Match",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "ghl-match-found",
+              "leftValue": "={{ $json.contacts?.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ghl-match-found",
+      "name": "GHL Match Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2010, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// RESOLVE CONFLICT AIRTABLE TO GHL\n// Compare timestamps - most recent wins\n// ============================================================\n\nconst lead = $('Prepare AT Lead').first().json;\nconst ghlContact = $input.first().json.contacts?.[0];\n\nif (!ghlContact) return { json: { action: 'skip' } };\n\nconst atUpdated = new Date(lead.fields?.['Last Contact'] || lead.createdTime || 0).getTime();\nconst ghlUpdated = new Date(ghlContact.dateUpdated || ghlContact.dateAdded || 0).getTime();\n\nif (atUpdated < ghlUpdated) return { json: { action: 'skip', reason: 'ghl_more_recent' } };\n\nreturn { json: { action: 'update', ghlContactId: ghlContact.id, updateBody: {\n  firstName: lead.fields['First Name'] || '', lastName: lead.fields['Last Name'] || '',\n  email: lead.fields['Email'] || '', phone: lead.fields['Phone'] || '',\n  address1: lead.fields['Address'] || '', city: lead.fields['City'] || '',\n  state: lead.fields['State'] || '', postalCode: lead.fields['Zip'] || '',\n  customFields: [\n    { key: 'harmonia_lead_score', value: String(lead.fields['Lead Score'] || '') },\n    { key: 'harmonia_lead_tier', value: lead.fields['Lead Tier'] || '' },\n    { key: 'harmonia_airtable_id', value: lead.id || '' }\n  ]\n} } };"
+      },
+      "id": "resolve-conflict-at-to-ghl",
+      "name": "Resolve Conflict AT to GHL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2230, 350]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-update-ghl",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "skip",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "should-update-ghl",
+      "name": "Should Update GHL?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 350]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.ghlContactId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.updateBody) }}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "update-ghl-from-airtable",
+      "name": "Update GHL from Airtable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/contacts/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.GHL_API_KEY }}"
+            },
+            {
+              "name": "Version",
+              "value": "={{ $env.GHL_API_VERSION }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $('Prepare AT Lead').item.json.fields['First Name'] || '' }}\",\n  \"lastName\": \"{{ $('Prepare AT Lead').item.json.fields['Last Name'] || '' }}\",\n  \"phone\": \"{{ $('Prepare AT Lead').item.json.fields['Phone'] || '' }}\",\n  \"email\": \"{{ $('Prepare AT Lead').item.json.fields['Email'] || '' }}\",\n  \"address1\": \"{{ $('Prepare AT Lead').item.json.fields['Address'] || '' }}\",\n  \"city\": \"{{ $('Prepare AT Lead').item.json.fields['City'] || '' }}\",\n  \"state\": \"{{ $('Prepare AT Lead').item.json.fields['State'] || '' }}\",\n  \"postalCode\": \"{{ $('Prepare AT Lead').item.json.fields['Zip'] || '' }}\",\n  \"source\": \"Harmonia Airtable Sync\",\n  \"tags\": [\"harmonia-synced\"],\n  \"customFields\": [\n    { \"key\": \"harmonia_lead_score\", \"value\": \"{{ $('Prepare AT Lead').item.json.fields['Lead Score'] || '' }}\" },\n    { \"key\": \"harmonia_lead_tier\", \"value\": \"{{ $('Prepare AT Lead').item.json.fields['Lead Tier'] || '' }}\" },\n    { \"key\": \"harmonia_airtable_id\", \"value\": \"{{ $('Prepare AT Lead').item.json.id || '' }}\" }\n  ]\n}",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3,
+            "waitBetweenTries": 2000
+          }
+        }
+      },
+      "id": "create-ghl-from-airtable",
+      "name": "Create GHL from Airtable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2230, 500]
+    },
+    {
+      "parameters": {
+        "amount": 0.2,
+        "unit": "seconds"
+      },
+      "id": "at-rate-limit-wait",
+      "name": "AT Rate Limit Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2890, 400]
+    },
+    {
+      "parameters": {},
+      "id": "continue-at-loop",
+      "name": "Continue AT Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3110, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// MAP OPPORTUNITY STATUS\n// Map GHL pipeline stages to Airtable Status values\n// ============================================================\n\nconst opportunities = $input.all();\nconst stageMap = { 'new': 'New', 'contacted': 'Contacted', 'qualified': 'Qualified', 'appointment scheduled': 'Booked', 'won': 'Closed-Won', 'lost': 'Closed-Lost', 'abandoned': 'Closed-Lost' };\n\nconst updates = [];\nfor (const opp of opportunities) {\n  const data = opp.json;\n  const stageName = (data.pipelineStageId_name || data.status || '').toLowerCase();\n  const airtableStatus = stageMap[stageName];\n  if (airtableStatus && data.contact?.id) {\n    updates.push({ json: { ghlContactId: data.contact.id, ghlOpportunityId: data.id, newStatus: airtableStatus, monetaryValue: data.monetaryValue || 0 } });\n  }\n}\n\nreturn updates.length > 0 ? updates : [{ json: { action: 'no_updates' } }];"
+      },
+      "id": "map-opportunity-status",
+      "name": "Map Opportunity Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-opp-updates",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "no_updates",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "any-opp-updates",
+      "name": "Any Opp Updates?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 600]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-opportunities",
+      "name": "Loop Opportunities",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1350, 600]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "={GHL Contact ID} = '{{ $json.ghlContactId }}'"
+      },
+      "id": "find-at-lead-for-opp",
+      "name": "Find AT Lead for Opp",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 600]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Find AT Lead for Opp').item.json.id }}",
+        "fields": {
+          "Status": "={{ $('Loop Opportunities').item.json.newStatus }}",
+          "Monetary Value": "={{ $('Loop Opportunities').item.json.monetaryValue }}",
+          "GHL Last Synced": "={{ $now.toISO() }}"
+        }
+      },
+      "id": "update-at-status-from-opp",
+      "name": "Update AT Status from Opp",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1790, 600]
+    },
+    {
+      "parameters": {
+        "amount": 0.2,
+        "unit": "seconds"
+      },
+      "id": "opp-rate-limit-wait",
+      "name": "Opp Rate Limit Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2010, 600]
+    },
+    {
+      "parameters": {},
+      "id": "continue-opp-loop",
+      "name": "Continue Opp Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2230, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SAVE SYNC STATE\n// Write current timestamp to workflow static data\n// ============================================================\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.lastSyncTimestamp = new Date().toISOString();\nreturn { json: { syncCompleted: true, savedAt: staticData.lastSyncTimestamp } };"
+      },
+      "id": "save-sync-state",
+      "name": "Save Sync State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3330, 400]
+    }
+  ],
+  "connections": {
+    "Schedule Every 15 Min": {
+      "main": [
+        [
+          {
+            "node": "Get Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Sync State": {
+      "main": [
+        [
+          {
+            "node": "Fetch GHL Updated Contacts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Airtable Updated Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch GHL Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GHL Updated Contacts": {
+      "main": [
+        [
+          {
+            "node": "Process GHL to Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process GHL to Airtable": {
+      "main": [
+        [
+          {
+            "node": "Any GHL Updates?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any GHL Updates?": {
+      "main": [
+        [
+          {
+            "node": "Loop GHL Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop GHL Contacts": {
+      "main": [
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Airtable Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Airtable Match": {
+      "main": [
+        [
+          {
+            "node": "Airtable Match Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Airtable Match Found?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Conflict GHL to AT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Airtable from GHL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Conflict GHL to AT": {
+      "main": [
+        [
+          {
+            "node": "Should Update AT?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Update AT?": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable from GHL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "GHL Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable from GHL": {
+      "main": [
+        [
+          {
+            "node": "GHL Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Airtable from GHL": {
+      "main": [
+        [
+          {
+            "node": "GHL Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GHL Rate Limit Wait": {
+      "main": [
+        [
+          {
+            "node": "Continue GHL Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue GHL Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop GHL Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Airtable Updated Leads": {
+      "main": [
+        [
+          {
+            "node": "Process Airtable to GHL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Airtable to GHL": {
+      "main": [
+        [
+          {
+            "node": "Any Airtable Updates?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Airtable Updates?": {
+      "main": [
+        [
+          {
+            "node": "Loop Airtable Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Airtable Leads": {
+      "main": [
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare AT Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AT Lead": {
+      "main": [
+        [
+          {
+            "node": "Find GHL Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find GHL Match": {
+      "main": [
+        [
+          {
+            "node": "GHL Match Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GHL Match Found?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Conflict AT to GHL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create GHL from Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Conflict AT to GHL": {
+      "main": [
+        [
+          {
+            "node": "Should Update GHL?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Update GHL?": {
+      "main": [
+        [
+          {
+            "node": "Update GHL from Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AT Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update GHL from Airtable": {
+      "main": [
+        [
+          {
+            "node": "AT Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create GHL from Airtable": {
+      "main": [
+        [
+          {
+            "node": "AT Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AT Rate Limit Wait": {
+      "main": [
+        [
+          {
+            "node": "Continue AT Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue AT Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Airtable Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch GHL Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Map Opportunity Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Opportunity Status": {
+      "main": [
+        [
+          {
+            "node": "Any Opp Updates?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Opp Updates?": {
+      "main": [
+        [
+          {
+            "node": "Loop Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Save Sync State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find AT Lead for Opp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find AT Lead for Opp": {
+      "main": [
+        [
+          {
+            "node": "Update AT Status from Opp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update AT Status from Opp": {
+      "main": [
+        [
+          {
+            "node": "Opp Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Opp Rate Limit Wait": {
+      "main": [
+        [
+          {
+            "node": "Continue Opp Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Opp Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "staticData": null,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "ghl"
+    },
+    {
+      "name": "sync"
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "name": "Harmonia - Lead Reactivation Part B: Follow-up Email",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-b",
+      "name": "Daily 9:30 AM Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND(NOT({Last SMS Sent} = BLANK()), DATETIME_DIFF(NOW(), {Last SMS Sent}, 'hours') >= 24, DATETIME_DIFF(NOW(), {Last SMS Sent}, 'hours') <= 48, {Email Follow-up Sent} != TRUE(), {Has Replied} != TRUE(), {Do Not Contact} != TRUE(), {Email} != '')",
+        "options": {
+          "maxRecords": 50
+        }
+      },
+      "id": "get-no-reply-leads",
+      "name": "Get Leads Without Reply (24h+)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-leads",
+              "leftValue": "={{ $json.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-leads",
+      "name": "Any Leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-leads-b",
+      "name": "Loop Over Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate personalized email content\nconst lead = $input.first().json;\nconst firstName = lead.fields['First Name'] || 'there';\nconst serviceNeeded = lead.fields['Service Needed'] || 'HVAC system';\nconst lossReason = (lead.fields['Loss Reason'] || '').toLowerCase();\nconst companyName = $env.COMPANY_NAME || 'our team';\nconst companyPhone = $env.COMPANY_PHONE || '';\nconst discountAmount = $env.REACTIVATION_DISCOUNT || '50';\n\n// Determine value proposition based on loss reason\nlet valueProp = '';\nlet ctaText = '';\n\nif (lossReason.includes('price') || lossReason.includes('expensive')) {\n  valueProp = `We're currently offering <strong>$${discountAmount} off any diagnostic visit</strong> for returning customers.`;\n  ctaText = 'claim your discount';\n} else if (lossReason.includes('timing') || lossReason.includes('busy')) {\n  valueProp = `We have same-day and next-day appointments available, and our technicians work around your schedule.`;\n  ctaText = 'find a time that works';\n} else {\n  valueProp = `We're offering <strong>$${discountAmount} off any diagnostic visit</strong> this month, plus priority scheduling for returning customers.`;\n  ctaText = 'schedule your appointment';\n}\n\nconst emailHtml = `\n<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n  <p style=\"font-size: 16px; color: #333;\">Hi ${firstName},</p>\n  \n  <p style=\"font-size: 16px; color: #333; line-height: 1.6;\">\n    I wanted to follow up on my text from yesterday. I know life gets busy, so I wanted to make it easy for you.\n  </p>\n  \n  <p style=\"font-size: 16px; color: #333; line-height: 1.6;\">\n    ${valueProp} Our technicians arrive in fully-stocked trucks, so most issues get diagnosed <strong>AND</strong> fixed in the same visit.\n  </p>\n  \n  <p style=\"font-size: 16px; color: #333; line-height: 1.6;\">\n    If your ${serviceNeeded} is still giving you trouble, just reply to this email or call us at <a href=\"tel:${companyPhone}\" style=\"color: #0066cc;\">${companyPhone}</a>.\n  </p>\n  \n  <p style=\"font-size: 16px; color: #333; line-height: 1.6;\">\n    No pressure either way - just wanted to make sure you knew we're here if you need us.\n  </p>\n  \n  <p style=\"font-size: 16px; color: #333; margin-top: 30px;\">\n    Best,<br>\n    <strong>The ${companyName} Team</strong>\n  </p>\n  \n  <hr style=\"border: none; border-top: 1px solid #eee; margin: 30px 0;\">\n  \n  <p style=\"font-size: 12px; color: #888;\">\n    You're receiving this because you previously inquired about our services. \n    <a href=\"#\" style=\"color: #888;\">Unsubscribe</a>\n  </p>\n</div>\n`;\n\nconst subject = `Quick question about your ${serviceNeeded} needs`;\n\nreturn {\n  json: {\n    lead: lead,\n    email: {\n      to: lead.fields['Email'],\n      subject: subject,\n      htmlContent: emailHtml,\n      ctaText: ctaText\n    }\n  }\n};"
+      },
+      "id": "generate-email",
+      "name": "Generate Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SENDGRID_FROM_EMAIL }}",
+        "toEmail": "={{ $json.email.to }}",
+        "subject": "={{ $json.email.subject }}",
+        "contentType": "html",
+        "content": "={{ $json.email.htmlContent }}"
+      },
+      "id": "send-email",
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Generate Email Content').item.json.lead.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Email Follow-up Sent",
+              "value": "true"
+            },
+            {
+              "fieldName": "Email Sent At",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "Email Sent - Awaiting Reply"
+            }
+          ]
+        }
+      },
+      "id": "update-email-sent",
+      "name": "Mark Email Sent",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {},
+      "id": "continue-loop",
+      "name": "Continue",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    }
+  ],
+  "connections": {
+    "Daily 9:30 AM Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Leads Without Reply (24h+)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Leads Without Reply (24h+)": {
+      "main": [
+        [
+          {
+            "node": "Any Leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Leads?": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Loop Over Leads": {
+      "main": [
+        [
+          {
+            "node": "Generate Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Generate Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Email Sent": {
+      "main": [
+        [
+          {
+            "node": "Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "reactivation"
+    }
+  ]
+}

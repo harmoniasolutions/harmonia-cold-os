@@ -1,0 +1,22 @@
+stylist_id,stylist_name,day_of_week,start_time,end_time
+STY-001,Jessica Martinez,Monday,09:00,17:00
+STY-001,Jessica Martinez,Tuesday,09:00,17:00
+STY-001,Jessica Martinez,Wednesday,10:00,18:00
+STY-001,Jessica Martinez,Thursday,09:00,17:00
+STY-001,Jessica Martinez,Friday,09:00,19:00
+STY-001,Jessica Martinez,Saturday,09:00,15:00
+STY-002,Marcus Johnson,Monday,08:00,16:00
+STY-002,Marcus Johnson,Tuesday,08:00,16:00
+STY-002,Marcus Johnson,Thursday,08:00,16:00
+STY-002,Marcus Johnson,Friday,08:00,18:00
+STY-002,Marcus Johnson,Saturday,08:00,14:00
+STY-003,Ashley Chen,Tuesday,10:00,18:00
+STY-003,Ashley Chen,Wednesday,10:00,18:00
+STY-003,Ashley Chen,Thursday,10:00,18:00
+STY-003,Ashley Chen,Friday,10:00,19:00
+STY-003,Ashley Chen,Saturday,09:00,16:00
+STY-004,Devon Williams,Monday,09:00,17:00
+STY-004,Devon Williams,Wednesday,09:00,17:00
+STY-004,Devon Williams,Thursday,09:00,17:00
+STY-004,Devon Williams,Friday,09:00,19:00
+STY-004,Devon Williams,Saturday,09:00,15:00

@@ -1,0 +1,486 @@
+{
+  "name": "Harmonia - Set & Save Lead Qualification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "unified-webhook",
+      "name": "Unified Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HARMONIA LEAD NORMALIZER\n// Transforms leads from Google LSA, Facebook, Elementor to unified schema\n// ============================================================\n\nconst body = $input.first().json.body || $input.first().json;\nconst headers = $input.first().json.headers || {};\nconst query = $input.first().json.query || {};\n\nlet normalized = {\n  // Core fields\n  name: '',\n  firstName: '',\n  lastName: '',\n  phone: '',\n  email: '',\n  \n  // Address\n  address: '',\n  city: '',\n  state: '',\n  zip: '',\n  \n  // Context\n  notes: '',\n  serviceType: '',\n  urgency: 'normal',\n  \n  // Metadata\n  source: 'unknown',\n  sourceDetails: {},\n  rawPayload: body,\n  receivedAt: new Date().toISOString(),\n  ipAddress: headers['x-forwarded-for'] || headers['x-real-ip'] || null\n};\n\n// ============================================================\n// SOURCE DETECTION & NORMALIZATION\n// ============================================================\n\n// 1. GOOGLE LOCAL SERVICES ADS (LSA)\nif (body.lead_type === 'MESSAGE' || body.lead_type === 'PHONE_CALL' || body.google_key || body.leadId?.startsWith('google')) {\n  normalized.source = 'google_lsa';\n  normalized.sourceDetails = {\n    leadType: body.lead_type,\n    googleKey: body.google_key,\n    categoryId: body.category_id\n  };\n  \n  normalized.name = body.user_name || body.consumer_name || '';\n  normalized.phone = body.phone_number || body.consumer_phone_number || '';\n  normalized.email = body.email || '';\n  normalized.address = body.postal_address || body.job_location?.formatted_address || '';\n  normalized.notes = body.text || body.description || '';\n  normalized.serviceType = body.category_name || body.service_category || '';\n  \n  // LSA often includes city/state in structured format\n  if (body.job_location) {\n    normalized.city = body.job_location.city || '';\n    normalized.state = body.job_location.state || '';\n    normalized.zip = body.job_location.postal_code || '';\n  }\n}\n\n// 2. FACEBOOK LEAD ADS\nelse if (body.leadgen_id || body.field_data || body.page_id || headers['x-facebook-webhook']) {\n  normalized.source = 'facebook_lead';\n  normalized.sourceDetails = {\n    leadgenId: body.leadgen_id,\n    pageId: body.page_id,\n    formId: body.form_id,\n    adId: body.ad_id,\n    adsetId: body.adset_id,\n    campaignId: body.campaign_id\n  };\n  \n  const fields = body.field_data || [];\n  \n  // Map Facebook's field_data array to our schema\n  for (const field of fields) {\n    const name = (field.name || '').toLowerCase();\n    const value = field.values?.[0] || '';\n    \n    if (name.includes('full') && name.includes('name')) normalized.name = value;\n    else if (name === 'first_name' || name === 'firstname') normalized.firstName = value;\n    else if (name === 'last_name' || name === 'lastname') normalized.lastName = value;\n    else if (name.includes('phone') || name === 'phone_number') normalized.phone = value;\n    else if (name.includes('email')) normalized.email = value;\n    else if (name.includes('street') || name.includes('address')) normalized.address = value;\n    else if (name === 'city') normalized.city = value;\n    else if (name === 'state' || name === 'province') normalized.state = value;\n    else if (name.includes('zip') || name.includes('postal')) normalized.zip = value;\n    else if (name.includes('service') || name.includes('issue') || name.includes('problem')) {\n      normalized.notes = value;\n      normalized.serviceType = value;\n    }\n    else if (name.includes('message') || name.includes('comment')) normalized.notes = value;\n  }\n}\n\n// 3. ELEMENTOR FORMS\nelse if (body.form_id || body.form_name || headers['x-elementor-webhook'] || body.fields) {\n  normalized.source = 'elementor_form';\n  normalized.sourceDetails = {\n    formId: body.form_id,\n    formName: body.form_name,\n    postId: body.post_id,\n    referrer: body.referrer || body.referer_title\n  };\n  \n  const fields = body.fields || body;\n  \n  normalized.name = fields.name || fields.full_name || fields.fullname || '';\n  normalized.firstName = fields.first_name || fields.firstname || '';\n  normalized.lastName = fields.last_name || fields.lastname || '';\n  normalized.phone = fields.phone || fields.telephone || fields.tel || fields.mobile || '';\n  normalized.email = fields.email || fields.email_address || '';\n  normalized.address = fields.address || fields.street || fields.street_address || '';\n  normalized.city = fields.city || '';\n  normalized.state = fields.state || fields.province || '';\n  normalized.zip = fields.zip || fields.zipcode || fields.postal_code || fields.postcode || '';\n  normalized.notes = fields.message || fields.comments || fields.notes || fields.service_needed || fields.issue || '';\n  normalized.serviceType = fields.service || fields.service_type || fields.service_needed || '';\n}\n\n// 4. GENERIC / ZAPIER / CUSTOM WEBHOOKS\nelse {\n  normalized.source = 'webhook_generic';\n  \n  // Try common field names\n  normalized.name = body.name || body.full_name || body.customer_name || '';\n  normalized.firstName = body.first_name || body.firstName || '';\n  normalized.lastName = body.last_name || body.lastName || '';\n  normalized.phone = body.phone || body.phone_number || body.phoneNumber || body.mobile || '';\n  normalized.email = body.email || body.email_address || '';\n  normalized.address = body.address || body.street_address || body.street || '';\n  normalized.city = body.city || '';\n  normalized.state = body.state || '';\n  normalized.zip = body.zip || body.zipcode || body.postal_code || '';\n  normalized.notes = body.message || body.notes || body.comments || body.description || '';\n  normalized.serviceType = body.service || body.service_type || '';\n}\n\n// ============================================================\n// POST-PROCESSING\n// ============================================================\n\n// Clean phone number to E.164 format\nif (normalized.phone) {\n  let phone = normalized.phone.replace(/\\D/g, '');\n  if (phone.length === 10) {\n    phone = '+1' + phone;\n  } else if (phone.length === 11 && phone.startsWith('1')) {\n    phone = '+' + phone;\n  } else if (phone.length > 0 && !phone.startsWith('+')) {\n    phone = '+' + phone;\n  }\n  normalized.phone = phone;\n}\n\n// Build name from parts if full name not provided\nif (!normalized.name && (normalized.firstName || normalized.lastName)) {\n  normalized.name = `${normalized.firstName} ${normalized.lastName}`.trim();\n}\n\n// Extract name parts if only full name provided\nif (normalized.name && !normalized.firstName) {\n  const parts = normalized.name.trim().split(/\\s+/);\n  normalized.firstName = parts[0] || '';\n  normalized.lastName = parts.slice(1).join(' ') || '';\n}\n\n// Build full address string if parts exist but full doesn't\nif (!normalized.address && (normalized.city || normalized.state || normalized.zip)) {\n  normalized.address = [normalized.city, normalized.state, normalized.zip].filter(Boolean).join(', ');\n}\n\n// Detect urgency from notes\nconst notesLower = normalized.notes.toLowerCase();\nconst emergencyKeywords = ['no heat', 'no cooling', 'no ac', 'not working', 'broken', 'emergency', 'urgent', 'asap', 'today', 'freezing', 'smoke', 'gas smell', 'water leak', 'flooded'];\n\nif (emergencyKeywords.some(kw => notesLower.includes(kw))) {\n  normalized.urgency = 'emergency';\n}\n\nreturn { json: normalized };"
+      },
+      "id": "normalize-lead",
+      "name": "Normalize Lead Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HARMONIA LEAD SCORING ENGINE\n// Assigns value 1-100 based on multiple weighted factors\n// ============================================================\n\nconst lead = $input.first().json;\n\n// Base score\nlet score = 50;\nconst factors = {};\n\nconst notesLower = (lead.notes || '').toLowerCase();\nconst serviceLower = (lead.serviceType || '').toLowerCase();\n\n// ============================================================\n// FACTOR 1: HOMEOWNER STATUS (+20 / -10)\n// ============================================================\nconst homeownerKeywords = ['owner', 'homeowner', 'my house', 'my home', 'we own', 'i own', 'our home'];\nconst renterKeywords = ['renting', 'tenant', 'landlord', 'apartment', 'lease', 'property manager'];\n\nconst isHomeowner = homeownerKeywords.some(kw => notesLower.includes(kw));\nconst isRenter = renterKeywords.some(kw => notesLower.includes(kw));\n\nif (isHomeowner) {\n  score += 20;\n  factors.homeowner = { bonus: 20, detected: 'homeowner' };\n} else if (isRenter) {\n  score -= 10;\n  factors.homeowner = { bonus: -10, detected: 'renter' };\n} else {\n  factors.homeowner = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 2: SYSTEM AGE (+15 for old systems = replacement potential)\n// ============================================================\nconst ageKeywords = ['old', 'years old', '10 year', '15 year', '20 year', 'original', 'builder grade', 'ancient', 'outdated'];\nconst hasOldSystem = ageKeywords.some(kw => notesLower.includes(kw));\n\nif (hasOldSystem) {\n  score += 15;\n  factors.systemAge = { bonus: 15, detected: 'old_system' };\n} else {\n  factors.systemAge = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 3: EMERGENCY (+25 - highest urgency)\n// ============================================================\nconst emergencyKeywords = [\n  'no heat', 'no cooling', 'no ac', 'not working', 'broken', 'stopped working',\n  'emergency', 'urgent', 'asap', 'today', 'right now', 'immediately',\n  'freezing', 'sweating', 'too hot', 'too cold',\n  'water leak', 'gas smell', 'smoke', 'burning smell', 'electrical smell'\n];\n\nconst isEmergency = emergencyKeywords.some(kw => notesLower.includes(kw)) || lead.urgency === 'emergency';\n\nif (isEmergency) {\n  score += 25;\n  factors.emergency = { bonus: 25, detected: true };\n} else {\n  factors.emergency = { bonus: 0, detected: false };\n}\n\n// ============================================================\n// FACTOR 4: SERVICE TYPE VALUE (+5 to +20)\n// ============================================================\nconst highValueServices = ['replacement', 'install', 'new unit', 'new system', 'upgrade', 'change out', 'changeout'];\nconst mediumValueServices = ['repair', 'fix', 'diagnostic', 'not cooling', 'not heating'];\nconst lowValueServices = ['tune up', 'tune-up', 'maintenance', 'cleaning', 'filter'];\n\nconst combinedService = notesLower + ' ' + serviceLower;\n\nif (highValueServices.some(kw => combinedService.includes(kw))) {\n  score += 20;\n  factors.serviceValue = { bonus: 20, detected: 'high_value' };\n} else if (mediumValueServices.some(kw => combinedService.includes(kw))) {\n  score += 10;\n  factors.serviceValue = { bonus: 10, detected: 'medium_value' };\n} else if (lowValueServices.some(kw => combinedService.includes(kw))) {\n  score += 5;\n  factors.serviceValue = { bonus: 5, detected: 'low_value' };\n} else {\n  factors.serviceValue = { bonus: 0, detected: 'unknown' };\n}\n\n// ============================================================\n// FACTOR 5: TIME OF DAY (+5 for business hours)\n// ============================================================\nconst hour = new Date().getHours();\nconst isBusinessHours = hour >= 8 && hour <= 18;\n\nif (isBusinessHours) {\n  score += 5;\n  factors.timing = { bonus: 5, detected: 'business_hours' };\n} else {\n  factors.timing = { bonus: 0, detected: 'after_hours' };\n}\n\n// ============================================================\n// FACTOR 6: LEAD SOURCE QUALITY\n// ============================================================\nconst sourceScores = {\n  'google_lsa': 15,        // High intent - searched for service\n  'google_ads': 12,        // Good intent\n  'elementor_form': 10,    // Website visitor - decent intent\n  'facebook_lead': 5,      // Lower intent - passive scroll\n  'referral': 20,          // Highest quality\n  'webhook_generic': 5     // Unknown quality\n};\n\nconst sourceBonus = sourceScores[lead.source] || 5;\nscore += sourceBonus;\nfactors.source = { bonus: sourceBonus, detected: lead.source };\n\n// ============================================================\n// FACTOR 7: CONTACT INFO COMPLETENESS (+10)\n// ============================================================\nconst hasPhone = lead.phone && lead.phone.length >= 10;\nconst hasEmail = lead.email && lead.email.includes('@');\nconst hasAddress = lead.address && lead.address.length > 10;\n\nlet contactBonus = 0;\nif (hasPhone && hasEmail && hasAddress) {\n  contactBonus = 10;\n} else if (hasPhone && hasAddress) {\n  contactBonus = 7;\n} else if (hasPhone) {\n  contactBonus = 3;\n}\n\nscore += contactBonus;\nfactors.contactInfo = { \n  bonus: contactBonus, \n  hasPhone: hasPhone,\n  hasEmail: hasEmail,\n  hasAddress: hasAddress\n};\n\n// ============================================================\n// NORMALIZE & CLASSIFY\n// ============================================================\n\n// Cap score at 1-100\nscore = Math.max(1, Math.min(100, Math.round(score)));\n\n// Determine tier\nlet tier, tierDescription;\nif (score >= 85) {\n  tier = 'HOT';\n  tierDescription = 'High-value lead, immediate action required';\n} else if (score >= 70) {\n  tier = 'WARM';\n  tierDescription = 'Good lead, prioritize follow-up';\n} else if (score >= 50) {\n  tier = 'COOL';\n  tierDescription = 'Standard lead, normal follow-up';\n} else {\n  tier = 'COLD';\n  tierDescription = 'Low-value lead, nurture sequence';\n}\n\n// Determine action\nlet recommendedAction;\nif (isEmergency) {\n  recommendedAction = 'IMMEDIATE_CALL';\n} else if (tier === 'HOT') {\n  recommendedAction = 'PRIORITY_CALL';\n} else if (tier === 'WARM') {\n  recommendedAction = 'STANDARD_CALL';\n} else {\n  recommendedAction = 'SMS_FIRST';\n}\n\nreturn {\n  json: {\n    ...lead,\n    scoring: {\n      score: score,\n      tier: tier,\n      tierDescription: tierDescription,\n      isEmergency: isEmergency,\n      recommendedAction: recommendedAction,\n      factors: factors,\n      calculatedAt: new Date().toISOString()\n    }\n  }\n};"
+      },
+      "id": "lead-score",
+      "name": "Calculate Lead Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-emergency",
+              "leftValue": "={{ $json.scoring.isEmergency }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "emergency-check",
+      "name": "Emergency?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.TECH_LEAD_PHONE }}",
+        "message": "=🚨 EMERGENCY LEAD 🚨\n\nScore: {{ $json.scoring.score }}/100 ({{ $json.scoring.tier }})\n\n👤 {{ $json.name }}\n📞 {{ $json.phone }}\n📍 {{ $json.address || 'No address' }}\n\n🔧 Issue: {{ $json.notes || $json.serviceType || 'Not specified' }}\n\n📊 Source: {{ $json.source }}\n\n⚡ Vapi is calling them NOW.\nBe ready for immediate dispatch!"
+      },
+      "id": "emergency-sms",
+      "name": "SMS Tech Lead",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1130, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vapi.ai/call/phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.VAPI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"assistantId\": \"{{ $env.VAPI_EMERGENCY_ASSISTANT_ID }}\",\n  \"phoneNumberId\": \"{{ $env.VAPI_PHONE_NUMBER_ID }}\",\n  \"customer\": {\n    \"number\": \"{{ $json.phone }}\",\n    \"name\": \"{{ $json.name }}\"\n  },\n  \"assistantOverrides\": {\n    \"firstMessage\": \"Hi {{ $json.firstName || 'there' }}, this is Sam from {{ $env.COMPANY_NAME }}. I can see you have an urgent HVAC situation and I want to get you help right away. Can you tell me what's happening?\",\n    \"metadata\": {\n      \"leadScore\": {{ $json.scoring.score }},\n      \"leadTier\": \"{{ $json.scoring.tier }}\",\n      \"isEmergency\": true,\n      \"source\": \"{{ $json.source }}\",\n      \"originalNotes\": \"{{ $json.notes }}\"\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "vapi-emergency-call",
+      "name": "Vapi Emergency Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 250]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vapi.ai/call/phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.VAPI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"assistantId\": \"{{ $env.VAPI_BOOKING_ASSISTANT_ID }}\",\n  \"phoneNumberId\": \"{{ $env.VAPI_PHONE_NUMBER_ID }}\",\n  \"customer\": {\n    \"number\": \"{{ $json.phone }}\",\n    \"name\": \"{{ $json.name }}\"\n  },\n  \"assistantOverrides\": {\n    \"firstMessage\": \"Hi {{ $json.firstName || 'there' }}, this is Sam from {{ $env.COMPANY_NAME }}! I saw you just reached out about your HVAC system and I wanted to personally help you get scheduled. Do you have a quick moment?\",\n    \"metadata\": {\n      \"leadScore\": {{ $json.scoring.score }},\n      \"leadTier\": \"{{ $json.scoring.tier }}\",\n      \"isEmergency\": false,\n      \"source\": \"{{ $json.source }}\",\n      \"originalNotes\": \"{{ $json.notes }}\"\n    }\n  }\n}",
+        "options": {
+          "timeout": 30000\n        }\n      },\n      \"id\": \"vapi-routine-call\",\n      \"name\": \"Vapi Routine Call\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4.2,\n      \"position\": [1130, 500]\n    },\n    {\n      \"parameters\": {\n        \"mode\": \"combine\",\n        \"mergeByFields\": {\n          \"values\": []\n        },\n        \"options\": {}\n      },\n      \"id\": \"merge-vapi\",\n      \"name\": \"Merge Vapi Results\",\n      \"type\": \"n8n-nodes-base.merge\",\n      \"typeVersion\": 3,\n      \"position\": [1570, 400]\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"https://auth.servicetitan.io/connect/token\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/x-www-form-urlencoded\"\n            }\n          ]\n        },\n        \"sendBody\": true,\n        \"contentType\": \"form-urlencoded\",\n        \"bodyParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"grant_type\",\n              \"value\": \"client_credentials\"\n            },\n            {\n              \"name\": \"client_id\",\n              \"value\": \"={{ $env.ST_CLIENT_ID }}\"\n            },\n            {\n              \"name\": \"client_secret\",\n              \"value\": \"={{ $env.ST_CLIENT_SECRET }}\"\n            }\n          ]\n        },\n        \"options\": {\n          \"timeout\": 10000,\n          \"retry\": {\n            \"enabled\": true,\n            \"maxTries\": 3,\n            \"waitBetweenTries\": 1000\n          }\n        }\n      },\n      \"id\": \"st-auth\",\n      \"name\": \"Get ST Token\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4.2,\n      \"position\": [1790, 400]\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/leads\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"parameters\": [\n            {\n              \"name\": \"Authorization\",\n              \"value\": \"=Bearer {{ $('Get ST Token').item.json.access_token }}\"\n            },\n            {\n              \"name\": \"ST-App-Key\",\n              \"value\": \"={{ $env.ST_APP_KEY }}\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ]\n        },\n        \"sendBody\": true,\n        \"specifyBody\": \"json\",\n        \"jsonBody\": \"={\\n  \\\"name\\\": \\\"{{ $('Calculate Lead Score').item.json.name || 'Unknown' }}\\\",\\n  \\\"type\\\": \\\"Residential\\\",\\n  \\\"status\\\": \\\"Open\\\",\\n  \\\"source\\\": \\\"Harmonia - {{ $('Calculate Lead Score').item.json.source }}\\\",\\n  \\\"priority\\\": \\\"{{ $('Calculate Lead Score').item.json.scoring.isEmergency ? 'Urgent' : 'Normal' }}\\\",\\n  \\\"address\\\": {\\n    \\\"street\\\": \\\"{{ $('Calculate Lead Score').item.json.address || '' }}\\\",\\n    \\\"city\\\": \\\"{{ $('Calculate Lead Score').item.json.city || '' }}\\\",\\n    \\\"state\\\": \\\"{{ $('Calculate Lead Score').item.json.state || '' }}\\\",\\n    \\\"zip\\\": \\\"{{ $('Calculate Lead Score').item.json.zip || '' }}\\\"\\n  },\\n  \\\"contacts\\\": [\\n    {\\n      \\\"type\\\": \\\"Phone\\\",\\n      \\\"value\\\": \\\"{{ $('Calculate Lead Score').item.json.phone }}\\\"\\n    }\\n  ],\\n  \\\"notes\\\": \\\"HARMONIA LEAD SCORE: {{ $('Calculate Lead Score').item.json.scoring.score }}/100 ({{ $('Calculate Lead Score').item.json.scoring.tier }})\\\\n\\\\nOriginal Notes: {{ $('Calculate Lead Score').item.json.notes }}\\\\n\\\\nSource: {{ $('Calculate Lead Score').item.json.source }}\\\\nEmergency: {{ $('Calculate Lead Score').item.json.scoring.isEmergency }}\\\"\\n}\",\n        \"options\": {\n          \"timeout\": 30000,\n          \"retry\": {\n            \"enabled\": true,\n            \"maxTries\": 5,\n            \"waitBetweenTries\": 2000\n          }\n        }\n      },\n      \"id\": \"st-create-lead\",\n      \"name\": \"Create ST Lead\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4.2,\n      \"position\": [2010, 400],\n      \"onError\": \"continueErrorOutput\"\n    },\n    {\n      \"parameters\": {\n        \"conditions\": {\n          \"options\": {\n            \"caseSensitive\": true,\n            \"leftValue\": \"\",\n            \"typeValidation\": \"strict\"\n          },\n          \"conditions\": [\n            {\n              \"id\": \"api-success\",\n              \"leftValue\": \"={{ $json.id }}\",\n              \"rightValue\": \"\",\n              \"operator\": {\n                \"type\": \"string\",\n                \"operation\": \"exists\"\n              }\n            }\n          ],\n          \"combinator\": \"and\"\n        },\n        \"options\": {}\n      },\n      \"id\": \"st-success-check\",\n      \"name\": \"ST Success?\",\n      \"type\": \"n8n-nodes-base.if\",\n      \"typeVersion\": 2,\n      \"position\": [2230, 400]\n    },\n    {\n      \"parameters\": {\n        \"jsCode\": \"// Dead Letter Queue - Capture failed syncs for manual processing\\nconst leadData = $('Calculate Lead Score').first().json;\\nconst error = $input.first().json;\\n\\nreturn {\\n  json: {\\n    status: 'SYNC_FAILED',\\n    leadData: {\\n      name: leadData.name,\\n      phone: leadData.phone,\\n      email: leadData.email,\\n      address: leadData.address,\\n      notes: leadData.notes,\\n      source: leadData.source,\\n      score: leadData.scoring?.score,\\n      tier: leadData.scoring?.tier,\\n      isEmergency: leadData.scoring?.isEmergency\\n    },\\n    error: {\\n      message: error.message || error.error || 'Unknown API error',\\n      statusCode: error.statusCode || error.code || null,\\n      body: error.body || null\\n    },\\n    metadata: {\\n      failedAt: new Date().toISOString(),\\n      vapiCallInitiated: true,\\n      requiresManualEntry: true\\n    }\\n  }\\n};\"\n      },\n      \"id\": \"dead-letter\",\n      \"name\": \"Dead Letter Queue\",\n      \"type\": \"n8n-nodes-base.code\",\n      \"typeVersion\": 2,\n      \"position\": [2450, 550]\n    },\n    {\n      \"parameters\": {\n        \"operation\": \"append\",\n        \"documentId\": {\n          \"__rl\": true,\n          \"value\": \"={{ $env.DEAD_LETTER_SHEET_ID }}\",\n          \"mode\": \"id\"\n        },\n        \"sheetName\": {\n          \"__rl\": true,\n          \"value\": \"Failed Syncs\",\n          \"mode\": \"list\"\n        },\n        \"columns\": {\n          \"mappingMode\": \"defineBelow\",\n          \"value\": {\n            \"Timestamp\": \"={{ $json.metadata.failedAt }}\",\n            \"Name\": \"={{ $json.leadData.name }}\",\n            \"Phone\": \"={{ $json.leadData.phone }}\",\n            \"Email\": \"={{ $json.leadData.email }}\",\n            \"Address\": \"={{ $json.leadData.address }}\",\n            \"Notes\": \"={{ $json.leadData.notes }}\",\n            \"Source\": \"={{ $json.leadData.source }}\",\n            \"Score\": \"={{ $json.leadData.score }}\",\n            \"Tier\": \"={{ $json.leadData.tier }}\",\n            \"Emergency\": \"={{ $json.leadData.isEmergency }}\",\n            \"Error\": \"={{ $json.error.message }}\",\n            \"Status\": \"Pending Manual Entry\"\n          }\n        }\n      },\n      \"id\": \"log-dead-letter\",\n      \"name\": \"Log to Sheet\",\n      \"type\": \"n8n-nodes-base.googleSheets\",\n      \"typeVersion\": 4.4,\n      \"position\": [2670, 550]\n    },\n    {\n      \"parameters\": {\n        \"from\": \"={{ $env.TWILIO_PHONE_NUMBER }}\",\n        \"to\": \"={{ $env.MANAGER_PHONE }}\",\n        \"message\": \"=⚠️ LEAD SYNC FAILED\\n\\n👤 {{ $json.leadData.name }}\\n📞 {{ $json.leadData.phone }}\\n📊 Score: {{ $json.leadData.score }} ({{ $json.leadData.tier }})\\n\\n❌ Error: {{ $json.error.message }}\\n\\n✅ Vapi DID call them\\n⚠️ Manual CRM entry required\\n\\nCheck Dead Letter sheet.\"\n      },\n      \"id\": \"alert-sync-failure\",\n      \"name\": \"Alert Manager\",\n      \"type\": \"n8n-nodes-base.twilio\",\n      \"typeVersion\": 1,\n      \"position\": [2890, 550]\n    },\n    {\n      \"parameters\": {\n        \"respondWith\": \"json\",\n        \"responseBody\": \"={\\n  \\\"status\\\": \\\"success\\\",\\n  \\\"leadId\\\": \\\"{{ $json.id }}\\\",\\n  \\\"scoring\\\": {\\n    \\\"score\\\": {{ $('Calculate Lead Score').item.json.scoring.score }},\\n    \\\"tier\\\": \\\"{{ $('Calculate Lead Score').item.json.scoring.tier }}\\\",\\n    \\\"isEmergency\\\": {{ $('Calculate Lead Score').item.json.scoring.isEmergency }}\\n  },\\n  \\\"vapiCallInitiated\\\": true,\\n  \\\"crmSynced\\\": true\\n}\",\n        \"options\": {}\n      },\n      \"id\": \"respond-success\",\n      \"name\": \"Respond Success\",\n      \"type\": \"n8n-nodes-base.respondToWebhook\",\n      \"typeVersion\": 1.1,\n      \"position\": [2450, 300]\n    },\n    {\n      \"parameters\": {\n        \"respondWith\": \"json\",\n        \"responseBody\": \"={\\n  \\\"status\\\": \\\"partial_success\\\",\\n  \\\"message\\\": \\\"Lead captured, CRM sync failed - logged for manual entry\\\",\\n  \\\"scoring\\\": {\\n    \\\"score\\\": {{ $('Calculate Lead Score').item.json.scoring.score }},\\n    \\\"tier\\\": \\\"{{ $('Calculate Lead Score').item.json.scoring.tier }}\\\"\\n  },\\n  \\\"vapiCallInitiated\\\": true,\\n  \\\"crmSynced\\\": false\\n}\",\n        \"options\": {}\n      },\n      \"id\": \"respond-partial\",\n      \"name\": \"Respond Partial\",\n      \"type\": \"n8n-nodes-base.respondToWebhook\",\n      \"typeVersion\": 1.1,\n      \"position\": [3110, 550]\n    }\n  ],\n  \"connections\": {\n    \"Unified Lead Webhook\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Normalize Lead Data\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Normalize Lead Data\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Calculate Lead Score\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Calculate Lead Score\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Emergency?\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Emergency?\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"SMS Tech Lead\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ],\n        [\n          {\n            \"node\": \"Vapi Routine Call\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"SMS Tech Lead\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Vapi Emergency Call\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Vapi Emergency Call\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Merge Vapi Results\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Vapi Routine Call\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Merge Vapi Results\",\n            \"type\": \"main\",\n            \"index\": 1\n          }\n        ]\n      ]\n    },\n    \"Merge Vapi Results\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Get ST Token\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Get ST Token\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Create ST Lead\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Create ST Lead\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"ST Success?\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ],\n        [\n          {\n            \"node\": \"Dead Letter Queue\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"ST Success?\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Respond Success\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ],\n        [\n          {\n            \"node\": \"Dead Letter Queue\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Dead Letter Queue\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Log to Sheet\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Log to Sheet\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Alert Manager\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    },\n    \"Alert Manager\": {\n      \"main\": [\n        [\n          {\n            \"node\": \"Respond Partial\",\n            \"type\": \"main\",\n            \"index\": 0\n          }\n        ]\n      ]\n    }\n  },\n  \"settings\": {\n    \"executionOrder\": \"v1\",\n    \"saveManualExecutions\": true\n  },\n  \"tags\": [\n    {\n      \"name\": \"harmonia\"\n    },\n    {\n      \"name\": \"hvac\"\n    },\n    {\n      \"name\": \"lead-capture\"\n    }\n  ]\n}"
+        }
+      },
+      "id": "vapi-routine-call",
+      "name": "Vapi Routine Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 500]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": []
+        },
+        "options": {}
+      },
+      "id": "merge-vapi",
+      "name": "Merge Vapi Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://auth.servicetitan.io/connect/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $env.ST_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "={{ $env.ST_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "st-auth",
+      "name": "Get ST Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.servicetitan.io/crm/v2/tenant/{{ $env.ST_TENANT_ID }}/leads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get ST Token').item.json.access_token }}"
+            },
+            {
+              "name": "ST-App-Key",
+              "value": "={{ $env.ST_APP_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $('Calculate Lead Score').item.json.name || 'Unknown' }}\",\n  \"type\": \"Residential\",\n  \"status\": \"Open\",\n  \"source\": \"Harmonia - {{ $('Calculate Lead Score').item.json.source }}\",\n  \"priority\": \"{{ $('Calculate Lead Score').item.json.scoring.isEmergency ? 'Urgent' : 'Normal' }}\",\n  \"address\": {\n    \"street\": \"{{ $('Calculate Lead Score').item.json.address || '' }}\",\n    \"city\": \"{{ $('Calculate Lead Score').item.json.city || '' }}\",\n    \"state\": \"{{ $('Calculate Lead Score').item.json.state || '' }}\",\n    \"zip\": \"{{ $('Calculate Lead Score').item.json.zip || '' }}\"\n  },\n  \"notes\": \"HARMONIA SCORE: {{ $('Calculate Lead Score').item.json.scoring.score }}/100 ({{ $('Calculate Lead Score').item.json.scoring.tier }})\\n\\nNotes: {{ $('Calculate Lead Score').item.json.notes }}\\nSource: {{ $('Calculate Lead Score').item.json.source }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "st-create-lead",
+      "name": "Create ST Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2010, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "api-success",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "st-success-check",
+      "name": "ST Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2230, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const leadData = $('Calculate Lead Score').first().json;\nconst error = $input.first().json;\n\nreturn {\n  json: {\n    status: 'SYNC_FAILED',\n    leadData: {\n      name: leadData.name,\n      phone: leadData.phone,\n      email: leadData.email,\n      score: leadData.scoring?.score,\n      tier: leadData.scoring?.tier\n    },\n    error: {\n      message: error.message || 'Unknown error'\n    },\n    failedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "dead-letter",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 550]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=⚠️ LEAD SYNC FAILED\n\n{{ $json.leadData.name }}\n{{ $json.leadData.phone }}\n\nError: {{ $json.error.message }}\n\nVapi DID call. Manual CRM entry needed."
+      },
+      "id": "alert-sync-failure",
+      "name": "Alert Manager",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2670, 550]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"leadId\": \"{{ $json.id }}\",\n  \"score\": {{ $('Calculate Lead Score').item.json.scoring.score }},\n  \"tier\": \"{{ $('Calculate Lead Score').item.json.scoring.tier }}\"\n}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2450, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"partial_success\",\n  \"message\": \"Lead captured, CRM sync failed\",\n  \"vapiCallInitiated\": true\n}",
+        "options": {}
+      },
+      "id": "respond-partial",
+      "name": "Respond Partial",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2890, 550]
+    }
+  ],
+  "connections": {
+    "Unified Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Emergency?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emergency?": {
+      "main": [
+        [
+          {
+            "node": "SMS Tech Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Vapi Routine Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SMS Tech Lead": {
+      "main": [
+        [
+          {
+            "node": "Vapi Emergency Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vapi Emergency Call": {
+      "main": [
+        [
+          {
+            "node": "Merge Vapi Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vapi Routine Call": {
+      "main": [
+        [
+          {
+            "node": "Merge Vapi Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Vapi Results": {
+      "main": [
+        [
+          {
+            "node": "Get ST Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ST Token": {
+      "main": [
+        [
+          {
+            "node": "Create ST Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create ST Lead": {
+      "main": [
+        [
+          {
+            "node": "ST Success?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ST Success?": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dead Letter Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [
+          {
+            "node": "Alert Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Manager": {
+      "main": [
+        [
+          {
+            "node": "Respond Partial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "lead-capture"
+    }
+  ]
+}

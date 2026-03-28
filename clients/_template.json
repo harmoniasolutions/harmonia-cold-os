@@ -1,0 +1,17 @@
+{
+  "businessName": "",
+  "ownerName": "",
+  "ownerPhone": "+1",
+  "location": "",
+  "hours": "Mon-Sat 9am-6pm, closed Sunday",
+  "areaCode": "",
+  "industry": "",
+  "services": "",
+  "policies": "",
+  "model": "gpt-4o",
+  "voiceProvider": "11labs",
+  "voiceId": "sarah",
+  "plan": "",
+  "greeting": "",
+  "extras": ""
+}

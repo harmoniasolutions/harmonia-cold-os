@@ -1,0 +1,398 @@
+{
+  "name": "Agency - Prospect Hunter (HVAC Company Scraper)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily 6 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define target cities to scrape\n// Rotate through these to build your prospect list\n\nconst targetCities = [\n  // Tier 1: High-value metros\n  { city: 'Phoenix', state: 'AZ', priority: 1 },\n  { city: 'Houston', state: 'TX', priority: 1 },\n  { city: 'Dallas', state: 'TX', priority: 1 },\n  { city: 'Las Vegas', state: 'NV', priority: 1 },\n  { city: 'Miami', state: 'FL', priority: 1 },\n  { city: 'Atlanta', state: 'GA', priority: 1 },\n  { city: 'Denver', state: 'CO', priority: 1 },\n  { city: 'San Antonio', state: 'TX', priority: 1 },\n  \n  // Tier 2: Growing markets\n  { city: 'Austin', state: 'TX', priority: 2 },\n  { city: 'Nashville', state: 'TN', priority: 2 },\n  { city: 'Charlotte', state: 'NC', priority: 2 },\n  { city: 'Orlando', state: 'FL', priority: 2 },\n  { city: 'Tampa', state: 'FL', priority: 2 },\n  { city: 'Raleigh', state: 'NC', priority: 2 },\n  { city: 'Jacksonville', state: 'FL', priority: 2 },\n  \n  // Tier 3: Secondary markets (less competition)\n  { city: 'Tucson', state: 'AZ', priority: 3 },\n  { city: 'Oklahoma City', state: 'OK', priority: 3 },\n  { city: 'Albuquerque', state: 'NM', priority: 3 },\n  { city: 'Memphis', state: 'TN', priority: 3 },\n  { city: 'Louisville', state: 'KY', priority: 3 }\n];\n\n// Get today's city (rotate daily)\nconst dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24));\nconst cityIndex = dayOfYear % targetCities.length;\nconst todaysCity = targetCities[cityIndex];\n\nreturn {\n  json: {\n    searchQuery: `HVAC companies in ${todaysCity.city}, ${todaysCity.state}`,\n    city: todaysCity.city,\n    state: todaysCity.state,\n    priority: todaysCity.priority,\n    searchDate: new Date().toISOString()\n  }\n};"
+      },
+      "id": "get-target-city",
+      "name": "Get Target City",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/place/textsearch/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.searchQuery }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $env.GOOGLE_MAPS_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "google-places-search",
+      "name": "Google Places Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and filter HVAC companies\nconst results = $input.first().json.results || [];\nconst cityData = $('Get Target City').first().json;\n\nconst prospects = results.map(place => {\n  // Extract rating info\n  const rating = place.rating || 0;\n  const reviewCount = place.user_ratings_total || 0;\n  \n  // Ideal prospect: 3.5-4.5 stars (growing but has pain points)\n  let ratingScore = 0;\n  if (rating >= 3.5 && rating <= 4.5) ratingScore = 100;\n  else if (rating > 4.5) ratingScore = 60; // Too good, might not need help\n  else if (rating >= 3.0) ratingScore = 80; // Struggling, needs help\n  else ratingScore = 40; // Too low, might be failing\n  \n  // Review count indicates business size\n  let sizeScore = 0;\n  if (reviewCount >= 50 && reviewCount <= 500) sizeScore = 100; // Sweet spot\n  else if (reviewCount > 500) sizeScore = 70; // Big company, harder to close\n  else if (reviewCount >= 20) sizeScore = 80; // Small but established\n  else sizeScore = 50; // Very small\n  \n  return {\n    placeId: place.place_id,\n    name: place.name,\n    address: place.formatted_address,\n    rating: rating,\n    reviewCount: reviewCount,\n    ratingScore: ratingScore,\n    sizeScore: sizeScore,\n    prospectScore: Math.round((ratingScore + sizeScore) / 2),\n    city: cityData.city,\n    state: cityData.state,\n    searchDate: cityData.searchDate,\n    status: 'new'\n  };\n}).filter(p => p.prospectScore >= 60); // Only keep decent prospects\n\n// Sort by prospect score\nprospects.sort((a, b) => b.prospectScore - a.prospectScore);\n\nreturn prospects.map(p => ({ json: p }));"
+      },
+      "id": "extract-prospects",
+      "name": "Extract & Score Prospects",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-prospects",
+      "name": "Loop Prospects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/place/details/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "place_id",
+              "value": "={{ $json.placeId }}"
+            },
+            {
+              "name": "fields",
+              "value": "name,formatted_address,formatted_phone_number,website,opening_hours,reviews,url"
+            },
+            {
+              "name": "key",
+              "value": "={{ $env.GOOGLE_MAPS_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-place-details",
+      "name": "Get Place Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enrich prospect with contact details and pain point analysis\nconst details = $input.first().json.result || {};\nconst prospectData = $('Loop Prospects').first().json;\n\n// Extract reviews for pain point analysis\nconst reviews = details.reviews || [];\nconst recentReviews = reviews.slice(0, 5);\n\n// Analyze reviews for pain points\nconst painPoints = [];\nconst positives = [];\n\nconst painKeywords = [\n  { keyword: 'never called back', pain: 'communication' },\n  { keyword: 'didn\\'t answer', pain: 'missed_calls' },\n  { keyword: 'waited forever', pain: 'response_time' },\n  { keyword: 'no one answered', pain: 'missed_calls' },\n  { keyword: 'hard to reach', pain: 'communication' },\n  { keyword: 'couldn\\'t get through', pain: 'missed_calls' },\n  { keyword: 'left voicemail', pain: 'missed_calls' },\n  { keyword: 'took days', pain: 'response_time' },\n  { keyword: 'scheduling', pain: 'scheduling' },\n  { keyword: 'appointment', pain: 'scheduling' },\n  { keyword: 'expensive', pain: 'pricing_objections' },\n  { keyword: 'overpriced', pain: 'pricing_objections' }\n];\n\nrecentReviews.forEach(review => {\n  const text = (review.text || '').toLowerCase();\n  const rating = review.rating || 5;\n  \n  if (rating <= 3) {\n    painKeywords.forEach(pk => {\n      if (text.includes(pk.keyword) && !painPoints.includes(pk.pain)) {\n        painPoints.push(pk.pain);\n      }\n    });\n  }\n});\n\n// Calculate outreach priority\nlet outreachPriority = prospectData.prospectScore;\n\n// Boost if they have communication pain points (our solution!)\nif (painPoints.includes('missed_calls')) outreachPriority += 20;\nif (painPoints.includes('response_time')) outreachPriority += 15;\nif (painPoints.includes('communication')) outreachPriority += 10;\n\n// Extract domain from website for email guessing\nlet domain = null;\nlet possibleEmails = [];\n\nif (details.website) {\n  try {\n    const url = new URL(details.website);\n    domain = url.hostname.replace('www.', '');\n    \n    // Common email patterns\n    possibleEmails = [\n      `info@${domain}`,\n      `contact@${domain}`,\n      `service@${domain}`,\n      `office@${domain}`\n    ];\n  } catch (e) {}\n}\n\nreturn {\n  json: {\n    // Basic info\n    name: details.name || prospectData.name,\n    phone: details.formatted_phone_number || null,\n    website: details.website || null,\n    domain: domain,\n    address: details.formatted_address || prospectData.address,\n    googleMapsUrl: details.url || null,\n    \n    // Scoring\n    rating: prospectData.rating,\n    reviewCount: prospectData.reviewCount,\n    prospectScore: prospectData.prospectScore,\n    outreachPriority: Math.min(100, outreachPriority),\n    \n    // Pain points (GOLD for personalization)\n    painPoints: painPoints,\n    hasCommunicationPain: painPoints.includes('missed_calls') || painPoints.includes('communication'),\n    hasResponseTimePain: painPoints.includes('response_time'),\n    \n    // Contact guesses\n    possibleEmails: possibleEmails,\n    \n    // Sample negative reviews (for outreach personalization)\n    negativeReviewSnippets: recentReviews\n      .filter(r => r.rating <= 3)\n      .slice(0, 2)\n      .map(r => r.text?.substring(0, 200)),\n    \n    // Meta\n    city: prospectData.city,\n    state: prospectData.state,\n    scrapedAt: new Date().toISOString(),\n    status: 'scraped',\n    outreachStatus: 'pending'\n  }\n};"
+      },
+      "id": "enrich-prospect",
+      "name": "Enrich & Analyze",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Company Name",
+              "value": "={{ $json.name }}"
+            },
+            {
+              "fieldName": "Phone",
+              "value": "={{ $json.phone }}"
+            },
+            {
+              "fieldName": "Website",
+              "value": "={{ $json.website }}"
+            },
+            {
+              "fieldName": "Domain",
+              "value": "={{ $json.domain }}"
+            },
+            {
+              "fieldName": "Address",
+              "value": "={{ $json.address }}"
+            },
+            {
+              "fieldName": "City",
+              "value": "={{ $json.city }}"
+            },
+            {
+              "fieldName": "State",
+              "value": "={{ $json.state }}"
+            },
+            {
+              "fieldName": "Google Rating",
+              "value": "={{ $json.rating }}"
+            },
+            {
+              "fieldName": "Review Count",
+              "value": "={{ $json.reviewCount }}"
+            },
+            {
+              "fieldName": "Prospect Score",
+              "value": "={{ $json.prospectScore }}"
+            },
+            {
+              "fieldName": "Outreach Priority",
+              "value": "={{ $json.outreachPriority }}"
+            },
+            {
+              "fieldName": "Pain Points",
+              "value": "={{ $json.painPoints.join(', ') }}"
+            },
+            {
+              "fieldName": "Has Communication Pain",
+              "value": "={{ $json.hasCommunicationPain }}"
+            },
+            {
+              "fieldName": "Negative Reviews",
+              "value": "={{ $json.negativeReviewSnippets?.join('\\n---\\n') || '' }}"
+            },
+            {
+              "fieldName": "Possible Emails",
+              "value": "={{ $json.possibleEmails.join(', ') }}"
+            },
+            {
+              "fieldName": "Google Maps URL",
+              "value": "={{ $json.googleMapsUrl }}"
+            },
+            {
+              "fieldName": "Status",
+              "value": "New"
+            },
+            {
+              "fieldName": "Outreach Status",
+              "value": "Pending"
+            },
+            {
+              "fieldName": "Scraped At",
+              "value": "={{ $json.scrapedAt }}"
+            }
+          ]
+        }
+      },
+      "id": "save-to-airtable",
+      "name": "Save to Prospects DB",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "rate-limit",
+      "name": "Rate Limit (1s)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2010, 300],
+      "webhookId": "rate-limit"
+    },
+    {
+      "parameters": {},
+      "id": "continue-loop",
+      "name": "Continue",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2230, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Daily summary\nconst allProspects = $('Enrich & Analyze').all();\nconst cityData = $('Get Target City').first().json;\n\nconst summary = {\n  date: new Date().toISOString(),\n  city: cityData.city,\n  state: cityData.state,\n  totalFound: allProspects.length,\n  highPriority: allProspects.filter(p => p.json.outreachPriority >= 80).length,\n  withCommunicationPain: allProspects.filter(p => p.json.hasCommunicationPain).length,\n  averageScore: Math.round(allProspects.reduce((sum, p) => sum + p.json.prospectScore, 0) / allProspects.length)\n};\n\nreturn { json: summary };"
+      },
+      "id": "daily-summary",
+      "name": "Daily Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 500]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=🎯 Prospect Hunt Complete\n\n📍 {{ $json.city }}, {{ $json.state }}\n📊 Found: {{ $json.totalFound }} prospects\n🔥 High Priority: {{ $json.highPriority }}\n💬 With Comm Pain: {{ $json.withCommunicationPain }}\n\nReady for outreach!"
+      },
+      "id": "notify-complete",
+      "name": "SMS Summary",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1570, 500]
+    }
+  ],
+  "connections": {
+    "Daily 6 AM": {
+      "main": [
+        [
+          {
+            "node": "Get Target City",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Target City": {
+      "main": [
+        [
+          {
+            "node": "Google Places Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Places Search": {
+      "main": [
+        [
+          {
+            "node": "Extract & Score Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Score Prospects": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Prospects": {
+      "main": [
+        [
+          {
+            "node": "Get Place Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Place Details": {
+      "main": [
+        [
+          {
+            "node": "Enrich & Analyze",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich & Analyze": {
+      "main": [
+        [
+          {
+            "node": "Save to Prospects DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Prospects DB": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit (1s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit (1s)": {
+      "main": [
+        [
+          {
+            "node": "Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "SMS Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "prospecting"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+customer_id,first_name,last_name,phone,email,address,city,state,zip,system_type,system_age,fuel_source,last_service_date,total_services,notes,created_at
+C001,John,Martinez,+15551234567,john.martinez@email.com,123 Oak Street,Phoenix,AZ,85001,Central AC,8,Electric,2025-06-15,3,Preferred customer - always tips,2024-01-15
+C002,Sarah,Johnson,+15552345678,sarah.j@email.com,456 Maple Avenue,Phoenix,AZ,85003,Heat Pump,5,Electric,2025-09-20,2,Has two dogs - call ahead,2024-03-22
+C003,Michael,Chen,+15553456789,mchen@email.com,789 Pine Road,Scottsdale,AZ,85251,Furnace,12,Gas,2025-04-10,5,System is old - discuss replacement,2023-11-08
+C004,Emily,Williams,+15554567890,emily.w@email.com,321 Cedar Lane,Tempe,AZ,85281,Split System,3,Electric,2025-11-01,1,New construction install,2025-02-14
+C005,Robert,Brown,+15555678901,rbrown@email.com,654 Birch Drive,Mesa,AZ,85201,Central AC,15,Gas,2025-01-20,8,Elderly resident - priority service,2022-06-30

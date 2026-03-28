@@ -1,0 +1,348 @@
+{
+  "name": "Agency - Deal Pipeline Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "morning-trigger",
+      "name": "Daily 7 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=OR({Lead Status} = 'Hot Lead', {Lead Status} = 'Warm Lead', {Lead Status} = 'Meeting Scheduled', {Lead Status} = 'Proposal Sent', {Lead Status} = 'Negotiating')",
+        "options": {}
+      },
+      "id": "get-active-deals",
+      "name": "Get Active Deals",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze pipeline and generate daily briefing\nconst deals = $input.all();\n\nconst pipeline = {\n  hotLeads: [],\n  warmLeads: [],\n  meetingsScheduled: [],\n  proposalsSent: [],\n  negotiating: [],\n  staleDeals: []\n};\n\nconst now = new Date();\n\ndeals.forEach(deal => {\n  const f = deal.json.fields || {};\n  const status = f['Lead Status'] || '';\n  const lastActivity = f['Reply Date'] || f['Email 1 Sent At'] || f['Scraped At'];\n  const daysSinceActivity = lastActivity ? \n    Math.floor((now - new Date(lastActivity)) / (1000 * 60 * 60 * 24)) : 999;\n  \n  const dealSummary = {\n    id: deal.json.id,\n    company: f['Company Name'],\n    phone: f['Phone'],\n    email: f['Verified Email'],\n    status: status,\n    intentScore: f['Intent Score'] || 0,\n    proposedMonthly: f['Proposed Monthly'] || 0,\n    meetingTime: f['Meeting Time'],\n    daysSinceActivity: daysSinceActivity,\n    action: f['Recommended Action'] || 'follow_up'\n  };\n  \n  // Categorize\n  if (status === 'Hot Lead') pipeline.hotLeads.push(dealSummary);\n  else if (status === 'Warm Lead') pipeline.warmLeads.push(dealSummary);\n  else if (status === 'Meeting Scheduled') pipeline.meetingsScheduled.push(dealSummary);\n  else if (status === 'Proposal Sent') pipeline.proposalsSent.push(dealSummary);\n  else if (status === 'Negotiating') pipeline.negotiating.push(dealSummary);\n  \n  // Flag stale deals (no activity in 5+ days)\n  if (daysSinceActivity >= 5 && status !== 'Meeting Scheduled') {\n    pipeline.staleDeals.push(dealSummary);\n  }\n});\n\n// Calculate pipeline value\nconst pipelineValue = deals.reduce((sum, d) => {\n  const monthly = d.json.fields?.['Proposed Monthly'] || 497;\n  return sum + (monthly * 12); // Annual value\n}, 0);\n\n// Today's priorities\nconst todaysPriorities = [\n  ...pipeline.hotLeads.slice(0, 3),\n  ...pipeline.proposalsSent.filter(d => d.daysSinceActivity >= 2).slice(0, 2),\n  ...pipeline.staleDeals.slice(0, 2)\n].slice(0, 5);\n\nreturn {\n  json: {\n    date: now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }),\n    totalDeals: deals.length,\n    pipelineValue: pipelineValue,\n    \n    counts: {\n      hotLeads: pipeline.hotLeads.length,\n      warmLeads: pipeline.warmLeads.length,\n      meetings: pipeline.meetingsScheduled.length,\n      proposals: pipeline.proposalsSent.length,\n      negotiating: pipeline.negotiating.length,\n      stale: pipeline.staleDeals.length\n    },\n    \n    todaysPriorities: todaysPriorities,\n    todaysMeetings: pipeline.meetingsScheduled.filter(m => {\n      if (!m.meetingTime) return false;\n      const meetingDate = new Date(m.meetingTime).toDateString();\n      return meetingDate === now.toDateString();\n    }),\n    \n    staleDeals: pipeline.staleDeals,\n    pipeline: pipeline\n  }\n};"
+      },
+      "id": "analyze-pipeline",
+      "name": "Analyze Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=☀️ DAILY PIPELINE BRIEFING\n{{ $json.date }}\n\n💰 Pipeline Value: ${{ $json.pipelineValue.toLocaleString() }}\n📊 Active Deals: {{ $json.totalDeals }}\n\n🔥 Hot Leads: {{ $json.counts.hotLeads }}\n📅 Meetings Today: {{ $json.todaysMeetings.length }}\n📄 Proposals Out: {{ $json.counts.proposals }}\n⚠️ Need Attention: {{ $json.counts.stale }}\n\n{{ $json.todaysMeetings.length > 0 ? '📅 TODAY: ' + $json.todaysMeetings.map(m => m.company).join(', ') : '' }}\n\nTop Priority: {{ $json.todaysPriorities[0]?.company || 'Check dashboard' }}"
+      },
+      "id": "morning-sms",
+      "name": "Morning SMS Briefing",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [910, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"📊 Daily Pipeline Report - {{ $json.date }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\"type\": \"mrkdwn\", \"text\": \"*Pipeline Value*\\n${{ $json.pipelineValue.toLocaleString() }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"*Active Deals*\\n{{ $json.totalDeals }}\"}\n      ]\n    },\n    {\n      \"type\": \"divider\"\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\"type\": \"mrkdwn\", \"text\": \"🔥 *Hot Leads:* {{ $json.counts.hotLeads }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"🌡️ *Warm Leads:* {{ $json.counts.warmLeads }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"📅 *Meetings:* {{ $json.counts.meetings }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"📄 *Proposals:* {{ $json.counts.proposals }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"💬 *Negotiating:* {{ $json.counts.negotiating }}\"},\n        {\"type\": \"mrkdwn\", \"text\": \"⚠️ *Stale:* {{ $json.counts.stale }}\"}\n      ]\n    },\n    {\n      \"type\": \"divider\"\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*🎯 Today's Priorities:*\\n{{ $json.todaysPriorities.map((p, i) => `${i+1}. ${p.company} (${p.status}) - ${p.action}`).join('\\\\n') || 'No urgent priorities' }}\"\n      }\n    }{{ $json.todaysMeetings.length > 0 ? ',{\"type\": \"section\", \"text\": {\"type\": \"mrkdwn\", \"text\": \"*📅 Today\\'s Meetings:*\\\\n' + $json.todaysMeetings.map(m => `• ${m.company} - ${new Date(m.meetingTime).toLocaleTimeString()}`).join('\\\\n') + '\"}}' : '' }}\n  ]\n}"
+      },
+      "id": "slack-briefing",
+      "name": "Slack Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.counts.stale }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check-stale",
+      "name": "Has Stale Deals?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate re-engagement actions for stale deals\nconst pipeline = $input.first().json;\nconst staleDeals = pipeline.staleDeals || [];\n\nreturn staleDeals.map(deal => ({\n  json: {\n    dealId: deal.id,\n    company: deal.company,\n    phone: deal.phone,\n    email: deal.email,\n    daysSinceActivity: deal.daysSinceActivity,\n    currentStatus: deal.status,\n    suggestedAction: deal.daysSinceActivity > 10 ? 'breakup_email' : 'phone_call'\n  }\n}));"
+      },
+      "id": "prepare-reengagement",
+      "name": "Prepare Re-engagement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.dealId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Needs Re-engagement",
+              "value": "true"
+            },
+            {
+              "fieldName": "Suggested Action",
+              "value": "={{ $json.suggestedAction }}"
+            }
+          ]
+        }
+      },
+      "id": "flag-for-reengagement",
+      "name": "Flag for Re-engagement",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 17
+            }
+          ]
+        }
+      },
+      "id": "evening-trigger",
+      "name": "Daily 5 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 600]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Lead Status} = 'Won', DATETIME_DIFF(NOW(), {Won Date}, 'days') <= 1)",
+        "options": {}
+      },
+      "id": "get-todays-wins",
+      "name": "Get Today's Wins",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate today's performance\nconst wins = $input.all();\n\nconst totalWonValue = wins.reduce((sum, w) => {\n  const monthly = w.json.fields?.['Proposed Monthly'] || 497;\n  return sum + monthly;\n}, 0);\n\nconst wonCompanies = wins.map(w => w.json.fields?.['Company Name']).filter(Boolean);\n\nreturn {\n  json: {\n    winsToday: wins.length,\n    totalMRR: totalWonValue,\n    annualValue: totalWonValue * 12,\n    companies: wonCompanies\n  }\n};"
+      },
+      "id": "calc-wins",
+      "name": "Calculate Wins",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.winsToday }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "has-wins",
+      "name": "Any Wins?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [910, 600]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=🎉 DEAL CLOSED!\n\n{{ $json.companies.join(', ') }}\n\n💰 New MRR: ${{ $json.totalMRR.toLocaleString() }}\n📈 Annual Value: ${{ $json.annualValue.toLocaleString() }}\n\nTime to celebrate and onboard!"
+      },
+      "id": "win-notification",
+      "name": "Win Celebration SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1130, 500]
+    }
+  ],
+  "connections": {
+    "Daily 7 AM": {
+      "main": [
+        [
+          {
+            "node": "Get Active Deals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Deals": {
+      "main": [
+        [
+          {
+            "node": "Analyze Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Morning SMS Briefing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Slack Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Briefing": {
+      "main": [
+        [
+          {
+            "node": "Has Stale Deals?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Stale Deals?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Re-engagement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Prepare Re-engagement": {
+      "main": [
+        [
+          {
+            "node": "Flag for Re-engagement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 5 PM": {
+      "main": [
+        [
+          {
+            "node": "Get Today's Wins",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today's Wins": {
+      "main": [
+        [
+          {
+            "node": "Calculate Wins",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Wins": {
+      "main": [
+        [
+          {
+            "node": "Any Wins?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Wins?": {
+      "main": [
+        [
+          {
+            "node": "Win Celebration SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "pipeline"
+    }
+  ]
+}

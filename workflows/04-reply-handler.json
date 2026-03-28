@@ -1,0 +1,725 @@
+{
+  "name": "Harmonia - Lead Reactivation Part C: Reply Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "twilio-inbound-sms",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "twilio-webhook",
+      "name": "Twilio Inbound SMS",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Twilio webhook payload (URL-encoded form data)\nconst body = $input.first().json.body || $input.first().json;\n\n// Normalize phone number to E.164\nlet fromNumber = body.From || '';\nfromNumber = fromNumber.replace(/\\D/g, '');\nif (fromNumber.length === 10) {\n  fromNumber = '+1' + fromNumber;\n} else if (fromNumber.length === 11 && fromNumber.startsWith('1')) {\n  fromNumber = '+' + fromNumber;\n} else if (!fromNumber.startsWith('+')) {\n  fromNumber = '+' + fromNumber;\n}\n\nreturn {\n  json: {\n    from: fromNumber,\n    fromRaw: body.From,\n    to: body.To,\n    message: body.Body || '',\n    messageLower: (body.Body || '').toLowerCase().trim(),\n    messageSid: body.MessageSid,\n    numMedia: parseInt(body.NumMedia) || 0,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "parse-twilio",
+      "name": "Parse Twilio Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-stop",
+              "leftValue": "={{ ['stop', 'unsubscribe', 'cancel', 'quit', 'end'].includes($json.messageLower) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "quick-stop-check",
+      "name": "Quick STOP Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "filterByFormula": "=OR({Phone} = '{{ $('Parse Twilio Data').item.json.from }}', {Phone} = '{{ $('Parse Twilio Data').item.json.fromRaw }}')"
+      },
+      "id": "find-lead",
+      "name": "Find Lead by Phone",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "lead-found",
+              "leftValue": "={{ $json.length || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "lead-found-check",
+      "name": "Lead Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an intent classifier for an HVAC company. Analyze the customer's SMS reply and classify it into EXACTLY one category.\n\nCategories:\n- INTERESTED: They want to book, said yes, want to learn more, asked about scheduling, expressed interest in the offer, or gave any positive response\n- NOT_INTERESTED: They declined, said no, not right now, maybe later, or gave a negative but polite response\n- STOP: They explicitly asked to stop texting, unsubscribe, remove them, or expressed anger about receiving messages\n- QUESTION: They asked a specific question that needs a human response (pricing, availability, technical question)\n\nRules:\n1. \"Yes\", \"Yeah\", \"Sure\", \"Ok\", \"Interested\", \"Tell me more\" = INTERESTED\n2. \"No thanks\", \"Not now\", \"Maybe later\" = NOT_INTERESTED  \n3. \"Stop\", \"Unsubscribe\", \"Remove me\", angry responses = STOP\n4. \"How much?\", \"When can you come?\", \"What's included?\" = QUESTION\n5. If unclear, default to QUESTION (human will handle)\n\nRespond with ONLY the category name in uppercase. Nothing else."
+            },
+            {
+              "role": "user",
+              "content": "=Customer's reply: \"{{ $('Parse Twilio Data').item.json.message }}\""
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "classify-intent",
+      "name": "AI Classify Intent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize and validate intent classification\nconst rawIntent = ($input.first().json.message?.content || $input.first().json.text || 'QUESTION').trim().toUpperCase();\nconst validIntents = ['INTERESTED', 'NOT_INTERESTED', 'STOP', 'QUESTION'];\n\nconst intent = validIntents.includes(rawIntent) ? rawIntent : 'QUESTION';\n\nconst leadData = $('Find Lead by Phone').first().json[0] || {};\nconst twilioData = $('Parse Twilio Data').first().json;\n\nreturn {\n  json: {\n    intent: intent,\n    confidence: validIntents.includes(rawIntent) ? 'high' : 'low',\n    leadId: leadData.id || null,\n    leadFields: leadData.fields || {},\n    originalMessage: twilioData.message,\n    phone: twilioData.from,\n    timestamp: twilioData.timestamp\n  }\n};"
+      },
+      "id": "normalize-intent",
+      "name": "Normalize Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "INTERESTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "INTERESTED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "NOT_INTERESTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "NOT_INTERESTED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "STOP",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "STOP"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "QUESTION",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "QUESTION"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "intent-router",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.vapi.ai/call/phone",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.VAPI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"assistantId\": \"{{ $env.VAPI_BOOKING_ASSISTANT_ID }}\",\n  \"phoneNumberId\": \"{{ $env.VAPI_PHONE_NUMBER_ID }}\",\n  \"customer\": {\n    \"number\": \"{{ $json.phone }}\",\n    \"name\": \"{{ $json.leadFields['First Name'] || '' }} {{ $json.leadFields['Last Name'] || '' }}\"\n  },\n  \"assistantOverrides\": {\n    \"firstMessage\": \"Hi {{ $json.leadFields['First Name'] || 'there' }}, this is Sam from {{ $env.COMPANY_NAME }}! I saw you replied to our text and wanted to personally help you get scheduled. Do you have a moment to find a time that works for you?\",\n    \"metadata\": {\n      \"leadId\": \"{{ $json.leadId }}\",\n      \"source\": \"reactivation_reply\",\n      \"originalMessage\": \"{{ $json.originalMessage }}\"\n    }\n  }\n}",
+        "options": {}
+      },
+      "id": "vapi-outbound",
+      "name": "Trigger Vapi Outbound Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2050, 200]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Normalize Intent').item.json.leadId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Status",
+              "value": "Hot Lead - Callback"
+            },
+            {
+              "fieldName": "Has Replied",
+              "value": "true"
+            },
+            {
+              "fieldName": "Reply Intent",
+              "value": "INTERESTED"
+            },
+            {
+              "fieldName": "Reply Message",
+              "value": "={{ $('Normalize Intent').item.json.originalMessage }}"
+            },
+            {
+              "fieldName": "Reply Timestamp",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "Interested - Vapi Calling"
+            }
+          ]
+        }
+      },
+      "id": "update-interested",
+      "name": "Update - Interested",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2270, 200]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $json.leadId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Status",
+              "value": "Nurture-Later"
+            },
+            {
+              "fieldName": "Has Replied",
+              "value": "true"
+            },
+            {
+              "fieldName": "Reply Intent",
+              "value": "NOT_INTERESTED"
+            },
+            {
+              "fieldName": "Reply Message",
+              "value": "={{ $json.originalMessage }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "Not Interested - Nurture Later"
+            },
+            {
+              "fieldName": "Next Reactivation Date",
+              "value": "={{ $now.plus({days: 180}).toISODate() }}"
+            }
+          ]
+        }
+      },
+      "id": "update-not-interested",
+      "name": "Update - Not Interested",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2050, 350]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $json.leadId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Status",
+              "value": "Do Not Contact"
+            },
+            {
+              "fieldName": "Do Not Contact",
+              "value": "true"
+            },
+            {
+              "fieldName": "Has Replied",
+              "value": "true"
+            },
+            {
+              "fieldName": "Reply Intent",
+              "value": "STOP"
+            },
+            {
+              "fieldName": "Reply Message",
+              "value": "={{ $json.originalMessage }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "Opted Out"
+            },
+            {
+              "fieldName": "DNC Date",
+              "value": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "update-stop",
+      "name": "Update - DNC",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2050, 500]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.MANAGER_PHONE }}",
+        "message": "=📱 LEAD QUESTION - Reply needed\n\nFrom: {{ $json.leadFields['First Name'] }} {{ $json.leadFields['Last Name'] }}\nPhone: {{ $json.phone }}\n\nTheir message:\n\"{{ $json.originalMessage }}\"\n\n⏰ Reply within 5 min for best conversion."
+      },
+      "id": "alert-manager-question",
+      "name": "Alert Manager - Question",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [2050, 650]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "list"
+        },
+        "id": "={{ $('Normalize Intent').item.json.leadId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Has Replied",
+              "value": "true"
+            },
+            {
+              "fieldName": "Reply Intent",
+              "value": "QUESTION"
+            },
+            {
+              "fieldName": "Reply Message",
+              "value": "={{ $('Normalize Intent').item.json.originalMessage }}"
+            },
+            {
+              "fieldName": "Reactivation Status",
+              "value": "Question - Awaiting Human Reply"
+            }
+          ]
+        }
+      },
+      "id": "update-question",
+      "name": "Update - Question",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2270, 650]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "DNC List",
+          "mode": "list"
+        },
+        "id": "",
+        "fields": {}
+      },
+      "id": "handle-stop-direct",
+      "name": "Handle Direct STOP",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [910, 150]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/xml"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-twilio",
+      "name": "Respond to Twilio",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2490, 400]
+    }
+  ],
+  "connections": {
+    "Twilio Inbound SMS": {
+      "main": [
+        [
+          {
+            "node": "Parse Twilio Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Twilio Data": {
+      "main": [
+        [
+          {
+            "node": "Quick STOP Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quick STOP Check": {
+      "main": [
+        [
+          {
+            "node": "Handle Direct STOP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Lead by Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Lead by Phone": {
+      "main": [
+        [
+          {
+            "node": "Lead Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Found?": {
+      "main": [
+        [
+          {
+            "node": "AI Classify Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Classify Intent": {
+      "main": [
+        [
+          {
+            "node": "Normalize Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Intent": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Trigger Vapi Outbound Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update - Not Interested",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update - DNC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Manager - Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Vapi Outbound Call": {
+      "main": [
+        [
+          {
+            "node": "Update - Interested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update - Interested": {
+      "main": [
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update - Not Interested": {
+      "main": [
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update - DNC": {
+      "main": [
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Manager - Question": {
+      "main": [
+        [
+          {
+            "node": "Update - Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update - Question": {
+      "main": [
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Direct STOP": {
+      "main": [
+        [
+          {
+            "node": "Respond to Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "harmonia"
+    },
+    {
+      "name": "hvac"
+    },
+    {
+      "name": "reactivation"
+    }
+  ]
+}

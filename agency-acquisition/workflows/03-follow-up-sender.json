@@ -1,0 +1,342 @@
+{
+  "name": "Agency - Follow-Up Email Sender",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Outreach Status} = 'Email 1 Sent', DATETIME_DIFF(NOW(), {Email 1 Sent At}, 'days') >= 3, {Reply Received} != TRUE())",
+        "options": {
+          "maxRecords": 50
+        }
+      },
+      "id": "get-email2-due",
+      "name": "Get Email 2 Due",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 200]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Outreach Status} = 'Email 2 Sent', DATETIME_DIFF(NOW(), {Email 2 Sent At}, 'days') >= 4, {Reply Received} != TRUE())",
+        "options": {
+          "maxRecords": 50
+        }
+      },
+      "id": "get-email3-due",
+      "name": "Get Email 3 Due (Breakup)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-email2",
+      "name": "Loop Email 2",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [690, 200]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-email3",
+      "name": "Loop Email 3",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.OUTREACH_FROM_EMAIL }}",
+        "toEmail": "={{ $json.fields['Verified Email'] || $json.fields['Possible Emails'].split(', ')[0] }}",
+        "subject": "={{ $json.fields['Email 2 Subject'] }}",
+        "contentType": "text/plain",
+        "content": "={{ $json.fields['Email 2 Body'] }}"
+      },
+      "id": "send-email-2",
+      "name": "Send Email 2",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [910, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.OUTREACH_FROM_EMAIL }}",
+        "toEmail": "={{ $json.fields['Verified Email'] || $json.fields['Possible Emails'].split(', ')[0] }}",
+        "subject": "={{ $json.fields['Email 3 Subject'] }}",
+        "contentType": "text/plain",
+        "content": "={{ $json.fields['Email 3 Body'] }}"
+      },
+      "id": "send-email-3",
+      "name": "Send Email 3 (Breakup)",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $('Loop Email 2').item.json.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Outreach Status",
+              "value": "Email 2 Sent"
+            },
+            {
+              "fieldName": "Email 2 Sent At",
+              "value": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "mark-email2-sent",
+      "name": "Mark Email 2 Sent",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1130, 200]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $('Loop Email 3').item.json.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Outreach Status",
+              "value": "Sequence Complete"
+            },
+            {
+              "fieldName": "Email 3 Sent At",
+              "value": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "mark-email3-sent",
+      "name": "Mark Sequence Complete",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {},
+      "id": "continue-2",
+      "name": "Continue 2",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1350, 200]
+    },
+    {
+      "parameters": {},
+      "id": "continue-3",
+      "name": "Continue 3",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1350, 400]
+    }
+  ],
+  "connections": {
+    "Daily 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Get Email 2 Due",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Email 3 Due (Breakup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Email 2 Due": {
+      "main": [
+        [
+          {
+            "node": "Loop Email 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Email 3 Due (Breakup)": {
+      "main": [
+        [
+          {
+            "node": "Loop Email 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Email 2": {
+      "main": [
+        [
+          {
+            "node": "Send Email 2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Loop Email 3": {
+      "main": [
+        [
+          {
+            "node": "Send Email 3 (Breakup)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Email 2": {
+      "main": [
+        [
+          {
+            "node": "Mark Email 2 Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email 3 (Breakup)": {
+      "main": [
+        [
+          {
+            "node": "Mark Sequence Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Email 2 Sent": {
+      "main": [
+        [
+          {
+            "node": "Continue 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Sequence Complete": {
+      "main": [
+        [
+          {
+            "node": "Continue 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue 2": {
+      "main": [
+        [
+          {
+            "node": "Loop Email 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue 3": {
+      "main": [
+        [
+          {
+            "node": "Loop Email 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "outreach"
+    }
+  ]
+}

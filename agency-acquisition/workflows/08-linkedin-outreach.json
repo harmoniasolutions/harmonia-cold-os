@@ -1,0 +1,343 @@
+{
+  "name": "Agency - LinkedIn Multi-Touch Outreach",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 11
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily 11 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Outreach Priority} >= 70, {LinkedIn URL} != '', OR({LinkedIn Status} = '', {LinkedIn Status} = 'Not Started'))",
+        "options": {
+          "maxRecords": 10,
+          "sort": [
+            {
+              "field": "Outreach Priority",
+              "direction": "desc"
+            }
+          ]
+        }
+      },
+      "id": "get-linkedin-prospects",
+      "name": "Get LinkedIn Prospects",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop",
+      "name": "Loop Prospects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build LinkedIn outreach context\nconst prospect = $input.first().json;\nconst f = prospect.fields || {};\n\n// Determine connection message angle\nlet angle = 'general';\nlet hook = '';\n\nif (f['Has Communication Pain']) {\n  angle = 'missed_calls';\n  hook = 'noticed you might be losing calls after hours';\n} else if (f['Google Rating'] && f['Google Rating'] < 4.2) {\n  angle = 'reviews';\n  hook = 'saw an opportunity to boost your reviews';\n} else {\n  angle = 'growth';\n  hook = 'helping HVAC owners in ' + (f['City'] || 'your area') + ' capture more leads';\n}\n\nreturn {\n  json: {\n    prospectId: prospect.id,\n    companyName: f['Company Name'] || '',\n    contactName: f['Contact Name'] || f['Owner Name'] || '',\n    linkedInUrl: f['LinkedIn URL'] || '',\n    city: f['City'] || '',\n    state: f['State'] || '',\n    rating: f['Google Rating'] || 0,\n    reviewCount: f['Review Count'] || 0,\n    painPoints: f['Pain Points'] || '',\n    angle: angle,\n    hook: hook\n  }\n};"
+      },
+      "id": "build-context",
+      "name": "Build LinkedIn Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write LinkedIn connection requests and follow-up messages for B2B sales. Your messages are SHORT, personalized, and get responses.\n\nRULES:\n1. Connection request: MAX 280 characters (LinkedIn limit)\n2. Be conversational, not salesy\n3. Reference something specific about them\n4. No pitching in connection request\n5. Follow-up messages: 2-3 sentences max\n\nOUTPUT JSON:\n{\n  \"connectionRequest\": \"280 char max connection note\",\n  \"followUp1\": \"First follow-up after connection (value-first)\",\n  \"followUp2\": \"Second follow-up (soft pitch)\",\n  \"followUp3\": \"Final follow-up (direct ask)\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "=Write LinkedIn outreach for:\n\nName: {{ $json.contactName || 'HVAC Owner' }}\nCompany: {{ $json.companyName }}\nLocation: {{ $json.city }}, {{ $json.state }}\nGoogle Rating: {{ $json.rating }} ({{ $json.reviewCount }} reviews)\nAngle: {{ $json.angle }}\nHook: {{ $json.hook }}\nPain Points: {{ $json.painPoints }}\n\nMy offer: AI phone system that answers calls 24/7 and books appointments\n\nGenerate personalized LinkedIn sequence."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "response_format": {"type": "json_object"}
+        }
+      },
+      "id": "generate-messages",
+      "name": "AI Generate Messages",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message?.content || $input.first().json.text || '{}';\nlet messages;\n\ntry {\n  messages = JSON.parse(response);\n} catch (e) {\n  const match = response.match(/\\{[\\s\\S]*\\}/);\n  messages = match ? JSON.parse(match[0]) : {};\n}\n\nconst context = $('Build LinkedIn Context').first().json;\n\nreturn {\n  json: {\n    ...context,\n    connectionRequest: messages.connectionRequest || '',\n    followUp1: messages.followUp1 || '',\n    followUp2: messages.followUp2 || '',\n    followUp3: messages.followUp3 || ''\n  }\n};"
+      },
+      "id": "parse-messages",
+      "name": "Parse Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.prospectId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "LinkedIn Connection Msg",
+              "value": "={{ $json.connectionRequest }}"
+            },
+            {
+              "fieldName": "LinkedIn Follow-Up 1",
+              "value": "={{ $json.followUp1 }}"
+            },
+            {
+              "fieldName": "LinkedIn Follow-Up 2",
+              "value": "={{ $json.followUp2 }}"
+            },
+            {
+              "fieldName": "LinkedIn Follow-Up 3",
+              "value": "={{ $json.followUp3 }}"
+            },
+            {
+              "fieldName": "LinkedIn Status",
+              "value": "Messages Generated"
+            }
+          ]
+        }
+      },
+      "id": "save-messages",
+      "name": "Save to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {},
+      "id": "continue",
+      "name": "Continue",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({LinkedIn Status} = 'Connected', DATETIME_DIFF(NOW(), {LinkedIn Connected Date}, 'days') >= 1, {LinkedIn Follow-Up 1 Sent} != TRUE())",
+        "options": {
+          "maxRecords": 10
+        }
+      },
+      "id": "get-followup1-due",
+      "name": "Get Follow-Up 1 Due",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create task list for manual LinkedIn actions\nconst messagesReady = $('Save to Airtable').all();\nconst followUps = $('Get Follow-Up 1 Due').all();\n\nconst dailyTasks = [];\n\n// New connection requests\nmessagesReady.forEach(p => {\n  dailyTasks.push({\n    type: 'connection_request',\n    company: p.json.fields?.['Company Name'],\n    linkedInUrl: p.json.fields?.['LinkedIn URL'],\n    message: p.json.fields?.['LinkedIn Connection Msg'],\n    priority: 'high'\n  });\n});\n\n// Follow-ups\nfollowUps.forEach(p => {\n  dailyTasks.push({\n    type: 'follow_up',\n    company: p.json.fields?.['Company Name'],\n    linkedInUrl: p.json.fields?.['LinkedIn URL'],\n    message: p.json.fields?.['LinkedIn Follow-Up 1'],\n    priority: 'medium'\n  });\n});\n\nreturn {\n  json: {\n    date: new Date().toLocaleDateString(),\n    totalTasks: dailyTasks.length,\n    connectionRequests: dailyTasks.filter(t => t.type === 'connection_request').length,\n    followUps: dailyTasks.filter(t => t.type === 'follow_up').length,\n    tasks: dailyTasks\n  }\n};"
+      },
+      "id": "compile-tasks",
+      "name": "Compile Daily Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 500]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=📱 LinkedIn Tasks Ready\n\n🔗 New Connections: {{ $json.connectionRequests }}\n💬 Follow-Ups: {{ $json.followUps }}\n\nTotal: {{ $json.totalTasks }} actions\n\nCheck Airtable for copy-paste messages!"
+      },
+      "id": "notify-tasks",
+      "name": "SMS Task Reminder",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [910, 500]
+    }
+  ],
+  "connections": {
+    "Daily 11 AM": {
+      "main": [
+        [
+          {
+            "node": "Get LinkedIn Prospects",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Follow-Up 1 Due",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get LinkedIn Prospects": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Prospects": {
+      "main": [
+        [
+          {
+            "node": "Build LinkedIn Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compile Daily Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build LinkedIn Context": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Messages": {
+      "main": [
+        [
+          {
+            "node": "Save to Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Airtable": {
+      "main": [
+        [
+          {
+            "node": "Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Follow-Up 1 Due": {
+      "main": [
+        [
+          {
+            "node": "Compile Daily Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Daily Tasks": {
+      "main": [
+        [
+          {
+            "node": "SMS Task Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "linkedin"
+    }
+  ],
+  "notes": "NOTE: LinkedIn automation via API is against ToS. This workflow generates the messages and saves them to Airtable for MANUAL copy-paste. For automated LinkedIn, you'd need tools like Phantombuster, Dripify, or Expandi (use at your own risk)."
+}

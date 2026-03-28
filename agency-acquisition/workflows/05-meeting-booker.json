@@ -1,0 +1,440 @@
+{
+  "name": "Agency - AI Meeting Booker",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-meeting",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Book Meeting",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "book-meeting"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Lead Status} = 'Hot Lead', {Meeting Booked} != TRUE())",
+        "options": {
+          "maxRecords": 10
+        }
+      },
+      "id": "get-hot-leads",
+      "name": "Get Hot Leads to Book",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 10
+            }
+          ]
+        }
+      },
+      "id": "daily-check",
+      "name": "Daily 10 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [50, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare meeting booking context\nconst input = $input.first().json;\n\n// Determine source (webhook or scheduled)\nlet prospect;\nlet source;\n\nif (input.fields) {\n  // From Airtable (scheduled)\n  prospect = input;\n  source = 'scheduled';\n} else {\n  // From webhook\n  prospect = input;\n  source = 'webhook';\n}\n\nconst companyName = prospect.fields?.['Company Name'] || prospect.companyName || 'Unknown';\nconst email = prospect.fields?.['Verified Email'] || prospect.email || '';\nconst phone = prospect.fields?.['Phone'] || prospect.phone || '';\nconst contactName = prospect.fields?.['Contact Name'] || prospect.contactName || '';\n\nreturn {\n  json: {\n    prospectId: prospect.id || prospect.prospectId,\n    companyName: companyName,\n    email: email,\n    phone: phone,\n    contactName: contactName,\n    source: source\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "resource": "freebusy",
+        "timeMin": "={{ $now.toISO() }}",
+        "timeMax": "={{ $now.plus({days: 7}).toISO() }}",
+        "options": {}
+      },
+      "id": "check-availability",
+      "name": "Check Calendar",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.1,
+      "position": [690, 400],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "GCAL_CRED_ID",
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate available time slots\nconst busyTimes = $input.first().json.calendars?.primary?.busy || [];\nconst context = $('Prepare Context').first().json;\n\n// Business hours: 9 AM - 5 PM, Mon-Fri\nconst slots = [];\nconst now = new Date();\n\nfor (let day = 1; day <= 7; day++) {\n  const date = new Date(now);\n  date.setDate(date.getDate() + day);\n  \n  // Skip weekends\n  if (date.getDay() === 0 || date.getDay() === 6) continue;\n  \n  // Generate slots for this day\n  for (let hour = 9; hour <= 16; hour++) {\n    const slotStart = new Date(date);\n    slotStart.setHours(hour, 0, 0, 0);\n    \n    const slotEnd = new Date(slotStart);\n    slotEnd.setMinutes(30);\n    \n    // Check if slot conflicts with busy times\n    const isAvailable = !busyTimes.some(busy => {\n      const busyStart = new Date(busy.start);\n      const busyEnd = new Date(busy.end);\n      return slotStart < busyEnd && slotEnd > busyStart;\n    });\n    \n    if (isAvailable) {\n      slots.push({\n        start: slotStart.toISOString(),\n        end: slotEnd.toISOString(),\n        display: slotStart.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + \n                 ' at ' + slotStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })\n      });\n    }\n  }\n}\n\n// Take first 6 available slots\nconst availableSlots = slots.slice(0, 6);\n\nreturn {\n  json: {\n    ...context,\n    availableSlots: availableSlots,\n    slotsText: availableSlots.map((s, i) => `${i + 1}. ${s.display}`).join('\\n')\n  }\n};"
+      },
+      "id": "generate-slots",
+      "name": "Generate Available Slots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a professional meeting scheduler for a B2B AI automation agency. Write a brief, friendly email to confirm a meeting time.\n\nRULES:\n1. Be warm but professional\n2. Keep it under 80 words\n3. Present the available time slots clearly\n4. Make it easy for them to reply with their preferred time\n5. NO exclamation marks\n6. Include your Calendly link as an alternative\n\nOutput JSON: {\"subject\": \"...\", \"body\": \"...\"}"
+            },
+            {
+              "role": "user",
+              "content": "=Write a meeting booking email for:\n\nCompany: {{ $json.companyName }}\nContact: {{ $json.contactName || 'there' }}\n\nAvailable times:\n{{ $json.slotsText }}\n\nCalendly link: [YOUR_CALENDLY_LINK]\n\nMeeting purpose: Demo our AI phone system that answers calls 24/7"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "response_format": {"type": "json_object"}
+        }
+      },
+      "id": "generate-booking-email",
+      "name": "Generate Booking Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message?.content || $input.first().json.text || '{}';\nlet email;\n\ntry {\n  email = JSON.parse(response);\n} catch (e) {\n  const match = response.match(/\\{[\\s\\S]*\\}/);\n  email = match ? JSON.parse(match[0]) : { subject: 'Quick call this week?', body: response };\n}\n\nconst context = $('Generate Available Slots').first().json;\n\nreturn {\n  json: {\n    ...context,\n    emailSubject: email.subject,\n    emailBody: email.body\n  }\n};"
+      },
+      "id": "parse-email",
+      "name": "Parse Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.OUTREACH_FROM_EMAIL }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.emailSubject }}",
+        "contentType": "text/plain",
+        "content": "={{ $json.emailBody }}"
+      },
+      "id": "send-booking-email",
+      "name": "Send Booking Email",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.prospectId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Booking Email Sent",
+              "value": "true"
+            },
+            {
+              "fieldName": "Booking Email Date",
+              "value": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldName": "Lead Status",
+              "value": "Booking Sent"
+            }
+          ]
+        }
+      },
+      "id": "update-prospect",
+      "name": "Update Prospect",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "calendly-webhook",
+        "options": {}
+      },
+      "id": "calendly-webhook",
+      "name": "Calendly Booked",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 700],
+      "webhookId": "calendly-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process Calendly booking\nconst event = $input.first().json;\n\nconst inviteeEmail = event.payload?.invitee?.email || event.invitee_email || '';\nconst inviteeName = event.payload?.invitee?.name || event.invitee_name || '';\nconst eventTime = event.payload?.event?.start_time || event.event_start_time || '';\nconst eventName = event.payload?.event?.name || event.event_name || 'Discovery Call';\n\nreturn {\n  json: {\n    inviteeEmail: inviteeEmail.toLowerCase(),\n    inviteeName: inviteeName,\n    meetingTime: eventTime,\n    meetingName: eventName,\n    bookedAt: new Date().toISOString()\n  }\n};"
+      },
+      "id": "process-calendly",
+      "name": "Process Calendly Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 700]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=FIND(LOWER('{{ $json.inviteeEmail }}'), LOWER({Verified Email}))",
+        "options": {
+          "maxRecords": 1
+        }
+      },
+      "id": "find-prospect",
+      "name": "Find Prospect",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [690, 700]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $input.first().json.id }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Meeting Booked",
+              "value": "true"
+            },
+            {
+              "fieldName": "Meeting Time",
+              "value": "={{ $('Process Calendly Data').first().json.meetingTime }}"
+            },
+            {
+              "fieldName": "Lead Status",
+              "value": "Meeting Scheduled"
+            },
+            {
+              "fieldName": "Booked At",
+              "value": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "mark-booked",
+      "name": "Mark Meeting Booked",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [910, 700]
+    },
+    {
+      "parameters": {
+        "from": "={{ $env.TWILIO_PHONE_NUMBER }}",
+        "to": "={{ $env.YOUR_PHONE }}",
+        "message": "=📅 MEETING BOOKED!\n\n{{ $('Process Calendly Data').first().json.inviteeName }}\n{{ $input.first().json.fields['Company Name'] }}\n\n🕐 {{ new Date($('Process Calendly Data').first().json.meetingTime).toLocaleString() }}\n\nPrepare your demo!"
+      },
+      "id": "notify-booked",
+      "name": "SMS: Meeting Booked",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1130, 700]
+    }
+  ],
+  "connections": {
+    "Daily 10 AM": {
+      "main": [
+        [
+          {
+            "node": "Get Hot Leads to Book",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Hot Leads to Book": {
+      "main": [
+        [
+          {
+            "node": "Prepare Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Book Meeting": {
+      "main": [
+        [
+          {
+            "node": "Prepare Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Context": {
+      "main": [
+        [
+          {
+            "node": "Check Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Calendar": {
+      "main": [
+        [
+          {
+            "node": "Generate Available Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Available Slots": {
+      "main": [
+        [
+          {
+            "node": "Generate Booking Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Booking Email": {
+      "main": [
+        [
+          {
+            "node": "Parse Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Email": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Email": {
+      "main": [
+        [
+          {
+            "node": "Update Prospect",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calendly Booked": {
+      "main": [
+        [
+          {
+            "node": "Process Calendly Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Calendly Data": {
+      "main": [
+        [
+          {
+            "node": "Find Prospect",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Prospect": {
+      "main": [
+        [
+          {
+            "node": "Mark Meeting Booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Meeting Booked": {
+      "main": [
+        [
+          {
+            "node": "SMS: Meeting Booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "booking"
+    }
+  ]
+}

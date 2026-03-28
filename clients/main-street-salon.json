@@ -1,0 +1,29 @@
+{
+  "businessName": "Main Street Salon",
+  "ownerName": "Sarah",
+  "ownerPhone": "+16105550147",
+  "location": "Bryn Mawr, PA",
+  "hours": "Monday-Saturday 9:00 AM - 6:00 PM, closed Sunday",
+  "areaCode": "610",
+  "industry": "salon",
+  "services": "Haircuts, color, highlights, blowouts, styling, treatments",
+  "policies": "We require 24-hour notice for cancellations. No-shows may be charged a fee.",
+  "model": "gpt-4o",
+  "voiceProvider": "11labs",
+  "voiceId": "sarah",
+  "plan": "$497/month",
+  "greeting": "Thank you for calling Main Street Salon in Bryn Mawr, how can I help you today?",
+  "extras": "",
+  "vapi": {
+    "assistantId": "1599aa50-2efd-49cc-8870-0c390b540474",
+    "bookingToolId": "1e50695b-93c6-4f57-9624-0db683daad55",
+    "logToolId": "c0473a07-a76b-4c68-927b-ba698262ef3a",
+    "phoneNumberId": "59032246-649b-4c2d-9ca8-af5af8a278d6",
+    "phoneNumber": "+16109986669",
+    "webhooks": {
+      "booking": "https://infoharmonia.app.n8n.cloud/webhook/vapi-booking-main-street-salon",
+      "callLog": "https://infoharmonia.app.n8n.cloud/webhook/vapi-calllog-main-street-salon"
+    },
+    "onboardedAt": "2026-02-28T21:19:36.135Z"
+  }
+}

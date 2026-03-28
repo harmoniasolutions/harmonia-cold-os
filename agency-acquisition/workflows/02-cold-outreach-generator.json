@@ -1,0 +1,344 @@
+{
+  "name": "Agency - AI Cold Outreach Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily 8 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "filterByFormula": "=AND({Outreach Status} = 'Pending', {Outreach Priority} >= 70, {Email Verified} = TRUE())",
+        "options": {
+          "maxRecords": 20,
+          "sort": [
+            {
+              "field": "Outreach Priority",
+              "direction": "desc"
+            }
+          ]
+        }
+      },
+      "id": "get-prospects",
+      "name": "Get High-Priority Prospects",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-prospects",
+      "name": "Loop Prospects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build context for AI email generation\nconst prospect = $input.first().json;\n\n// Determine the hook angle based on pain points\nlet hookAngle = 'general';\nlet specificPain = '';\n\nif (prospect.fields['Has Communication Pain']) {\n  hookAngle = 'missed_calls';\n  specificPain = 'I noticed some of your reviews mention customers having trouble reaching you';\n} else if (prospect.fields['Pain Points']?.includes('response_time')) {\n  hookAngle = 'slow_response';\n  specificPain = 'I saw a few reviews mentioning wait times for callbacks';\n} else if (prospect.fields['Google Rating'] < 4.0) {\n  hookAngle = 'reputation';\n  specificPain = 'I noticed you\\'re at ' + prospect.fields['Google Rating'] + ' stars - there might be some quick wins to boost that';\n} else {\n  hookAngle = 'growth';\n  specificPain = 'I saw you\\'re doing well with ' + prospect.fields['Review Count'] + ' reviews';\n}\n\n// Get company name for personalization\nconst companyName = prospect.fields['Company Name'] || 'your company';\nconst firstName = prospect.fields['Owner First Name'] || 'there';\nconst city = prospect.fields['City'] || 'your area';\n\n// Seasonal angle\nconst month = new Date().getMonth();\nlet seasonalHook = '';\nif (month >= 4 && month <= 8) {\n  seasonalHook = 'With summer in full swing, I know AC calls are probably flooding in';\n} else if (month >= 9 && month <= 11) {\n  seasonalHook = 'As we head into heating season, call volume is about to spike';\n} else {\n  seasonalHook = 'I know this time of year can be unpredictable for call volume';\n}\n\nreturn {\n  json: {\n    prospect: prospect,\n    prospectId: prospect.id,\n    companyName: companyName,\n    firstName: firstName,\n    city: city,\n    hookAngle: hookAngle,\n    specificPain: specificPain,\n    seasonalHook: seasonalHook,\n    email: prospect.fields['Verified Email'] || prospect.fields['Possible Emails']?.split(', ')[0],\n    rating: prospect.fields['Google Rating'],\n    reviewCount: prospect.fields['Review Count'],\n    negativeReviews: prospect.fields['Negative Reviews'] || ''\n  }\n};"
+      },
+      "id": "build-context",
+      "name": "Build Email Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a world-class B2B cold email copywriter specializing in selling AI automation to service businesses. Your emails get 40%+ open rates and 15%+ reply rates.\n\nRULES:\n1. Subject line: 6 words max, lowercase, curiosity-driven, NO spam triggers\n2. Email body: Under 100 words. Conversational. One clear CTA.\n3. First line must be personalized (reference their specific situation)\n4. NO fluff. NO corporate speak. NO \"I hope this finds you well\"\n5. Sound like a peer, not a salesperson\n6. End with a low-friction CTA (question, not a meeting request)\n7. Use line breaks for readability\n8. NEVER use exclamation marks\n\nTONE: Confident, helpful, slightly irreverent. Like a successful friend giving advice.\n\nOUTPUT FORMAT (JSON):\n{\n  \"subject\": \"subject line here\",\n  \"body\": \"email body here\",\n  \"followUp1Subject\": \"follow up 1 subject\",\n  \"followUp1Body\": \"follow up 1 body (even shorter, reference first email)\",\n  \"followUp2Subject\": \"follow up 2 subject (breakup email)\",\n  \"followUp2Body\": \"follow up 2 body (final attempt, permission to close file)\"\n}"
+            },
+            {
+              "role": "user",
+              "content": "=Write a cold email sequence for:\n\nCompany: {{ $json.companyName }}\nCity: {{ $json.city }}\nGoogle Rating: {{ $json.rating }} stars ({{ $json.reviewCount }} reviews)\nPain Point Detected: {{ $json.hookAngle }}\nSpecific Pain: {{ $json.specificPain }}\nSeasonal Context: {{ $json.seasonalHook }}\n\nNegative Review Snippets (use if relevant):\n{{ $json.negativeReviews }}\n\nWhat I'm Selling:\nAI phone system that answers 100% of calls, books appointments 24/7, and reactivates old leads automatically. ROI: typically 10x in first 90 days.\n\nMy name is: [YOUR NAME]\nMy company is: Harmonia\n\nGenerate the 3-email sequence in JSON format."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "response_format": {"type": "json_object"}
+        }
+      },
+      "id": "generate-emails",
+      "name": "AI Generate Email Sequence",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.6,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse and validate the AI-generated emails\nconst rawResponse = $input.first().json.message?.content || $input.first().json.text || '{}';\nlet emails;\n\ntry {\n  emails = JSON.parse(rawResponse);\n} catch (e) {\n  // Try to extract JSON from the response\n  const jsonMatch = rawResponse.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    emails = JSON.parse(jsonMatch[0]);\n  } else {\n    throw new Error('Could not parse AI response');\n  }\n}\n\nconst context = $('Build Email Context').first().json;\n\nreturn {\n  json: {\n    prospectId: context.prospectId,\n    prospect: context.prospect,\n    toEmail: context.email,\n    companyName: context.companyName,\n    \n    // Email 1: Initial outreach\n    email1: {\n      subject: emails.subject,\n      body: emails.body,\n      sendAt: new Date().toISOString()\n    },\n    \n    // Email 2: Follow-up (3 days later)\n    email2: {\n      subject: emails.followUp1Subject,\n      body: emails.followUp1Body,\n      sendAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()\n    },\n    \n    // Email 3: Breakup (7 days after first)\n    email3: {\n      subject: emails.followUp2Subject,\n      body: emails.followUp2Body,\n      sendAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()\n    }\n  }\n};"
+      },
+      "id": "parse-emails",
+      "name": "Parse Email Sequence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $json.prospectId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Email 1 Subject",
+              "value": "={{ $json.email1.subject }}"
+            },
+            {
+              "fieldName": "Email 1 Body",
+              "value": "={{ $json.email1.body }}"
+            },
+            {
+              "fieldName": "Email 2 Subject",
+              "value": "={{ $json.email2.subject }}"
+            },
+            {
+              "fieldName": "Email 2 Body",
+              "value": "={{ $json.email2.body }}"
+            },
+            {
+              "fieldName": "Email 3 Subject",
+              "value": "={{ $json.email3.subject }}"
+            },
+            {
+              "fieldName": "Email 3 Body",
+              "value": "={{ $json.email3.body }}"
+            },
+            {
+              "fieldName": "Outreach Status",
+              "value": "Emails Generated"
+            },
+            {
+              "fieldName": "Sequence Start Date",
+              "value": "={{ $now.toISODate() }}"
+            }
+          ]
+        }
+      },
+      "id": "save-emails",
+      "name": "Save to Prospect Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.OUTREACH_FROM_EMAIL }}",
+        "toEmail": "={{ $('Parse Email Sequence').item.json.toEmail }}",
+        "subject": "={{ $('Parse Email Sequence').item.json.email1.subject }}",
+        "contentType": "text/plain",
+        "content": "={{ $('Parse Email Sequence').item.json.email1.body }}"
+      },
+      "id": "send-email-1",
+      "name": "Send Email 1",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "={{ $env.AGENCY_AIRTABLE_BASE_ID }}",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Prospects",
+          "mode": "list"
+        },
+        "id": "={{ $('Parse Email Sequence').item.json.prospectId }}",
+        "fields": {
+          "values": [
+            {
+              "fieldName": "Outreach Status",
+              "value": "Email 1 Sent"
+            },
+            {
+              "fieldName": "Email 1 Sent At",
+              "value": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "mark-sent",
+      "name": "Mark Email 1 Sent",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {},
+      "id": "continue",
+      "name": "Continue Loop",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2230, 300]
+    }
+  ],
+  "connections": {
+    "Daily 8 AM": {
+      "main": [
+        [
+          {
+            "node": "Get High-Priority Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get High-Priority Prospects": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Prospects": {
+      "main": [
+        [
+          {
+            "node": "Build Email Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build Email Context": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Email Sequence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Email Sequence": {
+      "main": [
+        [
+          {
+            "node": "Parse Email Sequence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Email Sequence": {
+      "main": [
+        [
+          {
+            "node": "Save to Prospect Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Prospect Record": {
+      "main": [
+        [
+          {
+            "node": "Send Email 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email 1": {
+      "main": [
+        [
+          {
+            "node": "Mark Email 1 Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Email 1 Sent": {
+      "main": [
+        [
+          {
+            "node": "Continue Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Loop": {
+      "main": [
+        [
+          {
+            "node": "Loop Prospects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "agency"
+    },
+    {
+      "name": "outreach"
+    }
+  ]
+}
