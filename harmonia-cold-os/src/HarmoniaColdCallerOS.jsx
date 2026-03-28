@@ -53,9 +53,9 @@ const OUTCOMES = {
   callback:       { label:"Callback later", color:C.amber,   short:"CB",   ghl:"Follow-Up Scheduled", discord:"#follow-ups",       needsDateTime:true                  },
   followup_sent:  { label:"Send info",      color:C.purple,  short:"Info", ghl:"Nurture",             discord:null,                needsEmail:true                     },
   answered:       { label:"Answered",       color:C.accent,  short:"Ans",  ghl:null,                  discord:null                                                    },
-  voicemail:      { label:"Voicemail",      color:C.amber,   short:"VM",   ghl:null,                  discord:null                                                    },
+  voicemail:      { label:"Left voicemail", color:C.amber,   short:"VM",   ghl:null,                  discord:null                                                    },
   gatekeeper:     { label:"Gatekeeper",     color:C.t2,      short:"GK",   ghl:null,                  discord:null,                needsGatekeeper:true                },
-  no_answer:      { label:"No answer",      color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
+  no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
   dnc:            { label:"Do not call",    color:C.red,     short:"DNC",  ghl:"Do Not Contact",      discord:null                                                    },
@@ -236,6 +236,7 @@ export default function HarmoniaOS() {
   const [loomContext,      setLoomContext]       = useState("");
   const [sendType,         setSendType]         = useState("website");
   const [calendlyOpened,   setCalendlyOpened]   = useState(false);
+  const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -339,6 +340,11 @@ export default function HarmoniaOS() {
       ? new Date(`${callbackDate}T${callbackTime}`).toISOString()
       : null;
 
+    // Snapshot for undo
+    const prevLead = leads.find(l=>l.id===active.id);
+    const prevStats = {...stats};
+    const prevLog = [...log];
+
     setLog(l=>[{num:stats.dials,biz:active.biz,icp:active.icp,script:scriptUsed,outcome,dur,
       ts:new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
       email:captureEmail||null},...l]);
@@ -360,13 +366,17 @@ export default function HarmoniaOS() {
       prospect_email: captureEmail || l.prospect_email || "",
     }:l));
 
-    if(outcome==="demo_booked"){setFlash("Demo booked ✦");setTimeout(()=>setFlash(null),2500);}
-    else if(outcome==="loom_sent"){setFlash("Loom queued → Discord pinged");setTimeout(()=>setFlash(null),2500);}
-    else if(outcome==="callback"){
-      const d=new Date(`${callbackDate}T${callbackTime}`);
-      const label=d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})+" at "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
-      setFlash(`Callback set: ${label}`);setTimeout(()=>setFlash(null),3000);
-    }
+    const flashMsg = outcome==="demo_booked"?"Demo booked ✦"
+      :outcome==="loom_sent"?"Loom queued → Discord pinged"
+      :outcome==="callback"?(()=>{const d=new Date(`${callbackDate}T${callbackTime}`);return `Callback set: ${d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})} at ${d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}`;})()
+      :OUTCOMES[outcome]?.label||"Logged";
+    setFlash(flashMsg);
+
+    // Save undo snapshot (available for 5s)
+    const undoSnapshot = {leadId:active.id, prevStatus:prevLead?.status||"queued", prevScriptUsed:prevLead?.script_used||null, prevEmail:prevLead?.prospect_email||"", prevStats, prevLog};
+    setUndoLast(undoSnapshot);
+    setTimeout(()=>setUndoLast(u=>u===undoSnapshot?null:u),5000);
+    setTimeout(()=>setFlash(null),5000);
 
     try {
       const payload = {
@@ -416,9 +426,21 @@ export default function HarmoniaOS() {
     setCalendlyOpened(true);
   }
 
+  function undoLastDisposition() {
+    if (!undoLast) return;
+    const {leadId, prevStatus, prevScriptUsed, prevEmail, prevStats, prevLog} = undoLast;
+    setLeads(ls=>ls.map(l=>l.id===leadId?{...l, status:prevStatus, script_used:prevScriptUsed, prospect_email:prevEmail}:l));
+    setStats(prevStats);
+    setLog(prevLog);
+    setActive(leads.find(l=>l.id===leadId)||active);
+    setUndoLast(null);
+    setFlash("Undone — pick the right disposition");
+    setTimeout(()=>setFlash(null),2000);
+  }
+
   return (
-    <div style={{background:C.bg,height:"100vh",display:"flex",flexDirection:"column",
-      fontFamily:F,fontSize:13,color:C.t1,overflow:"hidden"}}>
+    <div style={{background:C.bg,height:"100vh",width:"100vw",display:"flex",flexDirection:"column",
+      fontFamily:F,fontSize:13,color:C.t1,overflow:"hidden",margin:0,padding:0}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
@@ -430,8 +452,13 @@ export default function HarmoniaOS() {
 
       {flash&&<div style={{position:"fixed",top:18,left:"50%",transform:"translateX(-50%)",
         background:C.t1,color:C.bg,padding:"9px 22px",borderRadius:100,fontSize:13,fontWeight:500,
-        zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",animation:"slideDown 0.2s ease"}}>
+        zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",animation:"slideDown 0.2s ease",
+        display:"flex",alignItems:"center",gap:12}}>
         {flash}
+        {undoLast&&<button onClick={undoLastDisposition}
+          style={{background:"transparent",border:`1px solid ${C.bg}50`,color:C.bg,
+            padding:"2px 10px",borderRadius:100,fontSize:11,fontWeight:500,cursor:"pointer",
+            marginLeft:4}}>Undo</button>}
       </div>}
 
       {/* ── HEADER ── */}
@@ -530,7 +557,8 @@ export default function HarmoniaOS() {
                   style={{padding:"9px 14px",cursor:isDone?"default":"pointer",
                     opacity:isDone?0.38:1,borderBottom:`1px solid ${C.border}`,
                     borderLeft:isActive?`2px solid ${C.t1}`:"2px solid transparent",
-                    background:isActive?C.surface:"transparent",transition:"background 0.1s"}}>
+                    background:isActive?C.surface:"transparent",transition:"background 0.1s",
+                    textAlign:"left"}}>
                   <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
                     <div style={{width:6,height:6,borderRadius:"50%",
                       background:SCORE_DOT[lead.score]||C.t3,flexShrink:0}}/>
@@ -584,10 +612,11 @@ export default function HarmoniaOS() {
                       </>
                     ):null}
                   </div>
-                  <div style={{fontSize:18,fontWeight:500,letterSpacing:"-0.01em",marginBottom:3}}>
+                  <div style={{fontSize:18,fontWeight:500,letterSpacing:"-0.01em",marginBottom:3,
+                    whiteSpace:"normal",wordBreak:"break-word"}}>
                     {active.biz}
                   </div>
-                  <div style={{fontSize:12,color:C.t2}}>
+                  <div style={{fontSize:12,color:C.t2,whiteSpace:"nowrap"}}>
                     {active.owner}&nbsp;·&nbsp;{active.phone}&nbsp;·&nbsp;{active.city}{active.state?`, ${active.state}`:""}
                   </div>
                 </div>
@@ -620,31 +649,33 @@ export default function HarmoniaOS() {
                     return null;
                   })()}
                 </div>
+              </div>
 
-                {/* Script selector — visible during call */}
-                {(callRun||pendingOutcome)&&(
-                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 20px 8px",flexShrink:0}}>
-                    <span style={{fontSize:11,color:C.t3}}>Script</span>
-                    <select value={selectedScript} onChange={e=>{setSelectedScript(e.target.value);if(e.target.value!=="custom")setCustomScript("");}}
+              {/* Script selector — visible during call */}
+              {(callRun||pendingOutcome)&&(
+                <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 20px",flexShrink:0,
+                  borderBottom:`1px solid ${C.border}`}}>
+                  <span style={{fontSize:11,color:C.t3}}>Script</span>
+                  <select value={selectedScript} onChange={e=>{setSelectedScript(e.target.value);if(e.target.value!=="custom")setCustomScript("");}}
+                    style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
+                      fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
+                    <option value="">Select script...</option>
+                    {(SCRIPT_OPTIONS[active.icp]||[]).map(s=>(
+                      <option key={s.variant} value={s.variant}>{s.label}</option>
+                    ))}
+                    <option value="custom">Custom...</option>
+                  </select>
+                  {selectedScript==="custom"&&(
+                    <input value={customScript} onChange={e=>setCustomScript(e.target.value)}
+                      placeholder="Script name..."
                       style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
-                        fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
-                      <option value="">Select script...</option>
-                      {(SCRIPT_OPTIONS[active.icp]||[]).map(s=>(
-                        <option key={s.variant} value={s.variant}>{s.label}</option>
-                      ))}
-                      <option value="custom">Custom...</option>
-                    </select>
-                    {selectedScript==="custom"&&(
-                      <input value={customScript} onChange={e=>setCustomScript(e.target.value)}
-                        placeholder="Script name..."
-                        style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
-                          fontSize:12,background:C.bg,color:C.t1,outline:"none",width:140}}/>
-                    )}
-                  </div>
-                )}
+                        fontSize:12,background:C.bg,color:C.t1,outline:"none",width:140}}/>
+                  )}
+                </div>
+              )}
 
-                {/* Outcome buttons — during live call, before confirming */}
-                {callRun&&!pendingOutcome&&(
+              {/* Outcome buttons — during live call, before confirming */}
+              {callRun&&!pendingOutcome&&(
                 <div style={{padding:"10px 20px",flexShrink:0,borderBottom:`1px solid ${C.border}`}}>
                   <div style={{display:"flex",flexDirection:"column",gap:4}}>
                     {OUTCOME_ROWS.map((row,ri)=>(
@@ -814,7 +845,6 @@ export default function HarmoniaOS() {
                   </div>
                 </div>
               )}
-              </div>
 
               {/* Tabs */}
               <div style={{display:"flex",padding:"0 20px",borderBottom:`1px solid ${C.border}`,
@@ -842,12 +872,14 @@ export default function HarmoniaOS() {
                 {/* ── INTEL ── */}
                 {tab==="intel"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:12,maxWidth:660}}>
+                    {active.leak&&active.leak!=="—"&&(
                     <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
                       <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Revenue leak / mo</div>
                       <div style={{fontSize:17,fontWeight:500,color:C.red,letterSpacing:"-0.01em"}}>
-                        {active.leak||"—"}
+                        {active.leak}
                       </div>
                     </div>
+                    )}
 
                     {active.pain_signals?.length > 0 && (
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
@@ -894,10 +926,12 @@ export default function HarmoniaOS() {
                       </div>
                     )}
 
+                    {active.icp&&(
                     <div style={{background:C.surface,borderRadius:12,padding:"12px 14px",maxWidth:180}}>
                       <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Vertical</div>
                       <div style={{fontSize:15,fontWeight:500,color:C.t1}}>{ICP_LABEL[active.icp]||active.icp}</div>
                     </div>
+                    )}
                   </div>
                 )}
 
