@@ -307,6 +307,7 @@ export default function HarmoniaOS() {
   const [callPhase, setCallPhase] = useState("opener"); // 'opener'|'discovery'|'pitch'|'close'
   const [closeEmail, setCloseEmail] = useState("");
   const [closeEmailStatus, setCloseEmailStatus] = useState(null); // null|'success'|'error'
+  const [dispoBarOpen, setDispoBarOpen] = useState(false);
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -401,6 +402,14 @@ export default function HarmoniaOS() {
     const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(lead.phone)}`;
     try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
     catch(e){ console.log("Call fired:",lead.phone); }
+  }
+
+  function openDispoBar() {
+    if (closeEmailStatus==="success" && closeEmail.trim()) {
+      setCaptureEmail(closeEmail.trim());
+      setPendingOutcome("demo_booked");
+    }
+    setDispoBarOpen(true);
   }
 
   function selectOutcome(outcome) {
@@ -503,6 +512,7 @@ export default function HarmoniaOS() {
     } catch(err){ console.error('webhook failed:',err); }
 
     resetCaptureFields();
+    setDispoBarOpen(false);
     const next=filtered.find(l=>l.id!==active.id&&l.status==="queued");
     if(next){selectLead(next);setTab("intel");}
     await writeDisposition(active, outcome, scriptUsed, dur, caller);
@@ -628,6 +638,13 @@ export default function HarmoniaOS() {
               color:sessRun?C.red:C.accent,fontSize:11,fontWeight:500}}>
             {sessRun?"End":"Start session"}
           </button>
+          {callRun&&(
+            <button onClick={openDispoBar}
+              style={{padding:"4px 14px",borderRadius:6,border:"none",
+                background:C.red,color:C.bg,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+              End Call
+            </button>
+          )}
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
         {[{l:"Dials",v:stats.dials,c:C.t1},{l:"Connect",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
@@ -1440,6 +1457,141 @@ export default function HarmoniaOS() {
           </button>
         </div>
       </div>
+
+      {/* Persistent "Log Disposition" button */}
+      {active&&!dispoBarOpen&&sessRun&&(
+        <button onClick={openDispoBar}
+          style={{position:"fixed",bottom:16,right:20,padding:"6px 16px",borderRadius:100,
+            border:`1px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,
+            cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.08)",zIndex:100}}>
+          Log Disposition
+        </button>
+      )}
+
+      {/* Disposition bar overlay */}
+      {dispoBarOpen&&(
+        <div style={{position:"fixed",inset:0,zIndex:9000,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}
+          onClick={e=>{if(e.target===e.currentTarget)setDispoBarOpen(false);}}>
+          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.3)"}}/>
+          <div style={{position:"relative",background:C.bg,borderTop:`1px solid ${C.border}`,
+            borderRadius:"16px 16px 0 0",padding:"20px 24px 24px",maxHeight:"70vh",overflowY:"auto",
+            animation:"slideUp 0.3s ease",boxShadow:"0 -4px 20px rgba(0,0,0,0.1)"}}>
+
+            <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
+              <span style={{fontSize:14,fontWeight:500}}>Log Disposition</span>
+              {active&&<span style={{fontSize:12,color:C.t3,marginLeft:10}}>— {active.biz}</span>}
+              <button onClick={()=>setDispoBarOpen(false)}
+                style={{marginLeft:"auto",border:"none",background:"transparent",fontSize:16,
+                  color:C.t3,cursor:"pointer",padding:"4px 8px"}}>✕</button>
+            </div>
+
+            {/* Disposition grid */}
+            <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:16}}>
+              {OUTCOME_ROWS.map((row,ri)=>(
+                <div key={ri} style={{display:"grid",gridTemplateColumns:`repeat(${row.length},1fr)`,gap:4}}>
+                  {row.map(key=>{
+                    const o=OUTCOMES[key];
+                    const sel=pendingOutcome===key;
+                    return (
+                      <button key={key} onClick={()=>selectOutcome(key)}
+                        style={{padding:"8px 6px",borderRadius:8,
+                          border:`1.5px solid ${sel?o.color:o.color+"30"}`,
+                          background:sel?o.color+"15":o.color+"06",
+                          color:o.color,fontSize:11,fontWeight:sel?600:500,
+                          cursor:"pointer",transition:"all 0.15s"}}>
+                        {o.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            {/* Conditional fields */}
+            {pendingOutcome&&(
+              <div style={{display:"flex",flexDirection:"column",gap:10,
+                borderTop:`1px solid ${C.border}`,paddingTop:14}}>
+
+                {OUTCOMES[pendingOutcome]?.needsEmail&&(
+                  <div>
+                    <div style={{fontSize:10,color:C.t3,marginBottom:4}}>
+                      {pendingOutcome==="demo_booked"?"Prospect email":"Prospect email"}
+                    </div>
+                    <input type="email" value={captureEmail} onChange={e=>setCaptureEmail(e.target.value)}
+                      placeholder="owner@business.com"
+                      style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                        padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                  </div>
+                )}
+
+                {OUTCOMES[pendingOutcome]?.needsLoom&&(
+                  <div>
+                    <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Loom context</div>
+                    <textarea value={loomContext} onChange={e=>setLoomContext(e.target.value)}
+                      placeholder="What should the Loom cover for this prospect?"
+                      rows={2} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                        padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
+                  </div>
+                )}
+
+                {OUTCOMES[pendingOutcome]?.needsDateTime&&(
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    <div>
+                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback date</div>
+                      <input type="date" value={callbackDate} onChange={e=>setCallbackDate(e.target.value)}
+                        min={new Date().toISOString().split("T")[0]}
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                          padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                    </div>
+                    <div>
+                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback time</div>
+                      <input type="time" value={callbackTime} onChange={e=>setCallbackTime(e.target.value)}
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                          padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                    </div>
+                  </div>
+                )}
+
+                {pendingOutcome==="followup_sent"&&(
+                  <div>
+                    <div style={{fontSize:10,color:C.t3,marginBottom:4}}>What to send</div>
+                    <div style={{display:"flex",gap:6}}>
+                      {[{v:"website",l:"Website link"},{v:"info_packet",l:"Info packet"},{v:"case_study",l:"Case study"}].map(opt=>(
+                        <button key={opt.v} onClick={()=>setSendType(opt.v)}
+                          style={{padding:"4px 12px",borderRadius:100,
+                            border:`1px solid ${sendType===opt.v?C.accent:C.border}`,
+                            background:sendType===opt.v?`${C.accent}10`:"transparent",
+                            color:sendType===opt.v?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                          {opt.l}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {OUTCOMES[pendingOutcome]?.needsGatekeeper&&(
+                  <div>
+                    <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Gatekeeper name</div>
+                    <input value={gatekeeperName} onChange={e=>setGatekeeperName(e.target.value)}
+                      placeholder="e.g. Maria, front desk"
+                      style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                        padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                  </div>
+                )}
+
+                <button onClick={confirmOutcome} disabled={!canSubmit()}
+                  style={{width:"100%",padding:"10px 0",borderRadius:8,border:"none",
+                    background:canSubmit()?C.t1:`${C.t3}40`,color:canSubmit()?C.bg:C.t3,
+                    fontSize:13,fontWeight:500,cursor:canSubmit()?"pointer":"not-allowed",
+                    marginTop:4}}>
+                  {canSubmit()?`Confirm — ${OUTCOMES[pendingOutcome]?.label}`:"Fill required fields"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      <style>{`@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
     </div>
   );
 }
