@@ -73,12 +73,39 @@ const fmtH = (s) => {
   const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;
   return h>0?`${pad(h)}:${pad(m)}:${pad(sc)}`:`${pad(m)}:${pad(sc)}`;
 };
-const rv = (t, lead) => (t||"")
-  .replace("{owner}", (lead?.owner||"").split(" ")[0])
-  .replace("{city}",  lead?.city||"")
-  .replace("{leak}",  lead?.leak||"")
-  .replace("{chairs}",lead?.chairs||"your")
-  .replace("{biz}",   lead?.biz||"");
+function fillPlaceholders(text, context) {
+  if (!text) return "";
+  const map = context || {};
+  const parts = [];
+  const regex = /\{(\w+)\}/gi;
+  let last = 0, match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const key = match[1].toLowerCase();
+    const val = map[key];
+    if (val) {
+      parts.push(val);
+    } else {
+      parts.push(<span key={match.index} style={{background:"#FFF3CD",color:"#856404",
+        padding:"0 3px",borderRadius:3,fontSize:"inherit"}}>{match[0]}</span>);
+    }
+    last = regex.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length === 1 && typeof parts[0] === "string" ? parts[0] : <>{parts}</>;
+}
+
+function buildPlaceholderContext(lead, callerName) {
+  return {
+    owner:      (lead?.owner||"").split(" ")[0],
+    city:       lead?.city||"",
+    leak:       lead?.leak||"",
+    chairs:     lead?.chairs||"your",
+    biz:        lead?.biz||"",
+    competitor: lead?.competitor||"",
+    caller:     callerName||"",
+  };
+}
 
 function defaultCallbackDateTime() {
   const d = new Date();
@@ -111,6 +138,7 @@ function parseLeads(rows) {
       chairs:        r.chairs ? parseInt(r.chairs) : null,
       reviews_count: parseInt(r.reviews_count) || 0,
       status:        r.status || "queued",
+      competitor:    r.competitor || "",
       pain_signals:  safeJSON(r.pain_signals, []),
       google_reviews:safeJSON(r.google_reviews, []),
     }));
@@ -986,7 +1014,7 @@ export default function HarmoniaOS() {
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
                         <div style={{fontSize:10,color:C.t3,marginBottom:6}}>Opener</div>
                         <div style={{fontSize:14,color:C.t1,lineHeight:1.65,fontStyle:"italic"}}>
-                          "{rv(active.opener, active)}"
+                          "{fillPlaceholders(active.opener, buildPlaceholderContext(active, callerName))}"
                         </div>
                       </div>
                     ):(
@@ -1034,7 +1062,7 @@ export default function HarmoniaOS() {
                                 letterSpacing:"0.03em"}}>{line.type}</div>
                               <div style={{fontSize:14,color:C.t1,lineHeight:1.75,
                                 fontStyle:line.type==="opener"?"italic":"normal"}}>
-                                {rv(line.text,active)}
+                                {fillPlaceholders(line.text, buildPlaceholderContext(active, callerName))}
                               </div>
                             </div>
                           ))}
