@@ -598,6 +598,7 @@ export default function HarmoniaOS() {
                     <div style={{fontSize:11,color:C.t2}}>{lead.owner}</div>
                     <div style={{fontSize:10,color:C.t3,marginTop:1}}>
                       {ICP_LABEL[lead.icp]||lead.icp} · {lead.city}
+                      {lead.competitor&&<span style={{color:C.t3}}> · vs. {lead.competitor}</span>}
                     </div>
                     {isDone&&(
                       <div style={{marginTop:3,fontSize:10,fontWeight:500,
@@ -961,6 +962,26 @@ export default function HarmoniaOS() {
                       <div style={{fontSize:15,fontWeight:500,color:C.t1}}>{ICP_LABEL[active.icp]||active.icp}</div>
                     </div>
                     )}
+
+                    <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:320}}>
+                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Local competitor</div>
+                      <input value={active.competitor||""} onChange={e=>{
+                          const val=e.target.value;
+                          setLeads(ls=>ls.map(l=>l.id===active.id?{...l,competitor:val}:l));
+                          setActive(a=>({...a,competitor:val}));
+                        }}
+                        onBlur={e=>{
+                          if(!e.target.value) return;
+                          fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({lead_id:active.id,field_update:'competitor',competitor:e.target.value})
+                          }).catch(()=>{});
+                        }}
+                        onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                        placeholder="e.g. Mike's HVAC, Bella Salon..."
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",
+                          fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                      <div style={{fontSize:10,color:C.t3,marginTop:4}}>Used by openers #7 and #8 for {"{competitor}"} placeholder</div>
+                    </div>
                   </div>
                 )}
 
@@ -1048,6 +1069,18 @@ export default function HarmoniaOS() {
                             <span style={{fontSize:10,color:C.t3}}>Angle</span>
                             <span style={{fontSize:11,padding:"3px 12px",borderRadius:100,
                               border:`1px solid ${C.border}`,color:C.t2}}>{curScript.tag}</span>
+                          </div>
+                        )}
+
+                        {(variant==="7"||variant==="8")&&!active.competitor&&(
+                          <div style={{background:"#FFF3CD",border:"1px solid #FFE69C",borderRadius:8,
+                            padding:"8px 12px",fontSize:11,color:"#856404"}}>
+                            ⚠ Add a competitor name in the{" "}
+                            <button onClick={()=>setTab("intel")}
+                              style={{color:"#856404",fontWeight:600,textDecoration:"underline",
+                                border:"none",background:"transparent",cursor:"pointer",
+                                fontSize:11,padding:0}}>Intel tab</button>
+                            {" "}first
                           </div>
                         )}
 
