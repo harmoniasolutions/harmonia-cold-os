@@ -291,6 +291,7 @@ export default function HarmoniaOS() {
   const [sendType,         setSendType]         = useState("website");
   const [calendlyOpened,   setCalendlyOpened]   = useState(false);
   const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
+  const [discoveryResponses, setDiscoveryResponses] = useState({});  // { questionIndex: 'pain'|'no'|'skip'|null }
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -354,6 +355,7 @@ export default function HarmoniaOS() {
 
   function selectLead(lead) {
     setActive(lead);
+    setDiscoveryResponses({});
     const recs = getRecommendedOpeners(lead);
     const avail = Object.keys(scripts[lead?.icp] || {});
     const pick = recs.find(r => avail.includes(r.openerId));
@@ -465,6 +467,7 @@ export default function HarmoniaOS() {
         callback_datetime:callbackISO,
         send_type:outcome==="followup_sent"?sendType:null,
         gatekeeper_name:outcome==="gatekeeper"?gatekeeperName:null,
+        discovery_signals:Object.keys(discoveryResponses).length>0?discoveryResponses:null,
       };
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     } catch(err){ console.error('webhook failed:',err); }
@@ -483,6 +486,7 @@ export default function HarmoniaOS() {
     setCallbackDate("");setCallbackTime("");
     setGatekeeperName("");setLoomContext("");
     setSendType("website");setCalendlyOpened(false);
+    setDiscoveryResponses({});
   }
 
   function resetCallState() {
@@ -1135,7 +1139,14 @@ export default function HarmoniaOS() {
                         )}
 
                         <div style={{display:"flex",flexDirection:"column"}}>
-                          {(curScript?.lines||[]).map((line,i)=>(
+                          {(curScript?.lines||[]).map((line,i)=>{
+                            const isDiscovery = line.type === "discovery";
+                            const bullets = isDiscovery && line.text.includes(" // ")
+                              ? line.text.split(" // ").map(b=>b.replace(/^[•·\-]\s*/, "").replace(/^[""]|[""]$/g,"").trim()).filter(Boolean)
+                              : null;
+                            const painCount = bullets ? bullets.filter((_,qi)=>discoveryResponses[qi]==="pain").length : 0;
+
+                            return (
                             <div key={i} style={{
                               paddingBottom:18,
                               marginBottom:i<(curScript.lines.length-1)?18:0,
@@ -1143,12 +1154,46 @@ export default function HarmoniaOS() {
                               <div style={{fontSize:10,color:LINE_COLOR[line.type]||C.t2,
                                 fontWeight:500,marginBottom:8,textTransform:"uppercase",
                                 letterSpacing:"0.03em"}}>{line.type}</div>
-                              <div style={{fontSize:14,color:C.t1,lineHeight:1.75,
-                                fontStyle:line.type==="opener"?"italic":"normal"}}>
-                                {fillPlaceholders(line.text, buildPlaceholderContext(active, callerName))}
-                              </div>
+
+                              {isDiscovery && bullets ? (
+                                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                                  {bullets.map((q,qi)=>{
+                                    const resp = discoveryResponses[qi] || null;
+                                    return (
+                                    <div key={qi} style={{display:"flex",alignItems:"center",gap:8,
+                                      padding:"8px 12px",borderRadius:8,
+                                      border:`1px solid ${resp==="pain"?C.green+"40":resp==="no"?C.border:C.border}`,
+                                      background:resp==="pain"?C.green+"06":resp==="no"?C.surface:"transparent"}}>
+                                      <div style={{flex:1,fontSize:13,color:C.t1,lineHeight:1.5}}>
+                                        {fillPlaceholders(q, buildPlaceholderContext(active, callerName))}
+                                      </div>
+                                      <div style={{display:"flex",gap:4,flexShrink:0}}>
+                                        {[{k:"pain",l:"Pain",bg:C.green},{k:"no",l:"No",bg:C.t3},{k:"skip",l:"Skip",bg:C.border}].map(opt=>(
+                                          <button key={opt.k} onClick={()=>setDiscoveryResponses(prev=>({...prev,[qi]:prev[qi]===opt.k?null:opt.k}))}
+                                            style={{padding:"3px 10px",borderRadius:100,fontSize:10,fontWeight:500,
+                                              border:resp===opt.k?`1px solid ${opt.bg}`:`1px solid ${C.border}`,
+                                              background:resp===opt.k?opt.bg+"20":"transparent",
+                                              color:resp===opt.k?opt.bg:C.t3,cursor:"pointer",transition:"all 0.1s"}}>
+                                            {opt.l}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    );
+                                  })}
+                                  <div style={{fontSize:11,color:painCount>0?C.green:C.t3,marginTop:4,fontWeight:500}}>
+                                    Pain signals: {painCount}/{bullets.length}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{fontSize:14,color:C.t1,lineHeight:1.75,
+                                  fontStyle:line.type==="opener"?"italic":"normal"}}>
+                                  {fillPlaceholders(line.text, buildPlaceholderContext(active, callerName))}
+                                </div>
+                              )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
 
                       </>
