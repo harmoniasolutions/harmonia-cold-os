@@ -107,6 +107,31 @@ function buildPlaceholderContext(lead, callerName) {
   };
 }
 
+const REVIEW_PHONE_KEYWORDS = /phone|call|answer|voicemail|reach|wait/i;
+
+function getRecommendedOpeners(lead) {
+  const recs = [];
+  const reviews = lead?.google_reviews || [];
+  if (reviews.some(r => REVIEW_PHONE_KEYWORDS.test(r.text || ""))) {
+    recs.push({ openerId: "6", reason: "Has a phone-related review" });
+  }
+  if (lead?.competitor) {
+    recs.push({ openerId: "7", reason: "Competitor intel available" });
+    recs.push({ openerId: "8", reason: "Competitor + free trial angle" });
+  }
+  if (lead?.disposition === "voicemail" || lead?.disposition === "no_answer" || lead?.status === "called") {
+    recs.push({ openerId: "3", reason: "Called before — no answer" });
+    if (!recs.find(r => r.openerId === "1")) {
+      recs.push({ openerId: "1", reason: "Follow-up pretense fits prior attempt" });
+    }
+  }
+  if (recs.length === 0) {
+    recs.push({ openerId: "2", reason: "Cold lead — pattern interrupt" });
+    recs.push({ openerId: "5", reason: "Cold lead — founder energy" });
+  }
+  return recs;
+}
+
 function defaultCallbackDateTime() {
   const d = new Date();
   d.setDate(d.getDate() + 1);
@@ -282,7 +307,13 @@ export default function HarmoniaOS() {
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
         setObjections(parseObjections(objectionsRaw));
-        if (parsedLeads.length > 0) setActive(parsedLeads[0]);
+        if (parsedLeads.length > 0) {
+          setActive(parsedLeads[0]);
+          const recs = getRecommendedOpeners(parsedLeads[0]);
+          const avail = Object.keys(parseScripts(scriptsRaw)[parsedLeads[0]?.icp] || {});
+          const pick = recs.find(r => avail.includes(r.openerId));
+          setVariant(pick ? pick.openerId : avail[0] || "1");
+        }
         setLoading(false);
       } catch (e) {
         setLoadError(e.message);
@@ -317,7 +348,17 @@ export default function HarmoniaOS() {
   const curObjs      = objections[active?.icp] || [];
   const variants     = Object.keys(curScripts);
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
+  const recommended = active ? getRecommendedOpeners(active) : [];
+  const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
+
+  function selectLead(lead) {
+    setActive(lead);
+    const recs = getRecommendedOpeners(lead);
+    const avail = Object.keys(scripts[lead?.icp] || {});
+    const pick = recs.find(r => avail.includes(r.openerId));
+    setVariant(pick ? pick.openerId : avail[0] || "1");
+  }
 
   function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0});setLog([]); }
   function endSess()  { setSessRun(false); if(callRun){setCallRun(false);setCallSecs(0);} }
@@ -430,7 +471,7 @@ export default function HarmoniaOS() {
 
     resetCaptureFields();
     const next=filtered.find(l=>l.id!==active.id&&l.status==="queued");
-    if(next){setActive(next);setTab("intel");setVariant(Object.keys(scripts[next.icp]||{})[0]||"1");}
+    if(next){selectLead(next);setTab("intel");}
     await writeDisposition(active, outcome, scriptUsed, dur, caller);
   }
 
@@ -461,7 +502,8 @@ export default function HarmoniaOS() {
     setLeads(ls=>ls.map(l=>l.id===leadId?{...l, status:prevStatus, script_used:prevScriptUsed, prospect_email:prevEmail}:l));
     setStats(prevStats);
     setLog(prevLog);
-    setActive(leads.find(l=>l.id===leadId)||active);
+    const undoLead = leads.find(l=>l.id===leadId)||active;
+    selectLead(undoLead);
     setUndoLast(null);
     setFlash("Undone — pick the right disposition");
     setTimeout(()=>setFlash(null),2000);
@@ -582,7 +624,7 @@ export default function HarmoniaOS() {
             {filtered.map(lead=>{
               const isActive=active?.id===lead.id, isDone=lead.status!=="queued";
               return (
-                <div key={lead.id} onClick={()=>setActive(lead)}
+                <div key={lead.id} onClick={()=>selectLead(lead)}
                   style={{padding:"9px 14px",cursor:isDone?"default":"pointer",
                     opacity:isDone?0.38:1,borderBottom:`1px solid ${C.border}`,
                     borderLeft:isActive?`2px solid ${C.t1}`:"2px solid transparent",
@@ -1031,15 +1073,13 @@ export default function HarmoniaOS() {
                 {/* ── SCRIPT ── */}
                 {tab==="script"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:640}}>
-                    {active.opener ? (
+                    {active.opener&&(
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
-                        <div style={{fontSize:10,color:C.t3,marginBottom:6}}>Opener</div>
+                        <div style={{fontSize:10,color:C.t3,marginBottom:6}}>Lead opener (from sheet)</div>
                         <div style={{fontSize:14,color:C.t1,lineHeight:1.65,fontStyle:"italic"}}>
                           "{fillPlaceholders(active.opener, buildPlaceholderContext(active, callerName))}"
                         </div>
                       </div>
-                    ):(
-                      <div style={{fontSize:11,color:C.t3,fontStyle:"italic"}}>No opener generated</div>
                     )}
                     {variants.length === 0 ? (
                       <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
@@ -1049,19 +1089,29 @@ export default function HarmoniaOS() {
                     ):(
                       <>
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
-                          {variants.map(v=>(
+                          {variants.map(v=>{
+                            const isRec = !!recMap[v];
+                            const isPrimary = recommended[0]?.openerId === v;
+                            return (
                             <button key={v} onClick={()=>setVariant(v)}
                               style={{padding:"7px 12px",borderRadius:8,textAlign:"left",
-                                border:`1px solid ${variant===v?C.t1:C.border}`,
-                                background:variant===v?C.t1:"transparent",
+                                border:`1px solid ${variant===v?C.t1:isRec?C.green+"60":C.border}`,
+                                background:variant===v?C.t1:isRec?C.green+"08":"transparent",
                                 color:variant===v?C.bg:C.t2,
                                 fontSize:11,fontWeight:500,transition:"all 0.15s",
-                                display:"flex",alignItems:"center",gap:8}}>
-                              <span style={{fontFamily:FM,fontSize:10,opacity:0.6}}>{v}</span>
-                              <span>{curScripts[v]?.name}</span>
-                              {curScripts[v]?.tag&&<span style={{fontSize:9,opacity:0.5,marginLeft:"auto"}}>({curScripts[v].tag})</span>}
+                                display:"flex",flexDirection:"column",gap:2}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8,width:"100%"}}>
+                                <span style={{fontFamily:FM,fontSize:10,opacity:0.6}}>{v}</span>
+                                <span>{curScripts[v]?.name}</span>
+                                {isRec&&<div style={{width:6,height:6,borderRadius:"50%",
+                                  background:variant===v?C.bg:C.green,marginLeft:"auto",flexShrink:0}}/>}
+                                {!isRec&&curScripts[v]?.tag&&<span style={{fontSize:9,opacity:0.5,marginLeft:"auto"}}>({curScripts[v].tag})</span>}
+                              </div>
+                              {isRec&&<div style={{fontSize:9,color:variant===v?`${C.bg}90`:C.green,
+                                paddingLeft:18}}>{isPrimary?"★ ":""}{recMap[v]}</div>}
                             </button>
-                          ))}
+                            );
+                          })}
                         </div>
 
                         {curScript?.tag&&(
