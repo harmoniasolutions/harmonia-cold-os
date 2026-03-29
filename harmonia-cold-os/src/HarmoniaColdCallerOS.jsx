@@ -107,6 +107,18 @@ function buildPlaceholderContext(lead, callerName) {
   };
 }
 
+const PAIN_WEIGHTS = [3, 3, 2, 2];
+function calcPainScore(responses) {
+  let score = 0;
+  PAIN_WEIGHTS.forEach((w, i) => { if (responses[i] === "pain") score += w; });
+  return score;
+}
+function painColor(score, C) {
+  if (score >= 7) return { color: C.red, fontWeight: 700 };
+  if (score >= 4) return { color: C.amber, fontWeight: 500 };
+  return { color: C.t3, fontWeight: 400 };
+}
+
 const REVIEW_PHONE_KEYWORDS = /phone|call|answer|voicemail|reach|wait/i;
 
 function getRecommendedOpeners(lead) {
@@ -351,6 +363,10 @@ export default function HarmoniaOS() {
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
+  const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
+  const livePain = hasDiscoveryInput ? calcPainScore(discoveryResponses) : null;
+  const displayPain = (lead) => livePain !== null && lead?.id === active?.id ? livePain : (lead?.pain || 0);
+  const painStyle = (score) => painColor(score, C);
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
 
   function selectLead(lead) {
@@ -436,6 +452,7 @@ export default function HarmoniaOS() {
             : "called",
       script_used:scriptUsed,
       prospect_email: captureEmail || l.prospect_email || "",
+      pain: hasDiscoveryInput ? livePain : l.pain,
     }:l));
 
     const flashMsg = outcome==="demo_booked"?"Demo booked ✦"
@@ -462,12 +479,13 @@ export default function HarmoniaOS() {
         prospect_email:captureEmail||null, prospect_phone:capturePhone||null,
         notes:captureNotes||null,
         calendly_opened:outcome==="demo_booked"?calendlyOpened:null,
-        loom_context:outcome==="loom_sent"?(loomContext||`Pain: ${active.pain}/10. ${(active.pain_signals||[]).slice(0,2).join(". ")}`):null,
+        loom_context:outcome==="loom_sent"?(loomContext||`Pain: ${hasDiscoveryInput?livePain:active.pain}/10. ${(active.pain_signals||[]).slice(0,2).join(". ")}`):null,
         loom_queued:outcome==="loom_sent"?true:null,
         callback_datetime:callbackISO,
         send_type:outcome==="followup_sent"?sendType:null,
         gatekeeper_name:outcome==="gatekeeper"?gatekeeperName:null,
         discovery_signals:Object.keys(discoveryResponses).length>0?discoveryResponses:null,
+        pain_score:hasDiscoveryInput?livePain:active.pain,
       };
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     } catch(err){ console.error('webhook failed:',err); }
@@ -638,7 +656,7 @@ export default function HarmoniaOS() {
                     <div style={{width:6,height:6,borderRadius:"50%",
                       background:SCORE_DOT[lead.score]||C.t3,flexShrink:0}}/>
                     <span style={{fontSize:11,fontWeight:500,flex:1,lineHeight:1.3}}>{lead.biz}</span>
-                    <span style={{fontSize:10,color:C.t3,fontFamily:FM}}>{lead.pain}/10</span>
+                    <span style={{fontSize:10,fontFamily:FM,...painStyle(displayPain(lead))}}>{displayPain(lead)}/10</span>
                   </div>
                   <div style={{paddingLeft:12}}>
                     <div style={{fontSize:11,color:C.t2}}>{lead.owner}</div>
@@ -675,7 +693,7 @@ export default function HarmoniaOS() {
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
                     <div style={{width:7,height:7,borderRadius:"50%",background:SCORE_DOT[active.score]||C.t3}}/>
                     <span style={{fontSize:11,color:C.t3}}>
-                      {ICP_LABEL[active.icp]||active.icp} · Score {active.score} · Pain {active.pain}/10
+                      {ICP_LABEL[active.icp]||active.icp} · Score {active.score} · Pain <span style={painStyle(displayPain(active))}>{displayPain(active)}/10</span>
                     </span>
                     {active.website ? (
                       <>
