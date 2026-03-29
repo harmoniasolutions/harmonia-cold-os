@@ -113,10 +113,10 @@ function calcPainScore(responses) {
   PAIN_WEIGHTS.forEach((w, i) => { if (responses[i] === "pain") score += w; });
   return score;
 }
-function painColor(score, C) {
-  if (score >= 7) return { color: C.red, fontWeight: 700 };
-  if (score >= 4) return { color: C.amber, fontWeight: 500 };
-  return { color: C.t3, fontWeight: 400 };
+function painColor(score, colors) {
+  if (score >= 7) return { color: colors.red, fontWeight: 700 };
+  if (score >= 4) return { color: colors.amber, fontWeight: 500 };
+  return { color: colors.t3, fontWeight: 400 };
 }
 
 const REVIEW_PHONE_KEYWORDS = /phone|call|answer|voicemail|reach|wait/i;
@@ -405,7 +405,7 @@ export default function HarmoniaOS() {
     setVariant(pick ? pick.openerId : avail[0] || "1");
   }
 
-  function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0});setLog([]); }
+  function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0,looms:0});setLog([]); }
   function endSess()  { setSessRun(false); if(callRun){setCallRun(false);setCallSecs(0);} }
 
   async function dial(lead){
