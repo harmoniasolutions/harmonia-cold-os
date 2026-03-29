@@ -45,7 +45,7 @@ const FM = "'DM Mono', 'SF Mono', monospace";
 
 const ICP_LABEL  = { hvac:"HVAC", salon:"Salon", barbershop:"Barber" };
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
-const LINE_COLOR = { opener:C.accent, bridge:C.t2, close:C.green };
+const LINE_COLOR = { opener:C.accent, discovery:C.teal, pitch:C.amber, close:C.green };
 
 const OUTCOMES = {
   demo_booked:    { label:"Demo booked",    color:C.green,   short:"Demo", ghl:"Meeting Booked",      discord:"#meetings-booked",  needsEmail:true,  needsBooking:true  },
@@ -119,11 +119,12 @@ function parseLeads(rows) {
 function parseScripts(rows) {
   const out = {};
   rows.forEach(r => {
-    const { icp, variant, name, tag, type, text } = r;
-    if (!icp || !variant) return;
+    const icp = r.icp, id = r.opener_id || r.variant;
+    const { name, tag, type, text } = r;
+    if (!icp || !id) return;
     if (!out[icp]) out[icp] = {};
-    if (!out[icp][variant]) out[icp][variant] = { name, tag, lines: [] };
-    if (type && text) out[icp][variant].lines.push({ type, text });
+    if (!out[icp][id]) out[icp][id] = { name, tag, lines: [] };
+    if (type && text) out[icp][id].lines.push({ type, text });
   });
   return out;
 }
@@ -211,7 +212,7 @@ export default function HarmoniaOS() {
   const [active,   setActive]   = useState(null);
   const [filter,   setFilter]   = useState("all");
   const [tab,      setTab]      = useState("intel");
-  const [variant,  setVariant]  = useState("a");
+  const [variant,  setVariant]  = useState("1");
   const [caller,   setCaller]   = useState("+16178006699");
   const [sessRun,  setSessRun]  = useState(false);
   const [sessSecs, setSessSecs] = useState(0);
@@ -401,7 +402,7 @@ export default function HarmoniaOS() {
 
     resetCaptureFields();
     const next=filtered.find(l=>l.id!==active.id&&l.status==="queued");
-    if(next){setActive(next);setTab("intel");setVariant(Object.keys(scripts[next.icp]||{})[0]||"a");}
+    if(next){setActive(next);setTab("intel");setVariant(Object.keys(scripts[next.icp]||{})[0]||"1");}
     await writeDisposition(active, outcome, scriptUsed, dur, caller);
   }
 
@@ -998,23 +999,20 @@ export default function HarmoniaOS() {
                       </div>
                     ):(
                       <>
-                        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                          <span style={{fontSize:11,color:C.t3,marginRight:2}}>Variant</span>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
                           {variants.map(v=>(
                             <button key={v} onClick={()=>setVariant(v)}
-                              style={{padding:"5px 14px",borderRadius:100,
+                              style={{padding:"7px 12px",borderRadius:8,textAlign:"left",
                                 border:`1px solid ${variant===v?C.t1:C.border}`,
                                 background:variant===v?C.t1:"transparent",
                                 color:variant===v?C.bg:C.t2,
-                                fontSize:11,fontWeight:500,transition:"all 0.15s"}}>
-                              {v.toUpperCase()} — {curScripts[v]?.name}
+                                fontSize:11,fontWeight:500,transition:"all 0.15s",
+                                display:"flex",alignItems:"center",gap:8}}>
+                              <span style={{fontFamily:FM,fontSize:10,opacity:0.6}}>{v}</span>
+                              <span>{curScripts[v]?.name}</span>
+                              {curScripts[v]?.tag&&<span style={{fontSize:9,opacity:0.5,marginLeft:"auto"}}>({curScripts[v].tag})</span>}
                             </button>
                           ))}
-                          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",
-                            gap:5,fontSize:11,color:C.green}}>
-                            <div style={{width:5,height:5,borderRadius:"50%",background:C.green}}/>
-                            A leading
-                          </div>
                         </div>
 
                         {curScript?.tag&&(
@@ -1041,6 +1039,7 @@ export default function HarmoniaOS() {
                             </div>
                           ))}
                         </div>
+
                       </>
                     )}
                   </div>

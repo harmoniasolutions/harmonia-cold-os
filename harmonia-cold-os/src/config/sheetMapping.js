@@ -40,12 +40,12 @@ export const SHEET_CONFIG = {
     SCRIPTS: {
       name: 'Scripts',
       fields: {
-        icp:     { sheetColumn: 'icp',     column: 'A' },
-        variant: { sheetColumn: 'variant', column: 'B' },
-        name:    { sheetColumn: 'name',    column: 'C' },
-        tag:     { sheetColumn: 'tag',     column: 'D' },
-        type:    { sheetColumn: 'type',    column: 'E' },
-        text:    { sheetColumn: 'text',    column: 'F' },
+        icp:       { sheetColumn: 'icp',      column: 'A' },
+        variant:   { sheetColumn: 'variant',   column: 'B' },
+        name:      { sheetColumn: 'name',      column: 'C' },
+        tag:       { sheetColumn: 'tag',       column: 'D' },
+        type:      { sheetColumn: 'type',      column: 'E' },
+        text:      { sheetColumn: 'text',      column: 'F' },
       }
     },
 
@@ -72,16 +72,24 @@ export const CALLER_OPTIONS = [
   { name: 'Joel',   phone: null },
 ];
 
+// 8 opener variants — shared across all ICPs
+const OPENER_VARIANTS = [
+  { id: '1', name: 'Email Pretense',      tag: 'Pretense' },
+  { id: '2', name: 'Honest Cold Call',     tag: 'Pattern Interrupt' },
+  { id: '3', name: 'Missed Call Flip',     tag: 'Defense Flip' },
+  { id: '4', name: 'Beta Test',           tag: 'Free Trial' },
+  { id: '5', name: 'Blunt Founder',       tag: 'Founder Energy' },
+  { id: '6', name: 'Review Call-Out',     tag: 'Pre-Call Intel' },
+  { id: '7', name: 'Competitor Ghost',    tag: 'Competitor Trigger' },
+  { id: '8', name: 'Competitor Scarcity', tag: 'Scarcity + Competition' },
+];
+
 // Script options per ICP (derived from Scripts tab)
 export const SCRIPT_OPTIONS = {
-  hvac: [
-    { variant: 'a', name: 'Revenue Leak', tag: 'Pain-first',    label: 'A — Revenue Leak (Pain-first)' },
-    { variant: 'b', name: 'After Hours',  tag: 'Urgency-first', label: 'B — After Hours (Urgency-first)' },
-    { variant: 'c', name: 'Peak Season',  tag: 'Timing-first',  label: 'C — Peak Season (Timing-first)' },
-  ],
-  salon: [],
-  dental: [],
-  barbershop: [],
+  hvac:       OPENER_VARIANTS.map(v => ({ variant: v.id, name: v.name, tag: v.tag, label: `${v.id} — ${v.name} (${v.tag})` })),
+  salon:      OPENER_VARIANTS.map(v => ({ variant: v.id, name: v.name, tag: v.tag, label: `${v.id} — ${v.name} (${v.tag})` })),
+  barbershop: OPENER_VARIANTS.map(v => ({ variant: v.id, name: v.name, tag: v.tag, label: `${v.id} — ${v.name} (${v.tag})` })),
+  dental:     [],
 };
 
 // Objection presets per ICP (derived from Objections tab)
