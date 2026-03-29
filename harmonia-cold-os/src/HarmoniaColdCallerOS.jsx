@@ -305,6 +305,9 @@ export default function HarmoniaOS() {
   const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
   const [discoveryResponses, setDiscoveryResponses] = useState({});  // { questionIndex: 'pain'|'no'|'skip'|null }
   const [callPhase, setCallPhase] = useState("opener"); // 'opener'|'discovery'|'pitch'|'close'
+  const [phaseSecs, setPhaseSecs] = useState(0);
+  const [phaseTimes, setPhaseTimes] = useState({opener:0,discovery:0,pitch:0,close:0});
+  const phaseRef = useRef();
   const [closeEmail, setCloseEmail] = useState("");
   const [closeEmailStatus, setCloseEmailStatus] = useState(null); // null|'success'|'error'
   const [dispoBarOpen, setDispoBarOpen] = useState(false);
@@ -353,7 +356,17 @@ export default function HarmoniaOS() {
   },[callRun]);
 
   useEffect(() => {
-    if(pitchUnlocked && callPhase==="discovery") setCallPhase("pitch");
+    if(callRun) phaseRef.current=setInterval(()=>setPhaseSecs(s=>s+1),1000);
+    else clearInterval(phaseRef.current);
+    return()=>clearInterval(phaseRef.current);
+  },[callRun]);
+
+  useEffect(() => {
+    if(pitchUnlocked && callPhase==="discovery") {
+      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
+      setPhaseSecs(0);
+      setCallPhase("pitch");
+    }
   },[pitchUnlocked, callPhase]);
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
@@ -383,6 +396,7 @@ export default function HarmoniaOS() {
     setActive(lead);
     setDiscoveryResponses({});
     setCallPhase("opener");
+    setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});
     setCloseEmail(lead?.prospect_email||lead?.email||"");
     setCloseEmailStatus(null);
     const recs = getRecommendedOpeners(lead);
@@ -436,6 +450,8 @@ export default function HarmoniaOS() {
     const outcome = pendingOutcome;
     const meta = OUTCOMES[outcome];
     const dur=callSecs; setCallRun(false); setCallSecs(0);
+    const finalPhaseTimes = {...phaseTimes, [callPhase]: phaseTimes[callPhase] + phaseSecs};
+    setPhaseSecs(0);
 
     const scriptUsed = selectedScript === "custom"
       ? `Custom: ${customScript}`
@@ -507,6 +523,7 @@ export default function HarmoniaOS() {
         gatekeeper_name:outcome==="gatekeeper"?gatekeeperName:null,
         discovery_signals:Object.keys(discoveryResponses).length>0?discoveryResponses:null,
         pain_score:hasDiscoveryInput?livePain:active.pain,
+        phase_times:finalPhaseTimes, total_time:dur,
       };
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     } catch(err){ console.error('webhook failed:',err); }
@@ -528,6 +545,7 @@ export default function HarmoniaOS() {
     setSendType("website");setCalendlyOpened(false);
     setDiscoveryResponses({});
     setCloseEmail("");setCloseEmailStatus(null);
+    setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});
   }
 
   function resetCallState() {
@@ -770,6 +788,10 @@ export default function HarmoniaOS() {
                         {fmt(callSecs)}
                       </div>
                       <div style={{fontSize:10,color:C.green,marginTop:1}}>live call</div>
+                      <div style={{fontSize:12,fontFamily:FM,marginTop:3,
+                        color:{opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"}[callPhase]||C.t3}}>
+                        {callPhase.toUpperCase()} {fmt(phaseSecs)}
+                      </div>
                     </div>
                   )}
                   {(()=>{
@@ -1162,7 +1184,7 @@ export default function HarmoniaOS() {
                             const isRec = !!recMap[v];
                             const isPrimary = recommended[0]?.openerId === v;
                             return (
-                            <button key={v} onClick={()=>{setVariant(v);setCallPhase("opener");setDiscoveryResponses({});}}
+                            <button key={v} onClick={()=>{setVariant(v);setCallPhase("opener");setDiscoveryResponses({});setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});}}
                               style={{padding:"7px 12px",borderRadius:8,textAlign:"left",
                                 border:`1px solid ${variant===v?C.t1:isRec?C.green+"60":C.border}`,
                                 background:variant===v?C.t1:isRec?C.green+"08":"transparent",
@@ -1222,7 +1244,7 @@ export default function HarmoniaOS() {
                               // Show "They're talking →" button instead
                               return (
                                 <div key={i} style={{display:"flex",justifyContent:"center",padding:"16px 0"}}>
-                                  <button onClick={()=>setCallPhase("discovery")}
+                                  <button onClick={()=>{setPhaseTimes(t=>({...t,opener:phaseSecs}));setPhaseSecs(0);setCallPhase("discovery");}}
                                     style={{padding:"10px 28px",borderRadius:100,border:"none",
                                       background:C.t1,color:C.bg,fontSize:12,fontWeight:500,
                                       cursor:"pointer",animation:"pulse 2s ease-in-out infinite"}}>
