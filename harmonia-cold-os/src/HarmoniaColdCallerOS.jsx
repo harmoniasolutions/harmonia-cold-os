@@ -305,6 +305,8 @@ export default function HarmoniaOS() {
   const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
   const [discoveryResponses, setDiscoveryResponses] = useState({});  // { questionIndex: 'pain'|'no'|'skip'|null }
   const [callPhase, setCallPhase] = useState("opener"); // 'opener'|'discovery'|'pitch'|'close'
+  const [closeEmail, setCloseEmail] = useState("");
+  const [closeEmailStatus, setCloseEmailStatus] = useState(null); // null|'success'|'error'
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -380,6 +382,8 @@ export default function HarmoniaOS() {
     setActive(lead);
     setDiscoveryResponses({});
     setCallPhase("opener");
+    setCloseEmail(lead?.prospect_email||lead?.email||"");
+    setCloseEmailStatus(null);
     const recs = getRecommendedOpeners(lead);
     const avail = Object.keys(scripts[lead?.icp] || {});
     const pick = recs.find(r => avail.includes(r.openerId));
@@ -513,6 +517,7 @@ export default function HarmoniaOS() {
     setGatekeeperName("");setLoomContext("");
     setSendType("website");setCalendlyOpened(false);
     setDiscoveryResponses({});
+    setCloseEmail("");setCloseEmailStatus(null);
   }
 
   function resetCallState() {
@@ -524,6 +529,21 @@ export default function HarmoniaOS() {
     const url = `${CALENDLY_URL}?name=${encodeURIComponent(active.owner)}&email=${encodeURIComponent(captureEmail)}&a1=${encodeURIComponent(active.biz)}`;
     window.open(url, "_blank");
     setCalendlyOpened(true);
+  }
+
+  function captureCloseEmail() {
+    const email = closeEmail.trim();
+    if (!email || !email.includes("@") || !email.split("@")[1]?.includes(".")) {
+      setCloseEmailStatus("error");
+      setTimeout(()=>setCloseEmailStatus(s=>s==="error"?null:s),600);
+      return;
+    }
+    setCaptureEmail(email);
+    setLeads(ls=>ls.map(l=>l.id===active.id?{...l,prospect_email:email}:l));
+    setActive(a=>({...a,prospect_email:email}));
+    selectOutcome("demo_booked");
+    setCloseEmailStatus("success");
+    setTimeout(()=>setCloseEmailStatus(s=>s==="success"?null:s),3000);
   }
 
   function undoLastDisposition() {
@@ -549,6 +569,7 @@ export default function HarmoniaOS() {
         button,select{font-family:${F};cursor:pointer}
         @keyframes slideDown{from{transform:translateY(-8px);opacity:0}to{transform:translateY(0);opacity:1}}
         @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(29,29,31,0.3)}50%{box-shadow:0 0 0 8px rgba(29,29,31,0)}}
+        @keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
         a{color:${C.accent};text-decoration:none}a:hover{text-decoration:underline}
       `}</style>
 
@@ -1257,6 +1278,42 @@ export default function HarmoniaOS() {
                                 <div style={{fontSize:14,color:C.t1,lineHeight:1.75,
                                   fontStyle:line.type==="opener"?"italic":"normal"}}>
                                   {fillPlaceholders(line.text, buildPlaceholderContext(active, callerName))}
+                                </div>
+                              )}
+
+                              {isClose&&!locked&&(
+                                <div style={{marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>
+                                  {closeEmailStatus==="success"?(
+                                    <div style={{background:"#10B981",color:"#fff",padding:"10px 16px",
+                                      borderRadius:8,fontSize:13,fontWeight:500,
+                                      animation:"slideDown 0.2s ease"}}>
+                                      ✓ Email captured — demo booked
+                                    </div>
+                                  ):(
+                                    <>
+                                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                                        <input type="email" value={closeEmail} onChange={e=>{setCloseEmail(e.target.value);setCloseEmailStatus(null);}}
+                                          onKeyDown={e=>{if(e.key==="Enter")captureCloseEmail();}}
+                                          placeholder="Enter their email..."
+                                          style={{flex:1,border:`1px solid ${closeEmailStatus==="error"?"#EF4444":"#10B98140"}`,
+                                            borderRadius:8,padding:"8px 12px",fontSize:15,
+                                            background:C.bg,color:C.t1,outline:"none",
+                                            animation:closeEmailStatus==="error"?"shake 0.3s ease":"none",
+                                            transition:"border-color 0.15s"}}
+                                          onFocus={e=>e.target.style.borderColor="#10B981"}
+                                          onBlur={e=>{if(closeEmailStatus!=="error")e.target.style.borderColor="#10B98140";}}/>
+                                        <button onClick={captureCloseEmail}
+                                          style={{padding:"8px 18px",borderRadius:8,border:"none",
+                                            background:"#10B981",color:"#fff",fontSize:13,fontWeight:500,
+                                            cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>
+                                          Capture →
+                                        </button>
+                                      </div>
+                                      {closeEmailStatus==="error"&&(
+                                        <div style={{fontSize:11,color:"#EF4444",marginTop:4}}>Enter a valid email</div>
+                                      )}
+                                    </>
+                                  )}
                                 </div>
                               )}
                             </div>
