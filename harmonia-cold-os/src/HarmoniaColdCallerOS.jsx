@@ -304,6 +304,7 @@ export default function HarmoniaOS() {
   const [calendlyOpened,   setCalendlyOpened]   = useState(false);
   const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
   const [discoveryResponses, setDiscoveryResponses] = useState({});  // { questionIndex: 'pain'|'no'|'skip'|null }
+  const [callPhase, setCallPhase] = useState("opener"); // 'opener'|'discovery'|'pitch'|'close'
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -348,6 +349,10 @@ export default function HarmoniaOS() {
     return()=>clearInterval(callRef.current);
   },[callRun]);
 
+  useEffect(() => {
+    if(pitchUnlocked && callPhase==="discovery") setCallPhase("pitch");
+  },[pitchUnlocked, callPhase]);
+
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
   const filtered     = leads.filter(l => filter==="all" || l.icp===filter);
@@ -365,6 +370,8 @@ export default function HarmoniaOS() {
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
   const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const livePain = hasDiscoveryInput ? calcPainScore(discoveryResponses) : null;
+  const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
+  const pitchUnlocked = painSignalCount >= 2;
   const displayPain = (lead) => livePain !== null && lead?.id === active?.id ? livePain : (lead?.pain || 0);
   const painStyle = (score) => painColor(score, C);
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
@@ -372,6 +379,7 @@ export default function HarmoniaOS() {
   function selectLead(lead) {
     setActive(lead);
     setDiscoveryResponses({});
+    setCallPhase("opener");
     const recs = getRecommendedOpeners(lead);
     const avail = Object.keys(scripts[lead?.icp] || {});
     const pick = recs.find(r => avail.includes(r.openerId));
@@ -540,6 +548,7 @@ export default function HarmoniaOS() {
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${C.border};border-radius:2px}
         button,select{font-family:${F};cursor:pointer}
         @keyframes slideDown{from{transform:translateY(-8px);opacity:0}to{transform:translateY(0);opacity:1}}
+        @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(29,29,31,0.3)}50%{box-shadow:0 0 0 8px rgba(29,29,31,0)}}
         a{color:${C.accent};text-decoration:none}a:hover{text-decoration:underline}
       `}</style>
 
@@ -1115,7 +1124,7 @@ export default function HarmoniaOS() {
                             const isRec = !!recMap[v];
                             const isPrimary = recommended[0]?.openerId === v;
                             return (
-                            <button key={v} onClick={()=>setVariant(v)}
+                            <button key={v} onClick={()=>{setVariant(v);setCallPhase("opener");setDiscoveryResponses({});}}
                               style={{padding:"7px 12px",borderRadius:8,textAlign:"left",
                                 border:`1px solid ${variant===v?C.t1:isRec?C.green+"60":C.border}`,
                                 background:variant===v?C.t1:isRec?C.green+"08":"transparent",
@@ -1156,9 +1165,36 @@ export default function HarmoniaOS() {
                           </div>
                         )}
 
-                        <div style={{display:"flex",flexDirection:"column"}}>
+                        <div style={{display:"flex",flexDirection:"column",gap:2}}>
                           {(curScript?.lines||[]).map((line,i)=>{
                             const isDiscovery = line.type === "discovery";
+                            const isPitch = line.type === "pitch";
+                            const isClose = line.type === "close";
+                            const borderColors = {opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"};
+                            const leftColor = borderColors[line.type] || C.t3;
+
+                            // Visibility logic
+                            const hidden = (isDiscovery && callPhase==="opener")
+                              || (isPitch && callPhase==="opener")
+                              || (isClose && callPhase==="opener");
+                            const locked = (isPitch || isClose) && !pitchUnlocked && callPhase!=="opener";
+                            const isCurrentPhase = line.type === callPhase;
+
+                            if (hidden && line.type==="discovery") {
+                              // Show "They're talking →" button instead
+                              return (
+                                <div key={i} style={{display:"flex",justifyContent:"center",padding:"16px 0"}}>
+                                  <button onClick={()=>setCallPhase("discovery")}
+                                    style={{padding:"10px 28px",borderRadius:100,border:"none",
+                                      background:C.t1,color:C.bg,fontSize:12,fontWeight:500,
+                                      cursor:"pointer",animation:"pulse 2s ease-in-out infinite"}}>
+                                    They're talking →
+                                  </button>
+                                </div>
+                              );
+                            }
+                            if (hidden) return null;
+
                             const bullets = isDiscovery && line.text.includes(" // ")
                               ? line.text.split(" // ").map(b=>b.replace(/^[•·\-]\s*/, "").replace(/^[""]|[""]$/g,"").trim()).filter(Boolean)
                               : null;
@@ -1166,9 +1202,23 @@ export default function HarmoniaOS() {
 
                             return (
                             <div key={i} style={{
-                              paddingBottom:18,
-                              marginBottom:i<(curScript.lines.length-1)?18:0,
-                              borderBottom:i<(curScript.lines.length-1)?`1px solid ${C.border}`:"none"}}>
+                              padding:"16px 18px",marginBottom:4,borderRadius:10,
+                              borderLeft:`3px solid ${leftColor}`,
+                              background:isCurrentPhase?`${leftColor}06`:locked?C.surface:"transparent",
+                              opacity:locked?0.3:1,filter:locked?"blur(1px)":"none",
+                              position:"relative",transition:"opacity 0.3s ease, filter 0.3s ease",
+                              pointerEvents:locked?"none":"auto"}}>
+
+                              {locked&&(
+                                <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+                                  justifyContent:"center",zIndex:1,borderRadius:10}}>
+                                  <span style={{fontSize:11,color:C.t2,fontWeight:500,
+                                    background:`${C.bg}E0`,padding:"4px 14px",borderRadius:100}}>
+                                    🔒 Confirm 2+ pain signals to unlock
+                                  </span>
+                                </div>
+                              )}
+
                               <div style={{fontSize:10,color:LINE_COLOR[line.type]||C.t2,
                                 fontWeight:500,marginBottom:8,textTransform:"uppercase",
                                 letterSpacing:"0.03em"}}>{line.type}</div>
