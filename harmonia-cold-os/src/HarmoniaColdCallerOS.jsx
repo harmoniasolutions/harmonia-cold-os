@@ -361,6 +361,18 @@ export default function HarmoniaOS() {
     return()=>clearInterval(phaseRef.current);
   },[callRun]);
 
+  const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
+  const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
+  const pitchUnlocked = painSignalCount >= 2;
+
+  useEffect(() => {
+    if(pitchUnlocked && callPhase==="discovery") {
+      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
+      setPhaseSecs(0);
+      setCallPhase("pitch");
+    }
+  },[pitchUnlocked, callPhase]);
+
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
   const filtered     = leads.filter(l => filter==="all" || l.icp===filter);
@@ -376,21 +388,10 @@ export default function HarmoniaOS() {
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
-  const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const livePain = hasDiscoveryInput ? calcPainScore(discoveryResponses) : null;
-  const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
-  const pitchUnlocked = painSignalCount >= 2;
   const displayPain = (lead) => livePain !== null && lead?.id === active?.id ? livePain : (lead?.pain || 0);
   const painStyle = (score) => painColor(score, C);
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
-
-  useEffect(() => {
-    if(pitchUnlocked && callPhase==="discovery") {
-      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
-      setPhaseSecs(0);
-      setCallPhase("pitch");
-    }
-  },[pitchUnlocked, callPhase]);
 
   function selectLead(lead) {
     setActive(lead);
