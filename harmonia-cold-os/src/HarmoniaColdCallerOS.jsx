@@ -213,49 +213,8 @@ function safeJSON(str, fallback) {
 /* ─────────────────────────────────────────────
    WRITE BACK TO SHEETS (disposition logging)
 ───────────────────────────────────────────── */
-async function writeDisposition(data) {
-  const ts = new Date().toISOString();
-  const row = [
-    ts + "-" + data.lead_id,           // A: unique row ID
-    data.lead_id,                       // B: lead ID
-    data.caller_name,                   // C: caller name
-    data.icp,                           // D: ICP vertical
-    data.biz,                           // E: business name
-    data.owner,                         // F: owner name
-    data.phone,                         // G: phone
-    data.city,                          // H: city
-    data.state,                         // I: state
-    data.script_used,                   // J: script variant used
-    data.disposition,                   // K: outcome key
-    data.ghl_stage || "",               // L: GHL pipeline stage
-    data.call_duration,                 // M: total call seconds
-    data.pain_score ?? "",              // N: pain score 0-10
-    data.prospect_email || "",          // O: prospect email
-    data.prospect_phone || "",          // P: prospect mobile
-    data.objection_raised || "",        // Q: objection raised
-    data.gatekeeper_name || "",         // R: gatekeeper name
-    data.callback_datetime || "",       // S: callback ISO datetime
-    data.send_type || "",               // T: send type (website/info_packet/case_study)
-    data.loom_queued ? "TRUE" : "",     // U: loom queued?
-    data.loom_context || "",            // V: loom context
-    data.calendly_opened ? "TRUE" : "", // W: calendly opened?
-    data.notes || "",                   // X: notes
-    JSON.stringify(data.discovery_signals || {}), // Y: discovery responses JSON
-    data.phase_times ? `O:${data.phase_times.opener||0} D:${data.phase_times.discovery||0} P:${data.phase_times.pitch||0} C:${data.phase_times.close||0}` : "", // Z: phase times
-    data.total_time ?? "",              // AA: total call time
-    data.competitor || "",              // AB: competitor
-    data.discord_channel || "",         // AC: discord channel
-    ts,                                 // AD: timestamp
-  ];
-  await fetch(
-    `${BASE.replace("/values","")}/values/Script_Performance:append?valueInputOption=USER_ENTERED&key=${API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values: [row] }),
-    }
-  );
-}
+/* writeDisposition removed — n8n webhook handles all Sheets writes
+   via /webhook/cold-call-log with proper Google OAuth credentials */
 
 /* ─────────────────────────────────────────────
    LOADING SCREEN
@@ -555,7 +514,7 @@ export default function HarmoniaOS() {
     setDispoBarOpen(false);
     const next=filtered.find(l=>l.id!==active.id&&l.status==="queued");
     if(next){selectLead(next);setTab("intel");}
-    await writeDisposition(payload);
+    // Sheets write handled by n8n webhook above
   }
 
   function resetCaptureFields() {
