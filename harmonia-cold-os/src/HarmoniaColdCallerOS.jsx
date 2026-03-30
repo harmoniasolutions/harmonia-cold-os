@@ -361,14 +361,6 @@ export default function HarmoniaOS() {
     return()=>clearInterval(phaseRef.current);
   },[callRun]);
 
-  useEffect(() => {
-    if(pitchUnlocked && callPhase==="discovery") {
-      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
-      setPhaseSecs(0);
-      setCallPhase("pitch");
-    }
-  },[pitchUnlocked, callPhase]);
-
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
   const filtered     = leads.filter(l => filter==="all" || l.icp===filter);
@@ -391,6 +383,14 @@ export default function HarmoniaOS() {
   const displayPain = (lead) => livePain !== null && lead?.id === active?.id ? livePain : (lead?.pain || 0);
   const painStyle = (score) => painColor(score, C);
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
+
+  useEffect(() => {
+    if(pitchUnlocked && callPhase==="discovery") {
+      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
+      setPhaseSecs(0);
+      setCallPhase("pitch");
+    }
+  },[pitchUnlocked, callPhase]);
 
   function selectLead(lead) {
     setActive(lead);
