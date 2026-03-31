@@ -174,7 +174,7 @@ function parseLeads(rows) {
       pain:          parseInt(r.pain) || 0,
       chairs:        r.chairs ? parseInt(r.chairs) : null,
       reviews_count: parseInt(r.reviews_count) || 0,
-      status:        r.status || "queued",
+      status:        (!r.status || r.status === "new") ? "queued" : r.status,
       competitor:    r.competitor || "",
       pain_signals:  safeJSON(r.pain_signals, []),
       google_reviews:safeJSON(r.google_reviews, []),
