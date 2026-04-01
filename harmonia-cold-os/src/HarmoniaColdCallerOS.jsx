@@ -178,6 +178,9 @@ function parseLeads(rows) {
       competitor:    r.competitor || "",
       pain_signals:  safeJSON(r.pain_signals, []),
       google_reviews:safeJSON(r.google_reviews, []),
+      call_count:         parseInt(r.call_count) || 0,
+      last_call_timestamp: r.last_call_timestamp || "",
+      disposition:         r.disposition || "",
     }));
 }
 
@@ -291,6 +294,8 @@ export default function HarmoniaOS() {
   const [closeEmail, setCloseEmail] = useState("");
   const [closeEmailStatus, setCloseEmailStatus] = useState(null); // null|'success'|'error'
   const [dispoBarOpen, setDispoBarOpen] = useState(false);
+  const [phoneMenuOpen, setPhoneMenuOpen] = useState(false);  // dial phone dropdown
+  const [lastDialedPhone, setLastDialedPhone] = useState(""); // track which phone was dialed
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -375,6 +380,8 @@ export default function HarmoniaOS() {
 
   function selectLead(lead) {
     setActive(lead);
+    setPhoneMenuOpen(false);
+    setLastDialedPhone("");
     setDiscoveryResponses({});
     setCallPhase("opener");
     setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});
@@ -389,14 +396,28 @@ export default function HarmoniaOS() {
   function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0,looms:0});setLog([]); }
   function endSess()  { setSessRun(false); if(callRun){setCallRun(false);setCallSecs(0);} }
 
-  async function dial(lead){
+  function getLeadPhones(lead) {
+    const phones = [];
+    if (lead.corporate_phone) phones.push({ label: "Corporate", number: lead.corporate_phone });
+    if (lead.mobile_phone)    phones.push({ label: "Mobile",    number: lead.mobile_phone });
+    if (lead.home_phone)      phones.push({ label: "Home",      number: lead.home_phone });
+    // fallback for old data that still has single "phone" field
+    if (phones.length === 0 && lead.phone) phones.push({ label: "Phone", number: lead.phone });
+    return phones;
+  }
+
+  async function dial(lead, phoneNumber){
     if(!sessRun||callRun||lead.status!=="queued"||!callerName) return;
+    const num = phoneNumber || getLeadPhones(lead)[0]?.number;
+    if (!num) return;
     setActive(lead);setCallRun(true);setCallSecs(0);setTab("intel");setOpenObj(null);
     resetCaptureFields();
+    setPhoneMenuOpen(false);
+    setLastDialedPhone(num);
     setStats(s=>({...s,dials:s.dials+1}));
-    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(lead.phone)}`;
+    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(num)}`;
     try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
-    catch(e){ console.log("Call fired:",lead.phone); }
+    catch(e){ console.log("Call fired:",num); }
   }
 
   function openDispoBar() {
@@ -463,14 +484,20 @@ export default function HarmoniaOS() {
       looms:   outcome==="loom_sent"?s.looms+1:s.looms,
     }));
 
+    const newCallCount = (active.call_count || 0) + 1;
+    const newTimestamp = new Date().toISOString();
     setLeads(ls=>ls.map(l=>l.id===active.id?{...l,
       status: outcome==="demo_booked"?"demo_booked"
             : outcome==="dnc"?"dnc"
             : outcome==="not_qualified"?"not_qualified"
+            : (outcome==="no_answer"||outcome==="voicemail")?"queued"
             : "called",
       script_used:scriptUsed,
       prospect_email: captureEmail || l.prospect_email || "",
       pain: hasDiscoveryInput ? livePain : l.pain,
+      call_count: newCallCount,
+      last_call_timestamp: newTimestamp,
+      disposition: outcome,
     }:l));
 
     const flashMsg = outcome==="demo_booked"?"Demo booked ✦"
@@ -487,7 +514,7 @@ export default function HarmoniaOS() {
 
     try {
       const payload = {
-        lead_id:active.id, biz:active.biz, owner:active.owner, phone:active.phone,
+        lead_id:active.id, biz:active.biz, owner:active.owner, phone:lastDialedPhone||active.corporate_phone||active.mobile_phone||active.home_phone||active.phone,
         city:active.city, state:active.state, icp:active.icp,
         disposition:outcome, status:meta.ghl||"called",
         ghl_stage:meta.ghl||null, discord_channel:meta.discord||null,
@@ -505,6 +532,7 @@ export default function HarmoniaOS() {
         discovery_signals:Object.keys(discoveryResponses).length>0?discoveryResponses:null,
         pain_score:hasDiscoveryInput?livePain:active.pain,
         phase_times:finalPhaseTimes, total_time:dur,
+        call_count:newCallCount, last_call_timestamp:newTimestamp,
       };
       payload.competitor = active.competitor || "";
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -721,6 +749,31 @@ export default function HarmoniaOS() {
                         {lead.script_used&&<span style={{color:C.t3,fontWeight:400}}> · Script {lead.script_used.toUpperCase()}</span>}
                       </div>
                     )}
+                    {/* No-answer / VM indicator from sheet data */}
+                    {!isDone && lead.call_count > 0 && (
+                      <div style={{marginTop:3,display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{fontSize:9,fontWeight:600,color:C.amber,
+                          background:"#FFF8E1",padding:"1px 5px",borderRadius:4}}>
+                          {lead.disposition==="voicemail"?"VM":"No ans"} ×{lead.call_count}
+                        </span>
+                        {lead.last_call_timestamp && (
+                          <span style={{fontSize:9,color:C.t3}}>
+                            {(() => {
+                              try {
+                                const d = new Date(lead.last_call_timestamp);
+                                const now = new Date();
+                                const diffMs = now - d;
+                                const diffH = Math.floor(diffMs / 3600000);
+                                const diffD = Math.floor(diffH / 24);
+                                if (diffD > 0) return `${diffD}d ago`;
+                                if (diffH > 0) return `${diffH}h ago`;
+                                return `${Math.floor(diffMs/60000)}m ago`;
+                              } catch { return ""; }
+                            })()}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -758,7 +811,9 @@ export default function HarmoniaOS() {
                     {active.biz}
                   </div>
                   <div style={{fontSize:12,color:C.t2,whiteSpace:"nowrap"}}>
-                    {active.owner}&nbsp;·&nbsp;{active.phone}&nbsp;·&nbsp;{active.city}{active.state?`, ${active.state}`:""}
+                    {active.owner}&nbsp;·&nbsp;{getLeadPhones(active).map((p,i)=>(
+                      <span key={i}>{i>0?" · ":""}<span style={{color:C.t3,fontSize:10}}>{p.label}:</span> {p.number}</span>
+                    ))}&nbsp;·&nbsp;{active.city}{active.state?`, ${active.state}`:""}
                   </div>
                 </div>
 
@@ -778,18 +833,104 @@ export default function HarmoniaOS() {
                   )}
                   {(()=>{
                     const canDial=sessRun&&active.status==="queued"&&!!callerName;
-                    if(!callRun&&!pendingOutcome) return (
-                      <button onClick={()=>dial(active)}
-                        disabled={!canDial}
-                        style={{padding:"7px 22px",borderRadius:8,
-                          border:`1px solid ${canDial?C.t1:C.border}`,
-                          background:canDial?C.t1:"transparent",
-                          color:canDial?C.bg:C.t3,
-                          fontSize:12,fontWeight:500,
-                          cursor:canDial?"pointer":"not-allowed",
-                          transition:"all 0.15s"}}>
-                        {active.status!=="queued"?"Called":!callerName?"Select caller":sessRun?"Dial":"Start session"}
-                      </button>
+                    const phones=getLeadPhones(active);
+                    if(!callRun&&!pendingOutcome) {
+                      const btnLabel=active.status!=="queued"?"Called":!callerName?"Select caller":sessRun?"Dial":"Start session";
+                      if(phones.length<=1) return (
+                        <button onClick={()=>dial(active)}
+                          disabled={!canDial}
+                          style={{padding:"7px 22px",borderRadius:8,
+                            border:`1px solid ${canDial?C.t1:C.border}`,
+                            background:canDial?C.t1:"transparent",
+                            color:canDial?C.bg:C.t3,
+                            fontSize:12,fontWeight:500,
+                            cursor:canDial?"pointer":"not-allowed",
+                            transition:"all 0.15s"}}>
+                          {btnLabel}
+                        </button>
+                      );
+                      // Multiple phones — dial button + dropdown
+                      return (
+                        <div style={{position:"relative",display:"inline-block"}}>
+                          <div style={{display:"flex",alignItems:"stretch"}}>
+                            <button onClick={()=>dial(active,phones[0].number)}
+                              disabled={!canDial}
+                              style={{padding:"7px 16px",borderRadius:"8px 0 0 8px",
+                                border:`1px solid ${canDial?C.t1:C.border}`,borderRight:"none",
+                                background:canDial?C.t1:"transparent",
+                                color:canDial?C.bg:C.t3,
+                                fontSize:12,fontWeight:500,
+                                cursor:canDial?"pointer":"not-allowed",
+                                transition:"all 0.15s"}}>
+                              {btnLabel}
+                            </button>
+                            <button onClick={()=>{ if(canDial) setPhoneMenuOpen(v=>!v); }}
+                              disabled={!canDial}
+                              style={{padding:"7px 8px",borderRadius:"0 8px 8px 0",
+                                border:`1px solid ${canDial?C.t1:C.border}`,
+                                background:canDial?C.t1:"transparent",
+                                color:canDial?C.bg:C.t3,
+                                fontSize:10,fontWeight:500,
+                                cursor:canDial?"pointer":"not-allowed",
+                                transition:"all 0.15s"}}>
+                              ▾
+                            </button>
+                          </div>
+                          {phoneMenuOpen&&canDial&&(
+                            <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
+                              background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+                              boxShadow:"0 4px 12px rgba(0,0,0,0.12)",zIndex:50,minWidth:200,
+                              overflow:"hidden"}}>
+                              {phones.map((p,i)=>(
+                                <button key={i} onClick={()=>dial(active,p.number)}
+                                  style={{display:"block",width:"100%",textAlign:"left",
+                                    padding:"9px 14px",border:"none",background:"transparent",
+                                    cursor:"pointer",fontSize:12,color:C.t1,
+                                    borderBottom:i<phones.length-1?`1px solid ${C.border}`:"none"}}
+                                  onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+                                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                  <span style={{fontWeight:500}}>{p.label}</span>
+                                  <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                    // During call — show "Try another" dropdown if multiple phones
+                    if(callRun&&phones.length>1) return (
+                      <div style={{position:"relative",display:"inline-block"}}>
+                        <button onClick={()=>setPhoneMenuOpen(v=>!v)}
+                          style={{padding:"5px 12px",borderRadius:6,
+                            border:`1px solid ${C.border}`,background:"transparent",
+                            color:C.t2,fontSize:11,cursor:"pointer"}}>
+                          Try another #
+                        </button>
+                        {phoneMenuOpen&&(
+                          <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
+                            background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
+                            boxShadow:"0 4px 12px rgba(0,0,0,0.12)",zIndex:50,minWidth:200,
+                            overflow:"hidden"}}>
+                            {phones.filter(p=>p.number!==lastDialedPhone).map((p,i,arr)=>(
+                              <button key={i} onClick={()=>{
+                                  setLastDialedPhone(p.number);setPhoneMenuOpen(false);
+                                  const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.number)}`;
+                                  fetch(url,{method:"GET",mode:"no-cors"}).catch(()=>{});
+                                }}
+                                style={{display:"block",width:"100%",textAlign:"left",
+                                  padding:"9px 14px",border:"none",background:"transparent",
+                                  cursor:"pointer",fontSize:12,color:C.t1,
+                                  borderBottom:i<arr.length-1?`1px solid ${C.border}`:"none"}}
+                                onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+                                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                <span style={{fontWeight:500}}>{p.label}</span>
+                                <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     );
                     return null;
                   })()}
@@ -999,6 +1140,7 @@ export default function HarmoniaOS() {
                   {id:"reviews",    label:`Reviews (${active.google_reviews?.length||0})`},
                   {id:"script",     label:"Script"},
                   {id:"objections", label:`Objections (${curObjs.length})`},
+                  {id:"voicemail",  label:"Voicemail"},
                 ].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id)}
                     style={{padding:"10px 15px",border:"none",background:"transparent",
@@ -1386,6 +1528,49 @@ export default function HarmoniaOS() {
                         ))}
                       </>
                     )}
+                  </div>
+                )}
+
+                {tab==="voicemail"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:12,maxWidth:600}}>
+                    <div style={{fontSize:11,color:C.t3,marginBottom:2}}>
+                      Use these scripts when you hit voicemail. Keep it under 30 seconds.
+                    </div>
+                    {[
+                      {
+                        title:"Standard VM — First Touch",
+                        body:`Hi ${(active?.owner||"").split(" ")[0] || "there"}, this is ${callerName || "[Your Name]"} calling about ${active?.biz||"your business"}. I work with ${ICP_LABEL[active?.icp]||"businesses"} in ${active?.city||"your area"} to help them never miss a new customer call again. I'd love 2 minutes to show you how — give me a call back at this number or I'll try you again soon. Thanks!`
+                      },
+                      {
+                        title:"Follow-Up VM — 2nd/3rd Attempt",
+                        body:`Hey ${(active?.owner||"").split(" ")[0] || "there"}, it's ${callerName || "[Your Name]"} again — I tried reaching you ${active?.call_count > 1 ? active.call_count-1+" time"+(active.call_count>2?"s":"")+" before":"the other day"}. I've been helping ${ICP_LABEL[active?.icp]||"businesses"} like yours fill gaps in their schedule automatically. Figured it's worth one more try — call me back or I can shoot you a quick text. Talk soon!`
+                      },
+                      {
+                        title:"Pain-Based VM",
+                        body:`Hi ${(active?.owner||"").split(" ")[0] || "there"}, ${callerName || "[Your Name]"} here. I noticed ${active?.pain_signals?.length > 0 ? active.pain_signals[0] : "you might be missing calls when you're busy with clients"}. We built something specifically for ${ICP_LABEL[active?.icp]||"businesses"} like ${active?.biz||"yours"} that handles that 24/7 — no staff needed. Worth a quick chat? Call me back at this number. Thanks!`
+                      },
+                      {
+                        title:"Scarcity / Competitor VM",
+                        body:`Hey ${(active?.owner||"").split(" ")[0] || "there"}, quick message — ${callerName || "[Your Name]"} here. We're onboarding a few ${ICP_LABEL[active?.icp]||"businesses"} in ${active?.city||"your area"} this month and I wanted to make sure ${active?.biz||"you"} got a shot before we're full. It's an AI receptionist that books appointments while you're working. Call me back if you want the details. Cheers!`
+                      },
+                    ].map((vm,i)=>(
+                      <div key={i} style={{borderRadius:12,overflow:"hidden",
+                        border:`1px solid ${C.border}`}}>
+                        <div style={{padding:"10px 16px",background:C.surface,
+                          borderBottom:`1px solid ${C.border}`,
+                          display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                          <span style={{fontSize:12,fontWeight:500,color:C.t1}}>{vm.title}</span>
+                          <button onClick={()=>{navigator.clipboard.writeText(vm.body);setFlash("VM script copied");setTimeout(()=>setFlash(null),2000);}}
+                            style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                              background:C.bg,color:C.t2,fontSize:10,cursor:"pointer"}}>
+                            Copy
+                          </button>
+                        </div>
+                        <div style={{padding:"12px 16px",fontSize:13,color:C.t1,lineHeight:1.7}}>
+                          {vm.body}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

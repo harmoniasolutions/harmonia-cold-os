@@ -1,0 +1,195 @@
+{
+  "name": "Harmonia Lead Pipeline — Apollo CSV → Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Upload Apollo Leads",
+        "formDescription": "Upload a CSV export from Apollo to process and classify leads.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "CSV File",
+              "fieldType": "file",
+              "acceptFileTypes": ".csv,.tsv",
+              "multipleFiles": false,
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "path": "upload-leads",
+          "respondWithOptions": {
+            "values": {
+              "respondWith": "text",
+              "formSubmittedText": "Leads uploaded. Processing complete."
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Upload Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "binaryPropertyName": "CSV File",
+        "options": {
+          "delimiter": ",",
+          "headerRow": true,
+          "includeEmptyCells": false
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Parse CSV",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [280, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ── Harmonia Lead Pipeline: classify + filter ──\nconst items = $input.all();\nconst rawItems = [];\nconst cleanItems = [];\n\nfor (const item of items) {\n  const row = item.json;\n\n  // Branch 0: ALL raw rows pass through untouched\n  rawItems.push({ json: { ...row } });\n\n  // ── Qualification gate ──\n  const companyName = (row['Company Name'] || '').trim();\n  const corpPhone   = (row['Corporate Phone'] || '').trim();\n  const mobilePhone = (row['Mobile Phone'] || '').trim();\n  const homePhone   = (row['Home Phone'] || '').trim();\n\n  if (!companyName) continue;                   // no company = skip\n  if (!corpPhone && !mobilePhone && !homePhone) continue; // no phone = skip\n\n  // ── ICP classification ──\n  const kw    = (row['Keywords'] || '').toLowerCase();\n  const title = (row['Title'] || '').toLowerCase();\n  const co    = companyName.toLowerCase();\n\n  let icp = 'other';\n\n  if (kw.includes('barber') || kw.includes('haircuts for men') || co.includes('barber')) {\n    icp = 'barbershop';\n  } else if (\n    kw.includes('salon') || kw.includes('hair care') ||\n    kw.includes('hairstyl') || kw.includes('cosmetolog') ||\n    title.includes('salon') || title.includes('stylist') ||\n    co.includes('salon')\n  ) {\n    icp = 'salon';\n  } else if (\n    kw.includes('nail salon') || kw.includes('manicur') ||\n    kw.includes('pedicur') || co.includes('nail')\n  ) {\n    icp = 'nail_salon';\n  } else if (\n    kw.includes('waxing') || kw.includes('sugaring') ||\n    kw.includes('esthetician') || kw.includes('lash') ||\n    kw.includes('medspa') || kw.includes('medical spa') ||\n    kw.includes('facial') || co.includes('spa') ||\n    co.includes('wax') || co.includes('lash')\n  ) {\n    icp = 'beauty_spa';\n  }\n\n  if (icp === 'other') continue;                // not our vertical = skip\n\n  // ── Zip extraction from Company Address ──\n  const addr = row['Company Address'] || '';\n  const zipMatch = addr.match(/\\b(\\d{5}(?:-\\d{4})?)\\b/);\n\n  // ── Unique lead ID ──\n  const ts   = Date.now();\n  const rand = Math.random().toString(36).substring(2, 6);\n\n  cleanItems.push({\n    json: {\n      id:           `HL-${ts}-${rand}`,\n      biz:          companyName,\n      owner:        `${(row['First Name'] || '').trim()} ${(row['Last Name'] || '').trim()}`.trim(),\n      owner_title:  (row['Title'] || '').trim(),\n      corporate_phone: corpPhone,\n      mobile_phone:    mobilePhone,\n      home_phone:      homePhone,\n      address:      (row['Company Address'] || '').trim(),\n      city:         (row['City'] || '').trim(),\n      state:        (row['State'] || '').trim(),\n      zip:          zipMatch ? zipMatch[1] : '',\n      website:      (row['Website'] || '').trim(),\n      icp:          icp,\n      phone_source: 'apollo',\n      status:       'new',\n      created_at:   new Date().toISOString(),\n      email:        (row['Email'] || '').trim(),\n      linkedin:     (row['Person Linkedin Url'] || '').trim()\n    }\n  });\n}\n\nreturn [rawItems, cleanItems];"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Process Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 300],
+      "outputs": ["main", "main"]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_RAW_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Raw Apollo Dump"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Sheet A — Raw",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [880, 160],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_CLEAN_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Harmonia Clean Leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "biz": "={{ $json.biz }}",
+            "owner": "={{ $json.owner }}",
+            "owner_title": "={{ $json.owner_title }}",
+            "corporate_phone": "={{ $json.corporate_phone }}",
+            "mobile_phone": "={{ $json.mobile_phone }}",
+            "home_phone": "={{ $json.home_phone }}",
+            "address": "={{ $json.address }}",
+            "city": "={{ $json.city }}",
+            "state": "={{ $json.state }}",
+            "zip": "={{ $json.zip }}",
+            "website": "={{ $json.website }}",
+            "icp": "={{ $json.icp }}",
+            "phone_source": "={{ $json.phone_source }}",
+            "status": "={{ $json.status }}",
+            "created_at": "={{ $json.created_at }}",
+            "email": "={{ $json.email }}",
+            "linkedin": "={{ $json.linkedin }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "Sheet B — Clean",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [880, 440],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Upload Form": {
+      "main": [
+        [
+          {
+            "node": "Parse CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CSV": {
+      "main": [
+        [
+          {
+            "node": "Process Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Leads": {
+      "main": [
+        [
+          {
+            "node": "Sheet A — Raw",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheet B — Clean",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "active": false
+}
