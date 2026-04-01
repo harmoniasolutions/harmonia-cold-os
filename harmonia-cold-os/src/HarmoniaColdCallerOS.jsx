@@ -296,6 +296,7 @@ export default function HarmoniaOS() {
   const [dispoBarOpen, setDispoBarOpen] = useState(false);
   const [phoneMenuOpen, setPhoneMenuOpen] = useState(false);  // dial phone dropdown
   const [lastDialedPhone, setLastDialedPhone] = useState(""); // track which phone was dialed
+  const [showStatsPanel, setShowStatsPanel] = useState(false); // toggle right panel
 
   const sessRef = useRef(); const callRef = useRef();
 
@@ -639,7 +640,7 @@ export default function HarmoniaOS() {
                 {name:"Javi",   phone:"+16102153863"},
                 {name:"Julian", phone:"+16092771636"},
                 {name:"Owen",   phone:"+16094120214"},
-                {name:"Joel",   phone:null},
+                {name:"Joel",   phone:"+16096743986"},
                 {name:"Pete",   phone:null},
               ].find(c=>c.name===sel);
               if(match) setCaller(match.phone);
@@ -651,7 +652,7 @@ export default function HarmoniaOS() {
               {name:"Javi",   phone:"+16102153863"},
               {name:"Julian", phone:"+16092771636"},
               {name:"Owen",   phone:"+16094120214"},
-              {name:"Joel",   phone:null},
+              {name:"Joel",   phone:"+16096743986"},
               {name:"Pete",   phone:null},
             ].map(c=><option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
@@ -666,13 +667,6 @@ export default function HarmoniaOS() {
               color:sessRun?C.red:C.accent,fontSize:11,fontWeight:500}}>
             {sessRun?"End":"Start session"}
           </button>
-          {callRun&&(
-            <button onClick={openDispoBar}
-              style={{padding:"4px 14px",borderRadius:6,border:"none",
-                background:C.red,color:C.bg,fontSize:11,fontWeight:500,cursor:"pointer"}}>
-              End Call
-            </button>
-          )}
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
         {[{l:"Dials",v:stats.dials,c:C.t1},{l:"Connect",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
@@ -688,6 +682,15 @@ export default function HarmoniaOS() {
         <div style={{fontSize:11,color:C.t3}}>
           {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
         </div>
+        <div style={{width:1,height:18,background:C.border}}/>
+        <button onClick={()=>setShowStatsPanel(v=>!v)}
+          style={{padding:"4px 10px",borderRadius:6,
+            border:`1px solid ${showStatsPanel?C.t1:C.border}`,
+            background:showStatsPanel?C.t1:"transparent",
+            color:showStatsPanel?C.bg:C.t2,
+            fontSize:10,fontWeight:500,transition:"all 0.15s"}}>
+          {showStatsPanel?"Hide Stats":"Stats & Log"}
+        </button>
       </div>
 
       {/* ── BODY ── */}
@@ -1583,68 +1586,76 @@ export default function HarmoniaOS() {
           )}
         </div>
 
-        {/* ── RIGHT PANEL ── */}
-        <div style={{width:210,borderLeft:`1px solid ${C.border}`,
-          display:"flex",flexDirection:"column",flexShrink:0}}>
-          <div style={{padding:"12px 10px 0",display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-            {[
-              {l:"Dials",v:stats.dials,c:C.t1},
-              {l:"Answered",v:totalAns,c:C.accent},
-              {l:"Demos",v:stats.demos,c:C.green},
-              {l:"Looms",v:stats.looms,c:C.teal},
-              {l:"Voicemail",v:stats.vm,c:C.amber},
-              {l:"Connect%",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
-              {l:"Demo rate",v:totalAns>0?demoRate+"%":"—",c:C.green},
-            ].map(({l,v,c})=>(
-              <div key={l} style={{background:C.surface,borderRadius:8,
-                padding:"9px 10px",textAlign:"center"}}>
-                <div style={{fontSize:18,fontWeight:400,color:c,lineHeight:1,fontFamily:FM}}>{v}</div>
-                <div style={{fontSize:9,color:C.t3,marginTop:3}}>{l}</div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",marginTop:10}}>
-            <div style={{padding:"0 14px 8px",fontSize:10,color:C.t3,
-              borderBottom:`1px solid ${C.border}`}}>Session log</div>
-            <div style={{flex:1,overflowY:"auto"}}>
-              {log.length===0?(
-                <div style={{padding:16,textAlign:"center",fontSize:11,color:C.t3}}>
-                  No calls yet
-                </div>
-              ):log.map((e,i)=>(
-                <div key={i} style={{padding:"7px 14px",borderBottom:`1px solid ${C.border}`,
-                  display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:10,color:C.t3,minWidth:16,fontFamily:FM}}>{e.num}</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,color:C.t1,fontWeight:500,overflow:"hidden",
-                      textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                      {e.biz.split(" ").slice(0,2).join(" ")}
-                    </div>
-                    <div style={{fontSize:10,color:C.t3,display:"flex",gap:4,marginTop:1}}>
-                      <span style={{fontFamily:FM}}>{fmt(e.dur)}</span>
-                      <span>·</span>
-                      <span>S:{e.script?.toUpperCase()}</span>
-                      {e.email&&<><span>·</span><span style={{color:C.accent}}>✉</span></>}
-                    </div>
-                  </div>
-                  <div style={{fontSize:10,fontWeight:500,color:OUTCOMES[e.outcome]?.color}}>
-                    {OUTCOMES[e.outcome]?.short}
-                  </div>
+        {/* ── RIGHT PANEL (toggleable) ── */}
+        {showStatsPanel && (
+          <div style={{width:210,borderLeft:`1px solid ${C.border}`,
+            display:"flex",flexDirection:"column",flexShrink:0}}>
+            <div style={{padding:"8px 10px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:10,color:C.t3,fontWeight:500}}>Session Stats</span>
+              <button onClick={()=>setShowStatsPanel(false)}
+                style={{border:"none",background:"transparent",color:C.t3,fontSize:14,
+                  cursor:"pointer",padding:"0 2px",lineHeight:1}}>×</button>
+            </div>
+            <div style={{padding:"8px 10px 0",display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+              {[
+                {l:"Dials",v:stats.dials,c:C.t1},
+                {l:"Answered",v:totalAns,c:C.accent},
+                {l:"Demos",v:stats.demos,c:C.green},
+                {l:"Looms",v:stats.looms,c:C.teal},
+                {l:"Voicemail",v:stats.vm,c:C.amber},
+                {l:"Connect%",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
+                {l:"Demo rate",v:totalAns>0?demoRate+"%":"—",c:C.green},
+              ].map(({l,v,c})=>(
+                <div key={l} style={{background:C.surface,borderRadius:8,
+                  padding:"9px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:18,fontWeight:400,color:c,lineHeight:1,fontFamily:FM}}>{v}</div>
+                  <div style={{fontSize:9,color:C.t3,marginTop:3}}>{l}</div>
                 </div>
               ))}
             </div>
+
+            <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",marginTop:10}}>
+              <div style={{padding:"0 14px 8px",fontSize:10,color:C.t3,
+                borderBottom:`1px solid ${C.border}`}}>Session log</div>
+              <div style={{flex:1,overflowY:"auto"}}>
+                {log.length===0?(
+                  <div style={{padding:16,textAlign:"center",fontSize:11,color:C.t3}}>
+                    No calls yet
+                  </div>
+                ):log.map((e,i)=>(
+                  <div key={i} style={{padding:"7px 14px",borderBottom:`1px solid ${C.border}`,
+                    display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:10,color:C.t3,minWidth:16,fontFamily:FM}}>{e.num}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,color:C.t1,fontWeight:500,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {e.biz.split(" ").slice(0,2).join(" ")}
+                      </div>
+                      <div style={{fontSize:10,color:C.t3,display:"flex",gap:4,marginTop:1}}>
+                        <span style={{fontFamily:FM}}>{fmt(e.dur)}</span>
+                        <span>·</span>
+                        <span>S:{e.script?.toUpperCase()}</span>
+                        {e.email&&<><span>·</span><span style={{color:C.accent}}>✉</span></>}
+                      </div>
+                    </div>
+                    <div style={{fontSize:10,fontWeight:500,color:OUTCOMES[e.outcome]?.color}}>
+                      {OUTCOMES[e.outcome]?.short}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Reset Call State safety button */}
+            <button onClick={resetCallState}
+              style={{margin:"6px 10px 8px",padding:"4px 0",borderRadius:6,
+                border:`1px solid ${C.border}`,background:"transparent",
+                color:C.t3,fontSize:9,cursor:"pointer",opacity:0.5,transition:"opacity 0.15s"}}
+              onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+              onMouseLeave={e=>e.currentTarget.style.opacity="0.5"}>
+              Reset Call State
+            </button>
           </div>
-          {/* Reset Call State safety button */}
-          <button onClick={resetCallState}
-            style={{margin:"6px 10px 8px",padding:"4px 0",borderRadius:6,
-              border:`1px solid ${C.border}`,background:"transparent",
-              color:C.t3,fontSize:9,cursor:"pointer",opacity:0.5,transition:"opacity 0.15s"}}
-            onMouseEnter={e=>e.currentTarget.style.opacity="1"}
-            onMouseLeave={e=>e.currentTarget.style.opacity="0.5"}>
-            Reset Call State
-          </button>
-        </div>
+        )}
       </div>
 
       {/* Persistent "Log Disposition" button */}
