@@ -11,6 +11,7 @@ const SHEET_ID    = import.meta.env.VITE_SHEET_ID;
 const API_KEY     = import.meta.env.VITE_SHEETS_API_KEY;
 const BASE        = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values`;
 const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-log';
+const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
 async function fetchSheet(tab) {
@@ -537,6 +538,7 @@ export default function HarmoniaOS() {
       };
       payload.competitor = active.competitor || "";
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      fetch(DISCORD_WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>{});
     } catch(err){ console.error('webhook failed:',err); }
 
     resetCaptureFields();
