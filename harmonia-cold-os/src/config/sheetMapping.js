@@ -72,7 +72,7 @@ export const CALLER_OPTIONS = [
   { name: 'Joel',   phone: null },
 ];
 
-// 8 opener variants — shared across all ICPs
+// 6 opener variants — shared across all ICPs (7 & 8 removed: competitor scripts retired)
 const OPENER_VARIANTS = [
   { id: '1', name: 'Email Pretense',      tag: 'Pretense' },
   { id: '2', name: 'Honest Cold Call',     tag: 'Pattern Interrupt' },
@@ -80,8 +80,6 @@ const OPENER_VARIANTS = [
   { id: '4', name: 'Beta Test',           tag: 'Free Trial' },
   { id: '5', name: 'Blunt Founder',       tag: 'Founder Energy' },
   { id: '6', name: 'Review Call-Out',     tag: 'Pre-Call Intel' },
-  { id: '7', name: 'Competitor Ghost',    tag: 'Competitor Trigger' },
-  { id: '8', name: 'Competitor Scarcity', tag: 'Scarcity + Competition' },
 ];
 
 // Script options per ICP (derived from Scripts tab)

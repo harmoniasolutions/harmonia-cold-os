@@ -103,9 +103,30 @@ function buildPlaceholderContext(lead, callerName) {
     leak:       lead?.leak||"",
     chairs:     lead?.chairs||"your",
     biz:        lead?.biz||"",
-    competitor: lead?.competitor||"",
     caller:     callerName||"",
   };
+}
+
+// Plain-text interpolation for textareas (no JSX)
+function fillPlaceholdersPlain(text, context) {
+  if (!text) return "";
+  const map = context || {};
+  return text.replace(/\{(\w+)\}/gi, (match, key) => {
+    const val = map[key.toLowerCase()];
+    return val || match;
+  });
+}
+
+// Convert // delimiters to newlines for display, preserve through edits
+function formatScriptLines(text) {
+  if (!text) return "";
+  return text.replace(/\s*\/\/\s*/g, "\n");
+}
+
+// Convert newlines back to // for storage
+function unformatScriptLines(text) {
+  if (!text) return "";
+  return text.replace(/\n/g, " // ");
 }
 
 const PAIN_WEIGHTS = [3, 3, 2, 2];
@@ -127,10 +148,6 @@ function getRecommendedOpeners(lead) {
   const reviews = lead?.google_reviews || [];
   if (reviews.some(r => REVIEW_PHONE_KEYWORDS.test(r.text || ""))) {
     recs.push({ openerId: "6", reason: "Has a phone-related review" });
-  }
-  if (lead?.competitor) {
-    recs.push({ openerId: "7", reason: "Competitor intel available" });
-    recs.push({ openerId: "8", reason: "Competitor + free trial angle" });
   }
   if (lead?.disposition === "voicemail" || lead?.disposition === "no_answer" || lead?.status === "called") {
     recs.push({ openerId: "3", reason: "Called before — no answer" });
@@ -299,6 +316,41 @@ export default function HarmoniaOS() {
   const [lastDialedPhone, setLastDialedPhone] = useState(""); // track which phone was dialed
   const [showStatsPanel, setShowStatsPanel] = useState(false); // toggle right panel
 
+  // Script tab — toggleable side panels
+  const [scriptShowHistory, setScriptShowHistory] = useState(false);
+  const [scriptShowNotes, setScriptShowNotes] = useState(false);
+
+  // Custom objections added by callers (merged with sheet data)
+  const [customObjections, setCustomObjections] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-custom-objections") || "{}"); }
+    catch { return {}; }
+  });
+  const [newObjQ, setNewObjQ] = useState("");
+  const [newObjA, setNewObjA] = useState("");
+
+  // Script Mixer — per-caller editable scripts
+  const [phaseSelections, setPhaseSelections] = useState({opener:"1",discovery:"1",pitch:"1",close:"1"});
+  const [callerScripts, setCallerScripts] = useState({}); // { "opener_1": "custom text", ... }
+  const [scriptSaveStatus, setScriptSaveStatus] = useState({}); // { phase: 'saved'|'saving'|'reset'|null }
+  const saveTimerRefs = useRef({});
+
+  // Shared Lead Notes
+  const [leadNotesData, setLeadNotesData] = useState({}); // { leadId: { text, edited_by, edited_at } }
+  const [notesSaveStatus, setNotesSaveStatus] = useState(null);
+  const notesSaveRef = useRef(null);
+  const [spokeWith, setSpokeWith] = useState("");
+
+  // Admin Console — Javi-only script management
+  const [disabledScripts, setDisabledScripts] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("harmonia-admin-disabled-scripts"));
+      // Filter out retired variants 7 & 8 from stored data
+      const valid = (stored || []).filter(id => id !== "7" && id !== "8");
+      return new Set(valid.length > 0 ? valid : []);
+    } catch { return new Set(); }
+  });
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+
   const sessRef = useRef(); const callRef = useRef();
 
   /* ── FETCH ALL SHEET DATA ON MOUNT ── */
@@ -348,6 +400,16 @@ export default function HarmoniaOS() {
     return()=>clearInterval(phaseRef.current);
   },[callRun]);
 
+  // Load per-caller custom scripts from localStorage
+  useEffect(() => {
+    if (callerName) {
+      try {
+        const stored = JSON.parse(localStorage.getItem(`harmonia-scripts-${callerName}`) || "{}");
+        setCallerScripts(stored);
+      } catch { setCallerScripts({}); }
+    }
+  }, [callerName]);
+
   const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
   const pitchUnlocked = painSignalCount >= 2;
@@ -370,7 +432,7 @@ export default function HarmoniaOS() {
 
   const curScripts   = scripts[active?.icp] || {};
   const curScript    = curScripts[variant]  || curScripts[Object.keys(curScripts)[0]];
-  const curObjs      = objections[active?.icp] || [];
+  const curObjs      = [...(objections[active?.icp] || []), ...(customObjections[active?.icp] || [])];
   const variants     = Object.keys(curScripts);
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
@@ -393,6 +455,14 @@ export default function HarmoniaOS() {
     const avail = Object.keys(scripts[lead?.icp] || {});
     const pick = recs.find(r => avail.includes(r.openerId));
     setVariant(pick ? pick.openerId : avail[0] || "1");
+    // Set phase selections — opener from recommendation, others default to first available
+    const openerPick = pick ? pick.openerId : avail[0] || "1";
+    setPhaseSelections({opener:openerPick, discovery:avail[0]||"1", pitch:avail[0]||"1", close:avail[0]||"1"});
+    // Load lead notes from localStorage
+    try {
+      const storedNotes = JSON.parse(localStorage.getItem(`harmonia-notes-${lead?.id}`) || "null");
+      if (storedNotes) setLeadNotesData(prev => ({...prev, [lead.id]: storedNotes}));
+    } catch {}
   }
 
   function startSess(){ setSessRun(true);setSessSecs(0);setStats({dials:0,answered:0,demos:0,vm:0,looms:0});setLog([]); }
@@ -412,7 +482,7 @@ export default function HarmoniaOS() {
     if(!sessRun||callRun||lead.status!=="queued"||!callerName) return;
     const num = phoneNumber || getLeadPhones(lead)[0]?.number;
     if (!num) return;
-    setActive(lead);setCallRun(true);setCallSecs(0);setTab("intel");setOpenObj(null);
+    setActive(lead);setCallRun(true);setCallSecs(0);setTab("script");setOpenObj(null);
     resetCaptureFields();
     setPhoneMenuOpen(false);
     setLastDialedPhone(num);
@@ -500,6 +570,7 @@ export default function HarmoniaOS() {
       call_count: newCallCount,
       last_call_timestamp: newTimestamp,
       disposition: outcome,
+      spoke_with: spokeWith || l.spoke_with || "",
     }:l));
 
     const flashMsg = outcome==="demo_booked"?"Demo booked ✦"
@@ -524,7 +595,7 @@ export default function HarmoniaOS() {
         call_timestamp:new Date().toISOString(), call_link:'',
         objection_raised:objection, caller_name:callerName,
         prospect_email:captureEmail||null, prospect_phone:capturePhone||null,
-        notes:captureNotes||null,
+        notes:captureNotes||null, spoke_with:spokeWith||null,
         calendly_opened:outcome==="demo_booked"?calendlyOpened:null,
         loom_context:outcome==="loom_sent"?(loomContext||`Pain: ${hasDiscoveryInput?livePain:active.pain}/10. ${(active.pain_signals||[]).slice(0,2).join(". ")}`):null,
         loom_queued:outcome==="loom_sent"?true:null,
@@ -559,6 +630,7 @@ export default function HarmoniaOS() {
     setDiscoveryResponses({});
     setCloseEmail("");setCloseEmailStatus(null);
     setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});
+    setSpokeWith("");
   }
 
   function resetCallState() {
@@ -693,6 +765,18 @@ export default function HarmoniaOS() {
             fontSize:10,fontWeight:500,transition:"all 0.15s"}}>
           {showStatsPanel?"Hide Stats":"Stats & Log"}
         </button>
+        {callerName==="Javi"&&(
+          <>
+            <div style={{width:1,height:18,background:C.border}}/>
+            <button onClick={()=>setShowAdminPanel(true)}
+              style={{padding:"4px 10px",borderRadius:6,
+                border:`1px solid ${C.border}`,background:"transparent",
+                color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",
+                transition:"all 0.15s"}}>
+              Admin
+            </button>
+          </>
+        )}
       </div>
 
       {/* ── BODY ── */}
@@ -825,16 +909,20 @@ export default function HarmoniaOS() {
                 {/* Call controls */}
                 <div style={{display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
                   {callRun&&(
-                    <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:22,fontWeight:300,fontFamily:FM,color:C.green}}>
-                        {fmt(callSecs)}
+                    <>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:22,fontWeight:300,fontFamily:FM,color:C.green}}>
+                          {fmt(callSecs)}
+                        </div>
+                        <div style={{fontSize:10,color:C.green,marginTop:1}}>live call</div>
                       </div>
-                      <div style={{fontSize:10,color:C.green,marginTop:1}}>live call</div>
-                      <div style={{fontSize:12,fontFamily:FM,marginTop:3,
-                        color:{opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"}[callPhase]||C.t3}}>
-                        {callPhase.toUpperCase()} {fmt(phaseSecs)}
-                      </div>
-                    </div>
+                      <button onClick={()=>{setCallRun(false);setCallSecs(0);setDispoBarOpen(true);}}
+                        style={{padding:"6px 14px",borderRadius:6,
+                          border:`1px solid ${C.red}`,background:"transparent",
+                          color:C.red,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                        End Call
+                      </button>
+                    </>
                   )}
                   {(()=>{
                     const canDial=sessRun&&active.status==="queued"&&!!callerName;
@@ -951,7 +1039,7 @@ export default function HarmoniaOS() {
                     style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
                       fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
                     <option value="">Select script...</option>
-                    {(SCRIPT_OPTIONS[active.icp]||[]).map(s=>(
+                    {(SCRIPT_OPTIONS[active.icp]||[]).filter(s=>!disabledScripts.has(s.variant)).map(s=>(
                       <option key={s.variant} value={s.variant}>{s.label}</option>
                     ))}
                     <option value="custom">Custom...</option>
@@ -1100,6 +1188,23 @@ export default function HarmoniaOS() {
                       </div>
                     )}
 
+                    {pendingOutcome && pendingOutcome!=="no_answer" && pendingOutcome!=="voicemail" && (
+                      <div>
+                        <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Spoke with</div>
+                        <div style={{display:"flex",gap:6}}>
+                          {["Owner","Gatekeeper","Manager","Unknown"].map(opt=>(
+                            <button key={opt} onClick={()=>setSpokeWith(opt)}
+                              style={{padding:"4px 12px",borderRadius:100,
+                                border:`1px solid ${spokeWith===opt?C.accent:C.border}`,
+                                background:spokeWith===opt?`${C.accent}10`:"transparent",
+                                color:spokeWith===opt?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {(pendingOutcome==="answered"||pendingOutcome==="demo_booked"||pendingOutcome==="not_interested")&&(
                       <div>
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Objection raised</div>
@@ -1161,88 +1266,168 @@ export default function HarmoniaOS() {
               {/* Tab content */}
               <div style={{flex:1,overflowY:"auto",padding:20}}>
 
-                {/* ── INTEL ── */}
+                {/* ── INTEL (two-column: dossier left, notes right) ── */}
                 {tab==="intel"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:12,maxWidth:660}}>
-                    {active.leak&&active.leak!=="—"&&(
-                    <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
-                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Revenue leak / mo</div>
-                      <div style={{fontSize:17,fontWeight:500,color:C.red,letterSpacing:"-0.01em"}}>
-                        {active.leak}
+                  <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
+                    {/* Left column — Pre-call dossier */}
+                    <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 320px",minWidth:280}}>
+                      {active.leak&&active.leak!=="—"&&(
+                      <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
+                        <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Revenue leak / mo</div>
+                        <div style={{fontSize:17,fontWeight:500,color:C.red,letterSpacing:"-0.01em"}}>
+                          {active.leak}
+                        </div>
                       </div>
-                    </div>
-                    )}
+                      )}
 
-                    {active.pain_signals?.length > 0 && (
-                      <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
-                        <div style={{fontSize:10,color:C.t3,marginBottom:10}}>Pain signals</div>
-                        <div style={{display:"flex",flexDirection:"column",gap:9}}>
-                          {active.pain_signals.map((p,i)=>(
-                            <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
-                              <div style={{width:4,height:4,borderRadius:"50%",background:C.amber,
-                                marginTop:5,flexShrink:0}}/>
-                              <span style={{fontSize:13,color:C.t1,lineHeight:1.55}}>{p}</span>
+                      {active.pain_signals?.length > 0 && (
+                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
+                          <div style={{fontSize:10,color:C.t3,marginBottom:10}}>Pain signals</div>
+                          <div style={{display:"flex",flexDirection:"column",gap:9}}>
+                            {active.pain_signals.map((p,i)=>(
+                              <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                                <div style={{width:4,height:4,borderRadius:"50%",background:C.amber,
+                                  marginTop:5,flexShrink:0}}/>
+                                <span style={{fontSize:13,color:C.t1,lineHeight:1.55}}>{p}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {active.intel_comments&&(
+                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
+                          <div style={{fontSize:10,color:C.t3,marginBottom:8}}>Intel notes</div>
+                          <div style={{fontSize:13,color:C.t1,lineHeight:1.68}}>{active.intel_comments}</div>
+                        </div>
+                      )}
+
+                      {flaggedReviews.length > 0 && (
+                        <div style={{borderRadius:12,border:`1px solid ${C.amber}30`,
+                          padding:"14px 16px",background:"#FFFBF0"}}>
+                          <div style={{fontSize:10,color:C.amber,marginBottom:10,fontWeight:500}}>
+                            {flaggedReviews.length} pain signal{flaggedReviews.length>1?"s":""} in reviews
+                          </div>
+                          {flaggedReviews.slice(0,2).map((r,i)=>(
+                            <div key={i} style={{fontSize:12,color:C.t1,lineHeight:1.55,marginBottom:6}}>
+                              <StarRow stars={r.stars}/>{" "}
+                              <span style={{color:C.t3,fontSize:10}}>{r.author} · {r.date}</span>
+                              <div style={{marginTop:3,fontStyle:"italic",color:C.t2}}>
+                                "{(r.text||"").slice(0,100)}{r.text?.length>100?"…":""}"
+                              </div>
                             </div>
                           ))}
+                          <button onClick={()=>setTab("reviews")}
+                            style={{marginTop:8,fontSize:11,color:C.accent,border:"none",
+                              background:"transparent",padding:0,cursor:"pointer"}}>
+                            View all {active.google_reviews?.length} reviews →
+                          </button>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {active.intel_comments&&(
+                      {active.icp&&(
+                      <div style={{background:C.surface,borderRadius:12,padding:"12px 14px",maxWidth:180}}>
+                        <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Vertical</div>
+                        <div style={{fontSize:15,fontWeight:500,color:C.t1}}>{ICP_LABEL[active.icp]||active.icp}</div>
+                      </div>
+                      )}
+                    </div>
+
+                    {/* Right column — Shared Lead Notes */}
+                    <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 280px",minWidth:260}}>
+                      {/* Call History Summary */}
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
-                        <div style={{fontSize:10,color:C.t3,marginBottom:8}}>Intel notes</div>
-                        <div style={{fontSize:13,color:C.t1,lineHeight:1.68}}>{active.intel_comments}</div>
-                      </div>
-                    )}
-
-                    {flaggedReviews.length > 0 && (
-                      <div style={{borderRadius:12,border:`1px solid ${C.amber}30`,
-                        padding:"14px 16px",background:"#FFFBF0"}}>
-                        <div style={{fontSize:10,color:C.amber,marginBottom:10,fontWeight:500}}>
-                          {flaggedReviews.length} pain signal{flaggedReviews.length>1?"s":""} in reviews
-                        </div>
-                        {flaggedReviews.slice(0,2).map((r,i)=>(
-                          <div key={i} style={{fontSize:12,color:C.t1,lineHeight:1.55,marginBottom:6}}>
-                            <StarRow stars={r.stars}/>{" "}
-                            <span style={{color:C.t3,fontSize:10}}>{r.author} · {r.date}</span>
-                            <div style={{marginTop:3,fontStyle:"italic",color:C.t2}}>
-                              "{(r.text||"").slice(0,100)}{r.text?.length>100?"…":""}"
+                        <div style={{fontSize:10,color:C.t3,marginBottom:10,fontWeight:500,textTransform:"uppercase",
+                          letterSpacing:"0.03em"}}>Call History</div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                          <div>
+                            <div style={{fontSize:10,color:C.t3}}>Previously Called</div>
+                            <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2}}>
+                              {(active.call_count||0) > 0 ? "Yes" : "No"}
                             </div>
                           </div>
-                        ))}
-                        <button onClick={()=>setTab("reviews")}
-                          style={{marginTop:8,fontSize:11,color:C.accent,border:"none",
-                            background:"transparent",padding:0,cursor:"pointer"}}>
-                          View all {active.google_reviews?.length} reviews →
-                        </button>
+                          <div>
+                            <div style={{fontSize:10,color:C.t3}}>Previously Emailed</div>
+                            <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2}}>
+                              {active.prospect_email ? "Yes" : "No"}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:C.t3}}>Call Count</div>
+                            <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2,fontFamily:FM}}>
+                              {active.call_count || 0}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:C.t3}}>Last Call Date</div>
+                            <div style={{fontSize:12,color:C.t1,fontWeight:500,marginTop:2}}>
+                              {active.last_call_timestamp
+                                ? new Date(active.last_call_timestamp).toLocaleDateString("en-US",{month:"short",day:"numeric"})
+                                : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:C.t3}}>Last Disposition</div>
+                            <div style={{fontSize:12,color:OUTCOMES[active.disposition]?.color||C.t1,fontWeight:500,marginTop:2}}>
+                              {active.disposition ? (OUTCOMES[active.disposition]?.label || active.disposition) : "—"}
+                            </div>
+                          </div>
+                          <div style={{gridColumn:"1/-1"}}>
+                            <div style={{fontSize:10,color:C.t3}}>Spoke With</div>
+                            <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2}}>
+                              {active.spoke_with || "—"}
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    )}
 
-                    {active.icp&&(
-                    <div style={{background:C.surface,borderRadius:12,padding:"12px 14px",maxWidth:180}}>
-                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Vertical</div>
-                      <div style={{fontSize:15,fontWeight:500,color:C.t1}}>{ICP_LABEL[active.icp]||active.icp}</div>
-                    </div>
-                    )}
-
-                    <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:320}}>
-                      <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Local competitor</div>
-                      <input value={active.competitor||""} onChange={e=>{
-                          const val=e.target.value;
-                          setLeads(ls=>ls.map(l=>l.id===active.id?{...l,competitor:val}:l));
-                          setActive(a=>({...a,competitor:val}));
-                        }}
-                        onBlur={e=>{
-                          if(!e.target.value) return;
-                          fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({lead_id:active.id,field_update:'competitor',competitor:e.target.value})
-                          }).catch(()=>{});
-                        }}
-                        onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
-                        placeholder="e.g. Mike's HVAC, Bella Salon..."
-                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",
-                          fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
-                      <div style={{fontSize:10,color:C.t3,marginTop:4}}>Used by openers #7 and #8 for {"{competitor}"} placeholder</div>
+                      {/* Shared Notes textarea */}
+                      <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",flex:1}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                          <div style={{fontSize:10,color:C.t3,fontWeight:500,textTransform:"uppercase",
+                            letterSpacing:"0.03em"}}>Shared Notes</div>
+                          {notesSaveStatus && (
+                            <span style={{fontSize:10,fontWeight:500,
+                              color:notesSaveStatus==="saved"?C.green:C.t3}}>
+                              {notesSaveStatus==="saved"?"Saved":"Saving..."}
+                            </span>
+                          )}
+                        </div>
+                        <textarea
+                          value={(leadNotesData[active.id]?.text !== undefined ? leadNotesData[active.id].text : active.lead_notes) || ""}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const noteData = { text: val, edited_by: callerName || "Unknown", edited_at: new Date().toISOString() };
+                            setLeadNotesData(prev => ({...prev, [active.id]: noteData}));
+                            try { localStorage.setItem(`harmonia-notes-${active.id}`, JSON.stringify(noteData)); } catch {}
+                            if (notesSaveRef.current) clearTimeout(notesSaveRef.current);
+                            setNotesSaveStatus("saving");
+                            notesSaveRef.current = setTimeout(() => {
+                              fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                                body:JSON.stringify({type:'lead_notes_update',lead_id:active.id,biz:active.biz,
+                                  lead_notes:val,notes_edited_by:callerName||"Unknown",
+                                  notes_edited_at:new Date().toISOString()})
+                              }).catch(()=>{});
+                              setNotesSaveStatus("saved");
+                              setTimeout(() => setNotesSaveStatus(null), 2000);
+                            }, 2000);
+                          }}
+                          placeholder={'e.g. "Owner Jose said call back after 2pm," "Gatekeeper very protective — try different angle"'}
+                          rows={5}
+                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",
+                            fontSize:13,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
+                            lineHeight:1.65,fontFamily:F}}
+                        />
+                        {(leadNotesData[active.id]?.edited_by || active.notes_edited_by) && (
+                          <div style={{fontSize:10,color:C.t3,marginTop:6}}>
+                            Last edited by {leadNotesData[active.id]?.edited_by || active.notes_edited_by} on{" "}
+                            {(() => {
+                              const ts = leadNotesData[active.id]?.edited_at || active.notes_edited_at;
+                              return ts ? new Date(ts).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
+                            })()}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1290,205 +1475,240 @@ export default function HarmoniaOS() {
                   </div>
                 )}
 
-                {/* ── SCRIPT ── */}
+                {/* ── SCRIPT MIXER ── */}
                 {tab==="script"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:640}}>
-                    {active.opener&&(
-                      <div style={{background:C.surface,borderRadius:12,padding:"14px 16px"}}>
-                        <div style={{fontSize:10,color:C.t3,marginBottom:6}}>Lead opener (from sheet)</div>
-                        <div style={{fontSize:14,color:C.t1,lineHeight:1.65,fontStyle:"italic"}}>
-                          "{fillPlaceholders(active.opener, buildPlaceholderContext(active, callerName))}"
-                        </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                    {/* Toggle buttons for Call History & Notes */}
+                    <div style={{display:"flex",gap:6,marginBottom:12}}>
+                      <button onClick={()=>setScriptShowHistory(v=>!v)}
+                        style={{padding:"4px 12px",borderRadius:100,fontSize:10,fontWeight:500,
+                          border:`1px solid ${scriptShowHistory?C.t1:C.border}`,
+                          background:scriptShowHistory?C.t1:"transparent",
+                          color:scriptShowHistory?C.bg:C.t2,cursor:"pointer",transition:"all 0.15s"}}>
+                        {scriptShowHistory?"Hide":"Show"} Call History
+                      </button>
+                      <button onClick={()=>setScriptShowNotes(v=>!v)}
+                        style={{padding:"4px 12px",borderRadius:100,fontSize:10,fontWeight:500,
+                          border:`1px solid ${scriptShowNotes?C.t1:C.border}`,
+                          background:scriptShowNotes?C.t1:"transparent",
+                          color:scriptShowNotes?C.bg:C.t2,cursor:"pointer",transition:"all 0.15s"}}>
+                        {scriptShowNotes?"Hide":"Show"} Notes
+                      </button>
+                    </div>
+
+                    {/* Inline panels when toggled */}
+                    {(scriptShowHistory||scriptShowNotes)&&(
+                      <div style={{display:"flex",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+                        {scriptShowHistory&&(
+                          <div style={{background:C.surface,borderRadius:12,padding:"12px 14px",flex:"1 1 220px",minWidth:200}}>
+                            <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500,textTransform:"uppercase",
+                              letterSpacing:"0.03em"}}>Call History</div>
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Called</div>
+                                <div style={{fontSize:12,color:C.t1,fontWeight:500}}>{(active.call_count||0)>0?"Yes":"No"}</div>
+                              </div>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Emailed</div>
+                                <div style={{fontSize:12,color:C.t1,fontWeight:500}}>{active.prospect_email?"Yes":"No"}</div>
+                              </div>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Count</div>
+                                <div style={{fontSize:12,color:C.t1,fontWeight:500,fontFamily:FM}}>{active.call_count||0}</div>
+                              </div>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Last</div>
+                                <div style={{fontSize:11,color:C.t1,fontWeight:500}}>
+                                  {active.last_call_timestamp?new Date(active.last_call_timestamp).toLocaleDateString("en-US",{month:"short",day:"numeric"}):"—"}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Disposition</div>
+                                <div style={{fontSize:11,color:OUTCOMES[active.disposition]?.color||C.t1,fontWeight:500}}>
+                                  {active.disposition?(OUTCOMES[active.disposition]?.label||active.disposition):"—"}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{fontSize:9,color:C.t3}}>Spoke With</div>
+                                <div style={{fontSize:12,color:C.t1,fontWeight:500}}>{active.spoke_with||"—"}</div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {scriptShowNotes&&(
+                          <div style={{background:C.surface,borderRadius:12,padding:"12px 14px",flex:"1 1 260px",minWidth:240}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                              <div style={{fontSize:10,color:C.t3,fontWeight:500,textTransform:"uppercase",
+                                letterSpacing:"0.03em"}}>Shared Notes</div>
+                              {notesSaveStatus&&(
+                                <span style={{fontSize:9,fontWeight:500,color:notesSaveStatus==="saved"?C.green:C.t3}}>
+                                  {notesSaveStatus==="saved"?"Saved":"Saving..."}
+                                </span>
+                              )}
+                            </div>
+                            <textarea
+                              value={(leadNotesData[active.id]?.text!==undefined?leadNotesData[active.id].text:active.lead_notes)||""}
+                              onChange={e=>{
+                                const val=e.target.value;
+                                const noteData={text:val,edited_by:callerName||"Unknown",edited_at:new Date().toISOString()};
+                                setLeadNotesData(prev=>({...prev,[active.id]:noteData}));
+                                try{localStorage.setItem(`harmonia-notes-${active.id}`,JSON.stringify(noteData));}catch{}
+                                if(notesSaveRef.current)clearTimeout(notesSaveRef.current);
+                                setNotesSaveStatus("saving");
+                                notesSaveRef.current=setTimeout(()=>{
+                                  fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({type:'lead_notes_update',lead_id:active.id,biz:active.biz,
+                                      lead_notes:val,notes_edited_by:callerName||"Unknown",
+                                      notes_edited_at:new Date().toISOString()})
+                                  }).catch(()=>{});
+                                  setNotesSaveStatus("saved");
+                                  setTimeout(()=>setNotesSaveStatus(null),2000);
+                                },2000);
+                              }}
+                              placeholder="Shared notes..."
+                              rows={3}
+                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 10px",
+                                fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
+                                lineHeight:1.55,fontFamily:F}}
+                            />
+                            {(leadNotesData[active.id]?.edited_by||active.notes_edited_by)&&(
+                              <div style={{fontSize:9,color:C.t3,marginTop:4}}>
+                                Last edited by {leadNotesData[active.id]?.edited_by||active.notes_edited_by}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
+
                     {variants.length === 0 ? (
                       <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
                         No scripts found for this vertical.<br/>
                         Add rows to the Scripts tab in your Google Sheet.
                       </div>
-                    ):(
+                    ) : (
                       <>
-                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
-                          {variants.map(v=>{
-                            const isRec = !!recMap[v];
-                            const isPrimary = recommended[0]?.openerId === v;
-                            return (
-                            <button key={v} onClick={()=>{setVariant(v);setCallPhase("opener");setDiscoveryResponses({});setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});}}
-                              style={{padding:"7px 12px",borderRadius:8,textAlign:"left",
-                                border:`1px solid ${variant===v?C.t1:isRec?C.green+"60":C.border}`,
-                                background:variant===v?C.t1:isRec?C.green+"08":"transparent",
-                                color:variant===v?C.bg:C.t2,
-                                fontSize:11,fontWeight:500,transition:"all 0.15s",
-                                display:"flex",flexDirection:"column",gap:2}}>
-                              <div style={{display:"flex",alignItems:"center",gap:8,width:"100%"}}>
-                                <span style={{fontFamily:FM,fontSize:10,opacity:0.6}}>{v}</span>
-                                <span>{curScripts[v]?.name}</span>
-                                {isRec&&<div style={{width:6,height:6,borderRadius:"50%",
-                                  background:variant===v?C.bg:C.green,marginLeft:"auto",flexShrink:0}}/>}
-                                {!isRec&&curScripts[v]?.tag&&<span style={{fontSize:9,opacity:0.5,marginLeft:"auto"}}>({curScripts[v].tag})</span>}
-                              </div>
-                              {isRec&&<div style={{fontSize:9,color:variant===v?`${C.bg}90`:C.green,
-                                paddingLeft:18}}>{isPrimary?"★ ":""}{recMap[v]}</div>}
-                            </button>
-                            );
-                          })}
-                        </div>
+                        {["opener","discovery","pitch","close"].map(phase => {
+                          const PHASE_COLORS = {opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"};
+                          const phaseColor = PHASE_COLORS[phase];
+                          const isOpener = phase === "opener";
 
-                        {curScript?.tag&&(
-                          <div style={{display:"flex",alignItems:"center",gap:7}}>
-                            <span style={{fontSize:10,color:C.t3}}>Angle</span>
-                            <span style={{fontSize:11,padding:"3px 12px",borderRadius:100,
-                              border:`1px solid ${C.border}`,color:C.t2}}>{curScript.tag}</span>
-                          </div>
-                        )}
-
-                        {(variant==="7"||variant==="8")&&!active.competitor&&(
-                          <div style={{background:"#FFF3CD",border:"1px solid #FFE69C",borderRadius:8,
-                            padding:"8px 12px",fontSize:11,color:"#856404"}}>
-                            ⚠ Add a competitor name in the{" "}
-                            <button onClick={()=>setTab("intel")}
-                              style={{color:"#856404",fontWeight:600,textDecoration:"underline",
-                                border:"none",background:"transparent",cursor:"pointer",
-                                fontSize:11,padding:0}}>Intel tab</button>
-                            {" "}first
-                          </div>
-                        )}
-
-                        <div style={{display:"flex",flexDirection:"column",gap:2}}>
-                          {(curScript?.lines||[]).map((line,i)=>{
-                            const isDiscovery = line.type === "discovery";
-                            const isPitch = line.type === "pitch";
-                            const isClose = line.type === "close";
-                            const borderColors = {opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"};
-                            const leftColor = borderColors[line.type] || C.t3;
-
-                            // Visibility logic
-                            const hidden = (isDiscovery && callPhase==="opener")
-                              || (isPitch && callPhase==="opener")
-                              || (isClose && callPhase==="opener");
-                            const locked = (isPitch || isClose) && !pitchUnlocked && callPhase!=="opener";
-                            const isCurrentPhase = line.type === callPhase;
-
-                            if (hidden && line.type==="discovery") {
-                              // Show "They're talking →" button instead
-                              return (
-                                <div key={i} style={{display:"flex",justifyContent:"center",padding:"16px 0"}}>
-                                  <button onClick={()=>{setPhaseTimes(t=>({...t,opener:phaseSecs}));setPhaseSecs(0);setCallPhase("discovery");}}
-                                    style={{padding:"10px 28px",borderRadius:100,border:"none",
-                                      background:C.t1,color:C.bg,fontSize:12,fontWeight:500,
-                                      cursor:"pointer",animation:"pulse 2s ease-in-out infinite"}}>
-                                    They're talking →
-                                  </button>
-                                </div>
-                              );
+                          // Get available variants for this phase, filtering out removed + admin-disabled scripts
+                          const icpScripts = scripts[active?.icp] || {};
+                          const REMOVED_VARIANTS = new Set(["7","8"]); // competitor scripts retired
+                          const options = [];
+                          Object.entries(icpScripts).forEach(([varId, script]) => {
+                            if (REMOVED_VARIANTS.has(varId)) return; // permanently removed
+                            if (disabledScripts.has(varId)) return; // admin-disabled
+                            const line = script.lines.find(l => l.type === phase);
+                            if (line) {
+                              options.push({ id: varId, name: script.name, tag: script.tag, text: line.text });
                             }
-                            if (hidden) return null;
+                          });
 
-                            const bullets = isDiscovery && line.text.includes(" // ")
-                              ? line.text.split(" // ").map(b=>b.replace(/^[•·\-]\s*/, "").replace(/^[""]|[""]$/g,"").trim()).filter(Boolean)
-                              : null;
-                            const painCount = bullets ? bullets.filter((_,qi)=>discoveryResponses[qi]==="pain").length : 0;
+                          if (options.length === 0) return null;
 
-                            return (
-                            <div key={i} style={{
-                              padding:"16px 18px",marginBottom:4,borderRadius:10,
-                              borderLeft:`3px solid ${leftColor}`,
-                              background:isCurrentPhase?`${leftColor}06`:locked?C.surface:"transparent",
-                              opacity:locked?0.3:1,filter:locked?"blur(1px)":"none",
-                              position:"relative",transition:"opacity 0.3s ease, filter 0.3s ease",
-                              pointerEvents:locked?"none":"auto"}}>
+                          const selectedVar = phaseSelections[phase] || options[0]?.id || "1";
+                          const selectedOption = options.find(o => o.id === selectedVar) || options[0];
+                          const masterText = selectedOption?.text || "";
+                          const scriptKey = `${phase}_${selectedVar}`;
+                          const customText = callerScripts[scriptKey];
+                          const rawText = customText !== undefined && customText !== null ? customText : masterText;
+                          const isCustomized = customText !== undefined && customText !== null;
+                          // Render pipeline: raw → line breaks → interpolate placeholders
+                          const placeholderCtx = buildPlaceholderContext(active, callerName);
+                          const displayText = fillPlaceholdersPlain(formatScriptLines(rawText), placeholderCtx);
 
-                              {locked&&(
-                                <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
-                                  justifyContent:"center",zIndex:1,borderRadius:10}}>
-                                  <span style={{fontSize:11,color:C.t2,fontWeight:500,
-                                    background:`${C.bg}E0`,padding:"4px 14px",borderRadius:100}}>
-                                    🔒 Confirm 2+ pain signals to unlock
+                          return (
+                            <div key={phase} style={{borderLeft:`3px solid ${phaseColor}`,marginBottom:8,
+                              background:`${phaseColor}04`,borderRadius:"0 10px 10px 0",overflow:"hidden"}}>
+                              {/* Phase header with dropdown */}
+                              <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
+                                borderBottom:`1px solid ${phaseColor}15`}}>
+                                <span style={{fontSize:10,fontWeight:600,color:phaseColor,textTransform:"uppercase",
+                                  letterSpacing:"0.05em",minWidth:72}}>{phase}</span>
+                                <select value={selectedVar}
+                                  onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
+                                  style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
+                                    fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
+                                  {options.map(o => (
+                                    <option key={o.id} value={o.id}>
+                                      {o.id} — {o.name}{isOpener && recMap[o.id] ? " ★" : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                                {isCustomized && (
+                                  <button onClick={() => {
+                                    if (window.confirm("This will erase your custom edits for this script. Reset?")) {
+                                      setCallerScripts(prev => {
+                                        const next = {...prev};
+                                        delete next[scriptKey];
+                                        try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
+                                        return next;
+                                      });
+                                      setScriptSaveStatus(prev => ({...prev, [phase]: "reset"}));
+                                      setTimeout(() => setScriptSaveStatus(prev => ({...prev, [phase]: null})), 2000);
+                                      fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                                        body:JSON.stringify({type:'caller_script_reset',caller_name:callerName,phase,variant_id:selectedVar})
+                                      }).catch(()=>{});
+                                    }
+                                  }}
+                                    style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                                      background:C.bg,color:C.t3,fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>
+                                    Reset to Original
+                                  </button>
+                                )}
+                                {scriptSaveStatus[phase] && (
+                                  <span style={{fontSize:10,fontWeight:500,whiteSpace:"nowrap",
+                                    color:scriptSaveStatus[phase]==="saved"?C.green:
+                                      scriptSaveStatus[phase]==="reset"?C.amber:C.t3}}>
+                                    {scriptSaveStatus[phase]==="saved"?"Saved":scriptSaveStatus[phase]==="reset"?"Reset":"Saving..."}
                                   </span>
-                                </div>
-                              )}
-
-                              <div style={{fontSize:10,color:LINE_COLOR[line.type]||C.t2,
-                                fontWeight:500,marginBottom:8,textTransform:"uppercase",
-                                letterSpacing:"0.03em"}}>{line.type}</div>
-
-                              {isDiscovery && bullets ? (
-                                <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                                  {bullets.map((q,qi)=>{
-                                    const resp = discoveryResponses[qi] || null;
-                                    return (
-                                    <div key={qi} style={{display:"flex",alignItems:"center",gap:8,
-                                      padding:"8px 12px",borderRadius:8,
-                                      border:`1px solid ${resp==="pain"?C.green+"40":resp==="no"?C.border:C.border}`,
-                                      background:resp==="pain"?C.green+"06":resp==="no"?C.surface:"transparent"}}>
-                                      <div style={{flex:1,fontSize:13,color:C.t1,lineHeight:1.5}}>
-                                        {fillPlaceholders(q, buildPlaceholderContext(active, callerName))}
-                                      </div>
-                                      <div style={{display:"flex",gap:4,flexShrink:0}}>
-                                        {[{k:"pain",l:"Pain",bg:C.green},{k:"no",l:"No",bg:C.t3},{k:"skip",l:"Skip",bg:C.border}].map(opt=>(
-                                          <button key={opt.k} onClick={()=>setDiscoveryResponses(prev=>({...prev,[qi]:prev[qi]===opt.k?null:opt.k}))}
-                                            style={{padding:"3px 10px",borderRadius:100,fontSize:10,fontWeight:500,
-                                              border:resp===opt.k?`1px solid ${opt.bg}`:`1px solid ${C.border}`,
-                                              background:resp===opt.k?opt.bg+"20":"transparent",
-                                              color:resp===opt.k?opt.bg:C.t3,cursor:"pointer",transition:"all 0.1s"}}>
-                                            {opt.l}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </div>
-                                    );
-                                  })}
-                                  <div style={{fontSize:11,color:painCount>0?C.green:C.t3,marginTop:4,fontWeight:500}}>
-                                    Pain signals: {painCount}/{bullets.length}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div style={{fontSize:14,color:C.t1,lineHeight:1.75,
-                                  fontStyle:line.type==="opener"?"italic":"normal"}}>
-                                  {fillPlaceholders(line.text, buildPlaceholderContext(active, callerName))}
-                                </div>
-                              )}
-
-                              {isClose&&!locked&&(
-                                <div style={{marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>
-                                  {closeEmailStatus==="success"?(
-                                    <div style={{background:"#10B981",color:"#fff",padding:"10px 16px",
-                                      borderRadius:8,fontSize:13,fontWeight:500,
-                                      animation:"slideDown 0.2s ease"}}>
-                                      ✓ Email captured — demo booked
-                                    </div>
-                                  ):(
-                                    <>
-                                      <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                                        <input type="email" value={closeEmail} onChange={e=>{setCloseEmail(e.target.value);setCloseEmailStatus(null);}}
-                                          onKeyDown={e=>{if(e.key==="Enter")captureCloseEmail();}}
-                                          placeholder="Enter their email..."
-                                          style={{flex:1,border:`1px solid ${closeEmailStatus==="error"?"#EF4444":"#10B98140"}`,
-                                            borderRadius:8,padding:"8px 12px",fontSize:15,
-                                            background:C.bg,color:C.t1,outline:"none",
-                                            animation:closeEmailStatus==="error"?"shake 0.3s ease":"none",
-                                            transition:"border-color 0.15s"}}
-                                          onFocus={e=>e.target.style.borderColor="#10B981"}
-                                          onBlur={e=>{if(closeEmailStatus!=="error")e.target.style.borderColor="#10B98140";}}/>
-                                        <button onClick={captureCloseEmail}
-                                          style={{padding:"8px 18px",borderRadius:8,border:"none",
-                                            background:"#10B981",color:"#fff",fontSize:13,fontWeight:500,
-                                            cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>
-                                          Capture →
-                                        </button>
-                                      </div>
-                                      {closeEmailStatus==="error"&&(
-                                        <div style={{fontSize:11,color:"#EF4444",marginTop:4}}>Enter a valid email</div>
-                                      )}
-                                    </>
-                                  )}
-                                </div>
-                              )}
+                                )}
+                              </div>
+                              {/* Editable script text — display is interpolated, storage is raw template */}
+                              <textarea
+                                value={displayText}
+                                onChange={e => {
+                                  // Reverse interpolation: replace known values back to placeholders
+                                  let edited = e.target.value;
+                                  const ctx = placeholderCtx;
+                                  // Reverse-map: replace interpolated values back to {placeholder}
+                                  // Only replace exact matches to avoid false positives
+                                  if (ctx.owner) edited = edited.split(ctx.owner).join("{owner}");
+                                  if (ctx.caller) edited = edited.split(ctx.caller).join("{caller}");
+                                  if (ctx.biz) edited = edited.split(ctx.biz).join("{biz}");
+                                  if (ctx.city) edited = edited.split(ctx.city).join("{city}");
+                                  if (ctx.leak) edited = edited.split(ctx.leak).join("{leak}");
+                                  if (ctx.chairs && ctx.chairs !== "your") edited = edited.split(ctx.chairs).join("{chairs}");
+                                  // Convert newlines back to // for storage
+                                  const rawVal = unformatScriptLines(edited);
+                                  setCallerScripts(prev => {
+                                    const next = {...prev, [scriptKey]: rawVal};
+                                    try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                  // Debounced save to webhook
+                                  if (saveTimerRefs.current[phase]) clearTimeout(saveTimerRefs.current[phase]);
+                                  setScriptSaveStatus(prev => ({...prev, [phase]: "saving"}));
+                                  saveTimerRefs.current[phase] = setTimeout(() => {
+                                    fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                                      body:JSON.stringify({type:'caller_script_update',caller_name:callerName,
+                                        phase,variant_id:selectedVar,custom_script_text:rawVal})
+                                    }).catch(()=>{});
+                                    setScriptSaveStatus(prev => ({...prev, [phase]: "saved"}));
+                                    setTimeout(() => setScriptSaveStatus(prev => ({...prev, [phase]: null})), 2000);
+                                  }, 2000);
+                                }}
+                                style={{width:"100%",border:"none",padding:"12px 16px",fontSize:13,
+                                  color:C.t1,lineHeight:1.75,background:"transparent",outline:"none",
+                                  resize:"vertical",minHeight:80,fontFamily:F,
+                                  fontStyle:phase==="opener"?"italic":"normal"}}
+                                placeholder={`No ${phase} script for this variant`}
+                              />
                             </div>
-                            );
-                          })}
-                        </div>
-
+                          );
+                        })}
                       </>
                     )}
                   </div>
@@ -1497,17 +1717,21 @@ export default function HarmoniaOS() {
                 {/* ── OBJECTIONS ── */}
                 {tab==="objections"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:8,maxWidth:600}}>
-                    {curObjs.length === 0 ? (
-                      <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
-                        No objections found for this vertical.<br/>
-                        Add rows to the Objections tab in your Google Sheet.
+                    {curObjs.length === 0 && (
+                      <div style={{fontSize:12,color:C.t3,padding:"10px 0"}}>
+                        No objections yet for this vertical.
                       </div>
-                    ):(
+                    )}
+                    {curObjs.length > 0 && (
                       <>
                         <div style={{fontSize:11,color:C.t3,marginBottom:4}}>Tap to expand</div>
-                        {curObjs.map((obj,i)=>(
+                        {curObjs.map((obj,i)=>{
+                          const sheetCount = (objections[active?.icp] || []).length;
+                          const isCustom = i >= sheetCount;
+                          const customIdx = i - sheetCount;
+                          return (
                           <div key={i} style={{borderRadius:12,overflow:"hidden",
-                            border:`1px solid ${openObj===i?C.borderMd:C.border}`,
+                            border:`1px solid ${openObj===i?C.borderMd:isCustom?C.accent+"30":C.border}`,
                             transition:"border-color 0.15s"}}>
                             <div onClick={()=>setOpenObj(openObj===i?null:i)}
                               style={{padding:"12px 16px",display:"flex",alignItems:"center",
@@ -1517,6 +1741,21 @@ export default function HarmoniaOS() {
                                 background:openObj===i?C.t1:C.t3,flexShrink:0,
                                 transition:"background 0.15s"}}/>
                               <span style={{fontSize:13,color:C.t1,flex:1}}>"{obj.q}"</span>
+                              {isCustom&&(
+                                <button onClick={e=>{
+                                  e.stopPropagation();
+                                  setCustomObjections(prev => {
+                                    const icp = active?.icp;
+                                    const next = {...prev, [icp]: (prev[icp]||[]).filter((_,ci)=>ci!==customIdx)};
+                                    localStorage.setItem("harmonia-custom-objections", JSON.stringify(next));
+                                    return next;
+                                  });
+                                  if(openObj===i) setOpenObj(null);
+                                }}
+                                  style={{fontSize:10,color:C.t3,border:"none",background:"transparent",
+                                    cursor:"pointer",padding:"2px 6px",flexShrink:0}}
+                                  title="Remove this objection">✕</button>
+                              )}
                               <span style={{fontSize:10,color:C.t3}}>{openObj===i?"▲":"▼"}</span>
                             </div>
                             {openObj===i&&(
@@ -1527,12 +1766,59 @@ export default function HarmoniaOS() {
                                   Response
                                 </div>
                                 <div style={{fontSize:13,color:C.t1,lineHeight:1.72}}>{obj.a}</div>
+                                {isCustom&&obj.added_by&&(
+                                  <div style={{fontSize:10,color:C.t3,marginTop:8}}>
+                                    Added by {obj.added_by}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </>
                     )}
+
+                    {/* Add new objection form */}
+                    <div style={{borderRadius:12,border:`1px dashed ${C.border}`,padding:"14px 16px",
+                      marginTop:curObjs.length>0?8:0}}>
+                      <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500,textTransform:"uppercase",
+                        letterSpacing:"0.03em"}}>Add Objection</div>
+                      <input value={newObjQ} onChange={e=>setNewObjQ(e.target.value)}
+                        placeholder="What's the objection? e.g. 'We already have a booking system'"
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                          fontSize:12,background:C.bg,color:C.t1,outline:"none",marginBottom:8}}/>
+                      <textarea value={newObjA} onChange={e=>setNewObjA(e.target.value)}
+                        placeholder="How to respond to this objection..."
+                        rows={3}
+                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                          fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
+                          lineHeight:1.6}}/>
+                      <button onClick={()=>{
+                        if(!newObjQ.trim()||!newObjA.trim()) return;
+                        const icp = active?.icp;
+                        if(!icp) return;
+                        const entry = {q:newObjQ.trim(), a:newObjA.trim(), added_by:callerName||"Unknown"};
+                        setCustomObjections(prev => {
+                          const next = {...prev, [icp]: [...(prev[icp]||[]), entry]};
+                          localStorage.setItem("harmonia-custom-objections", JSON.stringify(next));
+                          return next;
+                        });
+                        // Also send to webhook for sheet persistence
+                        fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                          body:JSON.stringify({type:'objection_add',icp,question:newObjQ.trim(),
+                            answer:newObjA.trim(),added_by:callerName||"Unknown"})
+                        }).catch(()=>{});
+                        setNewObjQ("");setNewObjA("");
+                      }}
+                        disabled={!newObjQ.trim()||!newObjA.trim()}
+                        style={{marginTop:8,padding:"6px 18px",borderRadius:6,border:"none",
+                          background:newObjQ.trim()&&newObjA.trim()?C.t1:`${C.t3}40`,
+                          color:newObjQ.trim()&&newObjA.trim()?C.bg:C.t3,
+                          fontSize:11,fontWeight:500,cursor:newObjQ.trim()&&newObjA.trim()?"pointer":"not-allowed"}}>
+                        Add Objection
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1578,6 +1864,7 @@ export default function HarmoniaOS() {
                     ))}
                   </div>
                 )}
+
               </div>
             </>
           ):(
@@ -1781,6 +2068,23 @@ export default function HarmoniaOS() {
                   </div>
                 )}
 
+                {pendingOutcome && pendingOutcome!=="no_answer" && pendingOutcome!=="voicemail" && (
+                  <div>
+                    <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Spoke with</div>
+                    <div style={{display:"flex",gap:6}}>
+                      {["Owner","Gatekeeper","Manager","Unknown"].map(opt=>(
+                        <button key={opt} onClick={()=>setSpokeWith(opt)}
+                          style={{padding:"4px 12px",borderRadius:100,
+                            border:`1px solid ${spokeWith===opt?C.accent:C.border}`,
+                            background:spokeWith===opt?`${C.accent}10`:"transparent",
+                            color:spokeWith===opt?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <button onClick={confirmOutcome} disabled={!canSubmit()}
                   style={{width:"100%",padding:"10px 0",borderRadius:8,border:"none",
                     background:canSubmit()?C.t1:`${C.t3}40`,color:canSubmit()?C.bg:C.t3,
@@ -1794,6 +2098,60 @@ export default function HarmoniaOS() {
         </div>
       )}
       <style>{`@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
+
+      {/* ── ADMIN CONSOLE (Javi only) ── */}
+      {showAdminPanel&&(
+        <div style={{position:"fixed",inset:0,zIndex:9500,display:"flex",alignItems:"center",justifyContent:"center"}}
+          onClick={e=>{if(e.target===e.currentTarget)setShowAdminPanel(false);}}>
+          <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)"}}/>
+          <div style={{position:"relative",background:C.bg,borderRadius:16,padding:"24px 28px",
+            width:420,maxHeight:"80vh",overflowY:"auto",
+            boxShadow:"0 8px 40px rgba(0,0,0,0.18)",animation:"slideDown 0.2s ease"}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:18}}>
+              <span style={{fontSize:15,fontWeight:600}}>Admin — Script Management</span>
+              <button onClick={()=>setShowAdminPanel(false)}
+                style={{marginLeft:"auto",border:"none",background:"transparent",fontSize:16,
+                  color:C.t3,cursor:"pointer",padding:"4px 8px"}}>✕</button>
+            </div>
+            <div style={{fontSize:11,color:C.t3,marginBottom:14}}>
+              Toggle scripts on/off for all callers. Disabled scripts are hidden from everyone's Script Mixer.
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {(SCRIPT_OPTIONS.salon||SCRIPT_OPTIONS.hvac||[]).map(s=>{
+                const isDisabled = disabledScripts.has(s.variant);
+                return (
+                  <div key={s.variant} style={{display:"flex",alignItems:"center",gap:12,
+                    padding:"10px 14px",borderRadius:10,
+                    border:`1px solid ${isDisabled?C.border:C.green+"40"}`,
+                    background:isDisabled?C.surface:`${C.green}06`}}>
+                    <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{s.variant}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:500,color:isDisabled?C.t3:C.t1}}>{s.name}</div>
+                      <div style={{fontSize:10,color:C.t3}}>{s.tag}</div>
+                    </div>
+                    <button onClick={()=>{
+                      setDisabledScripts(prev => {
+                        const next = new Set(prev);
+                        if (next.has(s.variant)) next.delete(s.variant);
+                        else next.add(s.variant);
+                        localStorage.setItem("harmonia-admin-disabled-scripts", JSON.stringify([...next]));
+                        return next;
+                      });
+                    }}
+                      style={{padding:"4px 14px",borderRadius:100,fontSize:11,fontWeight:500,
+                        border:`1px solid ${isDisabled?C.border:C.green}`,
+                        background:isDisabled?"transparent":`${C.green}15`,
+                        color:isDisabled?C.t3:C.green,cursor:"pointer",
+                        transition:"all 0.15s",minWidth:72}}>
+                      {isDisabled?"Disabled":"Enabled"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
