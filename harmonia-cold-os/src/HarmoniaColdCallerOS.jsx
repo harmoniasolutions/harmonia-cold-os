@@ -252,36 +252,37 @@ function parseObjections(rows) {
 //   close_bubble   — tag: green, yellow, red
 //   discovery      — tag: ROOT → root question node (name=variant label, text=root question)
 //   discovery_branch — tag: green/yellow/red → branch node (name=label, text=response)
+// Returns { bubbles: { [icp]: { bridge:[], close:[] } }, branches: { [icp]: { [variant]: [...] } } }
 function parseBubblesAndBranches(rows) {
-  const bubbles = { bridge: [], close: [] };
-  const branches = {};
+  const bubbles = {};  // keyed by icp
+  const branches = {}; // keyed by icp then variant
   rows.forEach(r => {
     const t = (r.type || '').toLowerCase().trim();
     const tag = (r.tag || '').trim();
+    const icp = (r.icp || '').toLowerCase().trim();
+    if (!icp) return;
+    if (!bubbles[icp]) bubbles[icp] = { bridge: [], close: [] };
+    if (!branches[icp]) branches[icp] = {};
     if (t === 'bridge_bubble') {
       const isShowScript = tag.toLowerCase().includes('green');
       const color = tag.replace(/_show$/i, '').toLowerCase() || 'yellow';
-      bubbles.bridge.push({ label: r.name || '', type: color, response: r.text || '', showScript: isShowScript });
+      bubbles[icp].bridge.push({ label: r.name || '', type: color, response: r.text || '', showScript: isShowScript });
     } else if (t === 'close_bubble') {
-      bubbles.close.push({ label: r.name || '', type: tag.toLowerCase() || 'yellow', response: r.text || '' });
+      bubbles[icp].close.push({ label: r.name || '', type: tag.toLowerCase() || 'yellow', response: r.text || '' });
     } else if (t === 'discovery' && tag.toUpperCase() === 'ROOT') {
       const vid = r.variant || '1';
-      if (!branches[vid]) branches[vid] = [];
-      branches[vid].push({
+      if (!branches[icp][vid]) branches[icp][vid] = [];
+      branches[icp][vid].push({
         branchId: 'ROOT', parentId: null, depth: 0, rootQuestion: r.text || '',
         label: '', type: '', response: '', nextPhase: '', variantLabel: r.name || `Variant ${vid}`,
       });
-    } else if (t === 'bridge') {
-      // Bridge scripts — feed into normal scripts pipeline
-      // handled separately via parseBridgeFromBB
     } else if (t === 'discovery_branch') {
       const vid = r.variant || '1';
-      if (!branches[vid]) branches[vid] = [];
+      if (!branches[icp][vid]) branches[icp][vid] = [];
       const color = tag.toLowerCase() || 'yellow';
-      // Auto-generate branchId from variant + child index under ROOT (depth 1 default)
-      const existingChildren = branches[vid].filter(n => n.parentId === 'ROOT' && n.depth === 1).length;
+      const existingChildren = branches[icp][vid].filter(n => n.parentId === 'ROOT' && n.depth === 1).length;
       const branchId = `${vid}${String.fromCharCode(65 + existingChildren)}`;
-      branches[vid].push({
+      branches[icp][vid].push({
         branchId, parentId: 'ROOT', depth: 1, rootQuestion: '', label: r.name || '',
         type: color, response: r.text || '', nextPhase: 'PITCH', variantLabel: '',
       });
@@ -434,8 +435,8 @@ export default function HarmoniaOS() {
   const [newPhaseName, setNewPhaseName] = useState("");
   const [activeBridgeBubble, setActiveBridgeBubble] = useState(null); // index of expanded bubble
   const [activeCloseBubble, setActiveCloseBubble] = useState(null);  // index of expanded close bubble
-  const [bubbleData, setBubbleData] = useState({ bridge: [], close: [] }); // from bubbles sheet tab
-  const [branchData, setBranchData] = useState({}); // { variant_id: [flat branch nodes] }
+  const [bubbleData, setBubbleData] = useState({}); // { [icp]: { bridge:[], close:[] } }
+  const [branchData, setBranchData] = useState({}); // { [icp]: { [variant]: [flat branch nodes] } }
   const [activeBranches, setActiveBranches] = useState({}); // { depth: branch_id }
   const [addBranchForm, setAddBranchForm] = useState(null); // { parentId, depth } or null
   const [newBranchLabel, setNewBranchLabel] = useState("");
@@ -485,7 +486,7 @@ export default function HarmoniaOS() {
         setObjections(parseObjections(objectionsRaw));
         // Parse bubbles and branches from Scripts tab
         const parsed = parseBubblesAndBranches(scriptsRaw);
-        if (parsed.bubbles.bridge.length > 0 || parsed.bubbles.close.length > 0) setBubbleData(parsed.bubbles);
+        if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
         if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
         if (parsedLeads.length > 0) {
           setActive(parsedLeads[0]);
@@ -1791,22 +1792,13 @@ export default function HarmoniaOS() {
                               if (REMOVED_VARIANTS.has(varId)) return;
                               if (disabledScripts.has(varId)) return;
                               const line = script.lines.find(l => l.type === phase);
-                              if (line) {
-                                options.push({ id: varId, name: script.name, tag: script.tag, text: line.text });
-                              }
+                              // Show all variants in every dropdown — text may be empty if no row for this phase
+                              options.push({ id: varId, name: script.name, tag: script.tag, text: line?.text || "" });
                             });
                           }
 
-                          // Discovery: populate options from branchData if available
                           const isDiscoveryPhase = phase === "discovery";
-                          if (isDiscoveryPhase && Object.keys(branchData).length > 0) {
-                            options.length = 0; // clear script-based options
-                            Object.entries(branchData).forEach(([vid, nodes]) => {
-                              const root = nodes.find(n => n.depth === 0);
-                              const label = root?.variantLabel || root?.rootQuestion?.slice(0, 50) || `Variant ${vid}`;
-                              options.push({ id: vid, name: label, tag: "", text: "" });
-                            });
-                          }
+                          const icpBranches = branchData[active?.icp] || {};
                           // Default phases with no scripts in sheet: skip. Custom phases always render.
                           if (!isCustomPhase && options.length === 0) return null;
 
@@ -1871,7 +1863,7 @@ export default function HarmoniaOS() {
                                     padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>{bridgeVariant.badge}</span>
                                 )}
                                 {/* Discovery branching badge */}
-                                {!collapsed && isDiscoveryPhase && Object.keys(branchData).length > 0 && (
+                                {!collapsed && isDiscoveryPhase && Object.keys(icpBranches).length > 0 && (
                                   <span style={{fontSize:8,fontWeight:600,color:"#B45309",background:"#FEF3C7",
                                     padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>BRANCHING</span>
                                 )}
@@ -1995,7 +1987,8 @@ export default function HarmoniaOS() {
 
                                 /* ── BRIDGE: bubbles gate the script ── */
                                 if (isBridge) {
-                                  const activeBubbles = bubbleData.bridge.length > 0 ? bubbleData.bridge : bridgeBubbles;
+                                  const icpBubbles = bubbleData[active?.icp] || { bridge: [], close: [] };
+                                  const activeBubbles = icpBubbles.bridge.length > 0 ? icpBubbles.bridge : bridgeBubbles;
                                   if (activeBubbles.length === 0) {
                                     // No bubble data in sheet — render plain textarea
                                     return (<>{scriptTextarea}{resizeHandles}</>);
@@ -2063,7 +2056,7 @@ export default function HarmoniaOS() {
 
                                 /* ── DISCOVERY: branching tree ── */
                                 if (isDiscovery) {
-                                  const variantBranches = branchData[selectedVar] || [];
+                                  const variantBranches = (branchData[active?.icp] || {})[selectedVar] || [];
                                   if (variantBranches.length > 0) {
                                     const tree = buildBranchTree(variantBranches);
                                     const rootNode = tree.find(n => n.depth === 0);
@@ -2180,8 +2173,9 @@ export default function HarmoniaOS() {
                                                                       next_phase: 'PITCH',
                                                                     })
                                                                   });
-                                                                  const fresh = await fetchSheet("branches").catch(()=>[]);
-                                                                  setBranchData(parseBranches(fresh));
+                                                                  const fresh = await fetchSheet("Scripts").catch(()=>[]);
+                                                                  const reParsed = parseBubblesAndBranches(fresh);
+                                                                  if (Object.keys(reParsed.branches).length > 0) setBranchData(reParsed.branches);
                                                                 } catch(err) { console.error("Failed to add branch:", err); }
                                                                 setAddBranchForm(null); setNewBranchLabel(""); setNewBranchType("green"); setNewBranchResponse("");
                                                               }}
@@ -2241,7 +2235,7 @@ export default function HarmoniaOS() {
 
                                 /* ── CLOSE: textarea + bubbles ── */
                                 if (isClose) {
-                                  const closeBubbles = bubbleData.close;
+                                  const closeBubbles = (bubbleData[active?.icp] || { close: [] }).close;
                                   if (closeBubbles.length === 0) {
                                     return (<>{scriptTextarea}{resizeHandles}</>);
                                   }
