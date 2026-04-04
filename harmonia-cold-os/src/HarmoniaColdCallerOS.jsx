@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { SCRIPT_OPTIONS, OBJECTION_PRESETS } from './config/sheetMapping';
+import MissedCallCalculator from './MissedCallCalculator';
 
 /* ─────────────────────────────────────────────
    GOOGLE SHEETS CONFIG
@@ -46,7 +47,88 @@ const FM = "'DM Mono', 'SF Mono', monospace";
 
 const ICP_LABEL  = { hvac:"HVAC", salon:"Salon", barbershop:"Barber" };
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
-const LINE_COLOR = { opener:C.accent, discovery:C.teal, pitch:C.amber, close:C.green };
+const LINE_COLOR = { opener:C.accent, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
+
+const DEFAULT_PHASES = [
+  { id: "opener",    label: "Opener",    color: "#EF4444", isDefault: true },
+  { id: "bridge",    label: "Bridge",    color: "#a855f7", isDefault: true },
+  { id: "discovery", label: "Discovery", color: "#F59E0B", isDefault: true },
+  { id: "pitch",     label: "Pitch",     color: "#3B82F6", isDefault: true },
+  { id: "close",     label: "Close",     color: "#10B981", isDefault: true },
+];
+const COLOR_PALETTE = ["#EF4444","#F59E0B","#3B82F6","#10B981","#8B5CF6","#EC4899","#14B8A6","#F97316","#6366F1","#84CC16"];
+
+// ── Bridge phase data ──
+const BRIDGE_VARIANTS = [
+  {
+    id: "1", name: "One-Line Frame", tag: "One-Line Frame",
+    text: `I work with salons and barbershops in the {city} area on their phone systems — quick question...`,
+    coaching: `Say this in ONE breath. Do NOT elaborate, do NOT mention AI or SARA. The only goal is to give them enough context that your Discovery questions feel natural. Then shut up and let them answer.`,
+    badge: "ONE LINE — NO PITCH",
+  },
+  {
+    id: "2", name: "Straight Line (Belfort)", tag: "Straight Line",
+    text: `Appreciate that, {owner}. So here's why I'm calling — I built an AI receptionist specifically for salons and barbershops. You know those calls that come in while you're mid-fade or elbow-deep in color? The ones that go to voicemail and never call back? That's money walking out your door every single week. My system picks up every call, books the appointment, and sounds like a real person — not some robot menu nobody wants to deal with. Quick question — how many calls a day would you say you're missing or sending to voicemail?`,
+    coaching: `This is the Belfort approach — you're telling them exactly what you do and WHY before asking questions. High energy, high conviction. The quick question at the end transitions directly into Discovery. Use this when the prospect sounds engaged and you have momentum from the Opener.`,
+  },
+  {
+    id: "3", name: "Hormozi Offer Frame", tag: "Hormozi Offer",
+    text: `I help salons and barbershops stop losing money to missed calls — and I can prove it works in 2 weeks for free. Quick question before I explain...`,
+    coaching: `Lead with the OFFER, not the product. Stop losing money + prove it for free = irresistible frame. You haven't explained HOW yet. That's the point. The offer is so good they want to hear the Discovery questions. Shortest bridge, highest curiosity.`,
+  },
+];
+
+const BRIDGE_OBJECTIONS = [
+  { label:"Go ahead...", type:"green", showScript:true, response:"" },
+  { label:"What's this about?", type:"green", showScript:true, response:"" },
+  { label:"I'm busy right now", type:"red", showScript:false,
+    response:`Totally get it — you're working. I need literally 30 seconds. If it's not relevant I'll hang up myself. Here's why I'm calling — I built an AI receptionist specifically for salons and barbershops that picks up every call, books appointments, and sounds like a real person. Quick question — how many calls a day would you say you're missing or sending to voicemail?` },
+  { label:"Not interested", type:"red", showScript:false,
+    response:`I hear you — and honestly most people say that on cold calls, I respect it. But quick question before I go — are you losing any calls to voicemail right now? Because if you are, I can show you how to stop that for free. If not, I'll never call again.` },
+];
+
+const BUBBLE_STYLES = {
+  green:  { bg:"#f0fdf4", border:"#86efac", text:"#166534", dot:"#22c55e", label:"They're open — deliver this" },
+  yellow: { bg:"#fefce8", border:"#fde047", text:"#854d0e", dot:"#eab308", label:"Pivot — redirect to Discovery" },
+  red:    { bg:"#fef2f2", border:"#fca5a5", text:"#991b1b", dot:"#ef4444", label:"Handle — reframe and redirect" },
+};
+
+const CLOSE_BUBBLES_FALLBACK = [
+  { label:"They say yes / pick a time", type:"green",
+    response:`Perfect — I'll send you a calendar invite right now. It's a quick Zoom, I'll screen-share the whole setup. You're going to love this, {owner}. Talk soon.` },
+  { label:"They hesitate", type:"yellow",
+    response:`{owner}, let me be real with you — I'm not calling random businesses. I called YOU because you're clearly running a serious operation. The shops that win in this game aren't the ones with the best cuts — everybody's good. It's the ones that never let a client slip through the cracks. That's the edge. All I need is 15 minutes to show you how it works. What's better for you, tomorrow afternoon or Thursday morning?` },
+  { label:"Send me info", type:"yellow",
+    response:`I could send you a PDF, but honestly? You'll look at it for three seconds between clients and forget about it. That's not me being disrespectful, that's just how it goes — you're busy, I get it. Give me 10 minutes on a quick call, I'll screen-share SARA actually handling a booking in real time. You'll know in 10 minutes if this is for you. I've got a slot at [time] — can you do that?` },
+  { label:"Talk to my partner first", type:"yellow",
+    response:`Totally get it — would they be available to jump on the demo too? That way you both see it at the same time and can make a decision together. What time works for both of you?` },
+  { label:"Call me back another time", type:"red",
+    response:`I will — but honestly, we'll just have the same conversation. Let's just lock in 15 minutes and I'll prove it's worth your time. If it's not, you've lost 15 minutes. If it is, you stop losing money this month. What's better, mornings or afternoons?` },
+  { label:"Hard no", type:"red",
+    response:`Respect that completely. If anything changes and you get tired of calls going to voicemail, you've got my number. Have a great rest of your day, {owner}.` },
+];
+
+// ── Discovery branch fallback data (used when no branches sheet tab exists) ──
+const DISCOVERY_BRANCHES_FALLBACK = {
+  "1": [
+    { branchId:"ROOT", parentId:null, depth:0, rootQuestion:`Quick question — how many calls a day would you say you're missing or sending to voicemail?`, label:"", type:"", response:"", nextPhase:"", variantLabel:"Belfort Direct" },
+    { branchId:"1A", parentId:"ROOT", depth:1, rootQuestion:"", label:"They give a number", type:"green",
+      response:`Okay so let's do quick math — even if it's [X] calls a week, and even HALF of those are a $40-50 service, you're bleeding $[math] to a grand a month in lost revenue. Not because you're bad at what you do — you're clearly killing it — but because you physically can't answer the phone with a client in your chair. That's not a you problem, that's a physics problem. And I solve physics problems.`, nextPhase:"PITCH" },
+    { branchId:"1B", parentId:"ROOT", depth:1, rootQuestion:"", label:"I don't know", type:"yellow",
+      response:`That's actually the scariest answer, because it means you don't even know how much you're losing. Industry data says the average salon misses 30-40% of inbound calls. If you're doing any kind of volume, that's thousands a month just evaporating. And you'd never even know it because those people just book somewhere else.`, nextPhase:"PITCH" },
+    { branchId:"1C", parentId:"ROOT", depth:1, rootQuestion:"", label:"Not many / We're fine", type:"red",
+      response:`That's what most shops think — and I'm not saying you're wrong. But here's the thing: you only know about the calls you DO answer. The ones that ring 4 times and hang up? They don't leave a voicemail. They just Google the next spot. Industry average is 30-40% of calls missed. Even if you're better than average, at a $50 ticket that's hundreds a month you'd never even know about.`, nextPhase:"PITCH" },
+  ],
+  "2": [
+    { branchId:"ROOT", parentId:null, depth:0, rootQuestion:`Saturday morning, every chair is full, phone's ringing, you're mid-color or mid-fade... what happens to that call?`, label:"", type:"", response:"", nextPhase:"", variantLabel:"Scenario Paint" },
+    { branchId:"2A", parentId:"ROOT", depth:1, rootQuestion:"", label:"It goes to voicemail / We miss it", type:"green",
+      response:`Right — and that person who called, do you think they're sitting there waiting to call back, or are they just Googling the next spot and booking there? Here's what's wild — a brand new client calling for the first time has zero loyalty. If nobody picks up, you lost them forever AND the five to ten grand they would've spent with you over the next few years.`, nextPhase:"PITCH" },
+    { branchId:"2B", parentId:"ROOT", depth:1, rootQuestion:"", label:"Someone tries to grab it", type:"yellow",
+      response:`So someone's stepping away from a client to answer the phone — which means either the caller gets a rushed conversation or the client in the chair feels neglected. Either way somebody's getting a bad experience. What if you didn't have to choose?`, nextPhase:"PITCH" },
+    { branchId:"2C", parentId:"ROOT", depth:1, rootQuestion:"", label:"We don't miss calls", type:"red",
+      response:`What about after hours — 7, 8pm, someone's planning their week and wants to book for tomorrow morning. Where does that call go right now? Those people aren't leaving voicemails. They're just booking somewhere else.`, nextPhase:"PITCH" },
+  ],
+};
 
 const OUTCOMES = {
   demo_booked:    { label:"Demo booked",    color:C.green,   short:"Demo", ghl:"Meeting Booked",      discord:"#meetings-booked",  needsEmail:true,  needsBooking:true  },
@@ -226,6 +308,68 @@ function parseObjections(rows) {
   return out;
 }
 
+// Extract bridge_bubble rows from Scripts sheet: name=label, tag=color(green/yellow/red), text=response
+function parseBridgeBubblesFromScripts(rows) {
+  return rows.filter(r => r.type === "bridge_bubble" && r.name && r.text).map(r => ({
+    label: r.name, type: r.tag || "yellow", response: r.text,
+  }));
+}
+
+// Unified parser for "bubbles & branches" tab (same columns as Scripts: icp, variant, name, tag, type, text)
+// type values:
+//   bridge_bubble  — tag: green_show (reveals script), green, yellow, red
+//   close_bubble   — tag: green, yellow, red
+//   discovery      — tag: ROOT → root question node (name=variant label, text=root question)
+//   discovery_branch — tag: green/yellow/red → branch node (name=label, text=response)
+function parseBubblesAndBranches(rows) {
+  const bubbles = { bridge: [], close: [] };
+  const branches = {};
+  rows.forEach(r => {
+    const t = (r.type || '').toLowerCase().trim();
+    const tag = (r.tag || '').trim();
+    if (t === 'bridge_bubble') {
+      const isShowScript = tag.toLowerCase().includes('green');
+      const color = tag.replace(/_show$/i, '').toLowerCase() || 'yellow';
+      bubbles.bridge.push({ label: r.name || '', type: color, response: r.text || '', showScript: isShowScript });
+    } else if (t === 'close_bubble') {
+      bubbles.close.push({ label: r.name || '', type: tag.toLowerCase() || 'yellow', response: r.text || '' });
+    } else if (t === 'discovery' && tag.toUpperCase() === 'ROOT') {
+      const vid = r.variant || '1';
+      if (!branches[vid]) branches[vid] = [];
+      branches[vid].push({
+        branchId: 'ROOT', parentId: null, depth: 0, rootQuestion: r.text || '',
+        label: '', type: '', response: '', nextPhase: '', variantLabel: r.name || `Variant ${vid}`,
+      });
+    } else if (t === 'bridge') {
+      // Bridge scripts — feed into normal scripts pipeline
+      // handled separately via parseBridgeFromBB
+    } else if (t === 'discovery_branch') {
+      const vid = r.variant || '1';
+      if (!branches[vid]) branches[vid] = [];
+      const color = tag.toLowerCase() || 'yellow';
+      // Auto-generate branchId from variant + child index under ROOT (depth 1 default)
+      const existingChildren = branches[vid].filter(n => n.parentId === 'ROOT' && n.depth === 1).length;
+      const branchId = `${vid}${String.fromCharCode(65 + existingChildren)}`;
+      branches[vid].push({
+        branchId, parentId: 'ROOT', depth: 1, rootQuestion: '', label: r.name || '',
+        type: color, response: r.text || '', nextPhase: 'PITCH', variantLabel: '',
+      });
+    }
+  });
+  return { bubbles, branches };
+}
+
+function buildBranchTree(flatNodes) {
+  const map = {};
+  flatNodes.forEach(n => { map[n.branchId] = { ...n, children: [] }; });
+  const roots = [];
+  flatNodes.forEach(n => {
+    if (n.parentId && map[n.parentId]) map[n.parentId].children.push(map[n.branchId]);
+    else if (n.depth === 0) roots.push(map[n.branchId]);
+  });
+  return roots;
+}
+
 function safeJSON(str, fallback) {
   try { return str ? JSON.parse(str) : fallback; }
   catch { return fallback; }
@@ -272,6 +416,7 @@ export default function HarmoniaOS() {
   const [leads,    setLeads]    = useState([]);
   const [scripts,  setScripts]  = useState({});
   const [objections,setObjections]= useState({});
+  const [bridgeBubbles, setBridgeBubbles] = useState(BRIDGE_OBJECTIONS);
   const [loading,  setLoading]  = useState(true);
   const [loadError,setLoadError]= useState(null);
 
@@ -305,9 +450,13 @@ export default function HarmoniaOS() {
   const [calendlyOpened,   setCalendlyOpened]   = useState(false);
   const [undoLast,         setUndoLast]         = useState(null);    // snapshot for undo
   const [discoveryResponses, setDiscoveryResponses] = useState({});  // { questionIndex: 'pain'|'no'|'skip'|null }
-  const [callPhase, setCallPhase] = useState("opener"); // 'opener'|'discovery'|'pitch'|'close'
+  const [callPhase, setCallPhase] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("harmonia-phase-order")); if (Array.isArray(s) && s.length > 0) return s[0].id; } catch {} return "opener";
+  });
   const [phaseSecs, setPhaseSecs] = useState(0);
-  const [phaseTimes, setPhaseTimes] = useState({opener:0,discovery:0,pitch:0,close:0});
+  const [phaseTimes, setPhaseTimes] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("harmonia-phase-order")); if (Array.isArray(s) && s.length > 0) return Object.fromEntries(s.map(p => [p.id, 0])); } catch {} return {opener:0,discovery:0,pitch:0,close:0};
+  });
   const phaseRef = useRef();
   const [closeEmail, setCloseEmail] = useState("");
   const [closeEmailStatus, setCloseEmailStatus] = useState(null); // null|'success'|'error'
@@ -328,8 +477,45 @@ export default function HarmoniaOS() {
   const [newObjQ, setNewObjQ] = useState("");
   const [newObjA, setNewObjA] = useState("");
 
+  // Phase order — reorderable, removable, addable
+  const [phaseOrder, setPhaseOrder] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("harmonia-phase-order"));
+      if (Array.isArray(stored) && stored.length > 0) {
+        // Migrate: re-inject any missing default phases in their natural position
+        let changed = false;
+        DEFAULT_PHASES.forEach((dp, di) => {
+          if (!stored.find(p => p.id === dp.id)) {
+            // Insert after the previous default phase, or at position di
+            const prevDefault = DEFAULT_PHASES[di - 1];
+            const insertAfter = prevDefault ? stored.findIndex(p => p.id === prevDefault.id) : -1;
+            stored.splice(insertAfter >= 0 ? insertAfter + 1 : Math.min(di, stored.length), 0, dp);
+            changed = true;
+          }
+        });
+        if (changed) try { localStorage.setItem("harmonia-phase-order", JSON.stringify(stored)); } catch {}
+        return stored;
+      }
+    } catch {}
+    return DEFAULT_PHASES;
+  });
+  const [showAddPhase, setShowAddPhase] = useState(false);
+  const [newPhaseName, setNewPhaseName] = useState("");
+  const [activeBridgeBubble, setActiveBridgeBubble] = useState(null); // index of expanded bubble
+  const [activeCloseBubble, setActiveCloseBubble] = useState(null);  // index of expanded close bubble
+  const [bubbleData, setBubbleData] = useState({ bridge: [], close: [] }); // from bubbles sheet tab
+  const [branchData, setBranchData] = useState({}); // { variant_id: [flat branch nodes] }
+  const [activeBranches, setActiveBranches] = useState({}); // { depth: branch_id }
+  const [addBranchForm, setAddBranchForm] = useState(null); // { parentId, depth } or null
+  const [newBranchLabel, setNewBranchLabel] = useState("");
+  const [newBranchType, setNewBranchType] = useState("green");
+  const [newBranchResponse, setNewBranchResponse] = useState("");
+  const [collapsedPhases, setCollapsedPhases] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("harmonia-collapsed-phases")); return new Set(Array.isArray(s)?s:[]); } catch { return new Set(); }
+  });
+
   // Script Mixer — per-caller editable scripts
-  const [phaseSelections, setPhaseSelections] = useState({opener:"1",discovery:"1",pitch:"1",close:"1"});
+  const [phaseSelections, setPhaseSelections] = useState({opener:"1",bridge:"1",discovery:"1",pitch:"1",close:"1"});
   const [callerScripts, setCallerScripts] = useState({}); // { "opener_1": "custom text", ... }
   const [scriptSaveStatus, setScriptSaveStatus] = useState({}); // { phase: 'saved'|'saving'|'reset'|null }
   const saveTimerRefs = useRef({});
@@ -366,6 +552,12 @@ export default function HarmoniaOS() {
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
         setObjections(parseObjections(objectionsRaw));
+        // Parse bubbles, branches, and bridge bubbles all from Scripts tab
+        const parsed = parseBubblesAndBranches(scriptsRaw);
+        if (parsed.bubbles.bridge.length > 0 || parsed.bubbles.close.length > 0) setBubbleData(parsed.bubbles);
+        if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
+        const parsedBridgeBubbles = parseBridgeBubblesFromScripts(scriptsRaw);
+        if (parsedBridgeBubbles.length > 0) setBridgeBubbles(parsedBridgeBubbles);
         if (parsedLeads.length > 0) {
           setActive(parsedLeads[0]);
           const recs = getRecommendedOpeners(parsedLeads[0]);
@@ -394,6 +586,12 @@ export default function HarmoniaOS() {
     return()=>clearInterval(callRef.current);
   },[callRun]);
 
+  // Reset branch tree when discovery variant changes
+  useEffect(() => {
+    setActiveBranches({});
+    setAddBranchForm(null);
+  }, [phaseSelections.discovery]);
+
   useEffect(() => {
     if(callRun) phaseRef.current=setInterval(()=>setPhaseSecs(s=>s+1),1000);
     else clearInterval(phaseRef.current);
@@ -416,11 +614,15 @@ export default function HarmoniaOS() {
 
   useEffect(() => {
     if(pitchUnlocked && callPhase==="discovery") {
-      setPhaseTimes(t=>({...t,discovery:phaseSecs}));
-      setPhaseSecs(0);
-      setCallPhase("pitch");
+      const discoveryIdx = phaseOrder.findIndex(p => p.id === "discovery");
+      const nextPhase = phaseOrder[discoveryIdx + 1];
+      if (nextPhase) {
+        setPhaseTimes(t=>({...t,discovery:phaseSecs}));
+        setPhaseSecs(0);
+        setCallPhase(nextPhase.id);
+      }
     }
-  },[pitchUnlocked, callPhase]);
+  },[pitchUnlocked, callPhase, phaseOrder]);
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
@@ -442,13 +644,66 @@ export default function HarmoniaOS() {
   const painStyle = (score) => painColor(score, C);
   const pendingMeta = pendingOutcome ? OUTCOMES[pendingOutcome] : null;
 
+  // ── Phase order handlers ──
+  function persistPhaseOrder(next) {
+    try { localStorage.setItem("harmonia-phase-order", JSON.stringify(next)); } catch {}
+    fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'phase_order_update',caller_name:callerName,phase_order:next.map(p=>p.id),full_phases:next})
+    }).catch(()=>{});
+  }
+  function movePhase(fromIdx, toIdx) {
+    setPhaseOrder(prev => {
+      const next = [...prev];
+      [next[fromIdx], next[toIdx]] = [next[toIdx], next[fromIdx]];
+      persistPhaseOrder(next);
+      return next;
+    });
+  }
+  function removePhase(phaseId) {
+    const phaseObj = phaseOrder.find(p => p.id === phaseId);
+    if (phaseOrder.length <= 1) return;
+    if (!window.confirm(`Remove ${phaseObj?.label || phaseId} phase?`)) return;
+    setPhaseOrder(prev => {
+      const next = prev.filter(p => p.id !== phaseId);
+      persistPhaseOrder(next);
+      if (callPhase === phaseId) {
+        setPhaseTimes(t => ({...t, [phaseId]: (t[phaseId]||0) + phaseSecs}));
+        setPhaseSecs(0);
+        setCallPhase(next[0].id);
+      }
+      return next;
+    });
+  }
+  function addPhase() {
+    const name = newPhaseName.trim();
+    if (!name) return;
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (phaseOrder.some(p => p.id === id)) { window.alert("A phase with this name already exists."); return; }
+    const usedColors = new Set(phaseOrder.map(p => p.color));
+    const color = COLOR_PALETTE.find(c => !usedColors.has(c)) || COLOR_PALETTE[phaseOrder.length % COLOR_PALETTE.length];
+    const newPhaseObj = { id, label: name, color, isDefault: false };
+    setPhaseOrder(prev => {
+      const next = [...prev, newPhaseObj];
+      persistPhaseOrder(next);
+      return next;
+    });
+    setPhaseSelections(prev => ({...prev, [id]: "1"}));
+    setPhaseTimes(prev => ({...prev, [id]: 0}));
+    setNewPhaseName("");
+    setShowAddPhase(false);
+  }
+
   function selectLead(lead) {
     setActive(lead);
     setPhoneMenuOpen(false);
     setLastDialedPhone("");
     setDiscoveryResponses({});
-    setCallPhase("opener");
-    setPhaseSecs(0);setPhaseTimes({opener:0,discovery:0,pitch:0,close:0});
+    setActiveBridgeBubble(null);
+    setActiveCloseBubble(null);
+    setActiveBranches({});
+    setAddBranchForm(null);
+    setCallPhase(phaseOrder[0].id);
+    setPhaseSecs(0);setPhaseTimes(Object.fromEntries(phaseOrder.map(p=>[p.id,0])));
     setCloseEmail(lead?.prospect_email||lead?.email||"");
     setCloseEmailStatus(null);
     const recs = getRecommendedOpeners(lead);
@@ -457,7 +712,9 @@ export default function HarmoniaOS() {
     setVariant(pick ? pick.openerId : avail[0] || "1");
     // Set phase selections — opener from recommendation, others default to first available
     const openerPick = pick ? pick.openerId : avail[0] || "1";
-    setPhaseSelections({opener:openerPick, discovery:avail[0]||"1", pitch:avail[0]||"1", close:avail[0]||"1"});
+    const newSelections = {};
+    phaseOrder.forEach((p, i) => { newSelections[p.id] = i === 0 ? openerPick : (avail[0] || "1"); });
+    setPhaseSelections(newSelections);
     // Load lead notes from localStorage
     try {
       const storedNotes = JSON.parse(localStorage.getItem(`harmonia-notes-${lead?.id}`) || "null");
@@ -1251,6 +1508,7 @@ export default function HarmoniaOS() {
                   {id:"script",     label:"Script"},
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
+                  {id:"roi",        label:"ROI Calc"},
                 ].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id)}
                     style={{padding:"10px 15px",border:"none",background:"transparent",
@@ -1588,55 +1846,128 @@ export default function HarmoniaOS() {
                       </div>
                     ) : (
                       <>
-                        {["opener","discovery","pitch","close"].map(phase => {
-                          const PHASE_COLORS = {opener:"#EF4444",discovery:"#F59E0B",pitch:"#3B82F6",close:"#10B981"};
-                          const phaseColor = PHASE_COLORS[phase];
-                          const isOpener = phase === "opener";
+                        {phaseOrder.map((phaseObj, idx) => {
+                          const phase = phaseObj.id;
+                          const phaseColor = phaseObj.color;
+                          const isOpener = idx === 0;
+                          const isCustomPhase = !phaseObj.isDefault;
+                          const isBridge = phase === "bridge";
 
-                          // Get available variants for this phase, filtering out removed + admin-disabled scripts
+                          // Get available variants for this phase
                           const icpScripts = scripts[active?.icp] || {};
-                          const REMOVED_VARIANTS = new Set(["7","8"]); // competitor scripts retired
+                          const REMOVED_VARIANTS = new Set(["7","8"]);
                           const options = [];
-                          Object.entries(icpScripts).forEach(([varId, script]) => {
-                            if (REMOVED_VARIANTS.has(varId)) return; // permanently removed
-                            if (disabledScripts.has(varId)) return; // admin-disabled
-                            const line = script.lines.find(l => l.type === phase);
-                            if (line) {
-                              options.push({ id: varId, name: script.name, tag: script.tag, text: line.text });
-                            }
-                          });
+                          if (!isCustomPhase) {
+                            Object.entries(icpScripts).forEach(([varId, script]) => {
+                              if (REMOVED_VARIANTS.has(varId)) return;
+                              if (disabledScripts.has(varId)) return;
+                              const line = script.lines.find(l => l.type === phase);
+                              if (line) {
+                                options.push({ id: varId, name: script.name, tag: script.tag, text: line.text });
+                              }
+                            });
+                          }
 
-                          if (options.length === 0) return null;
+                          // Discovery: populate options from branchData if available
+                          const isDiscoveryPhase = phase === "discovery";
+                          if (isDiscoveryPhase && Object.keys(branchData).length > 0) {
+                            options.length = 0; // clear script-based options
+                            Object.entries(branchData).forEach(([vid, nodes]) => {
+                              const root = nodes.find(n => n.depth === 0);
+                              const label = root?.variantLabel || root?.rootQuestion?.slice(0, 50) || `Variant ${vid}`;
+                              options.push({ id: vid, name: label, tag: "", text: "" });
+                            });
+                          }
+                          // Default phases with no scripts: skip (unless bridge/discovery with fallback). Custom phases always render.
+                          if (!isCustomPhase && options.length === 0 && !isBridge && !isDiscoveryPhase) return null;
+                          // Bridge fallback: if no sheet rows found, use hardcoded defaults
+                          if (isBridge && options.length === 0) {
+                            BRIDGE_VARIANTS.forEach(bv => {
+                              options.push({ id: bv.id, name: bv.name, tag: bv.tag, text: bv.text });
+                            });
+                          }
 
-                          const selectedVar = phaseSelections[phase] || options[0]?.id || "1";
+                          const selectedVar = isCustomPhase ? "custom" : (phaseSelections[phase] || options[0]?.id || "1");
                           const selectedOption = options.find(o => o.id === selectedVar) || options[0];
                           const masterText = selectedOption?.text || "";
-                          const scriptKey = `${phase}_${selectedVar}`;
+                          const scriptKey = isCustomPhase ? `${phase}_custom` : `${phase}_${selectedVar}`;
                           const customText = callerScripts[scriptKey];
                           const rawText = customText !== undefined && customText !== null ? customText : masterText;
-                          const isCustomized = customText !== undefined && customText !== null;
-                          // Render pipeline: raw → line breaks → interpolate placeholders
+                          const isCustomized = !isCustomPhase && customText !== undefined && customText !== null;
                           const placeholderCtx = buildPlaceholderContext(active, callerName);
                           const displayText = fillPlaceholdersPlain(formatScriptLines(rawText), placeholderCtx);
 
+                          // Bridge-specific: selectedOption doubles as bridgeVariant
+                          const bridgeVariant = isBridge ? selectedOption : null;
+                          const collapsed = collapsedPhases.has(phase);
+
                           return (
-                            <div key={phase} style={{borderLeft:`3px solid ${phaseColor}`,marginBottom:8,
-                              background:`${phaseColor}04`,borderRadius:"0 10px 10px 0",overflow:"hidden"}}>
-                              {/* Phase header with dropdown */}
+                            <div key={phase} data-phase-block={phase} style={{borderLeft:`3px solid ${collapsed?C.t3+"60":phaseColor}`,marginBottom:8,
+                              background:collapsed?"transparent":`${phaseColor}04`,borderRadius:"0 10px 10px 0",overflow:"visible",
+                              transition:"all 0.2s ease",position:"relative",opacity:collapsed?0.5:1}}>
+                              {/* Phase header */}
                               <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
                                 borderBottom:`1px solid ${phaseColor}15`}}>
-                                <span style={{fontSize:10,fontWeight:600,color:phaseColor,textTransform:"uppercase",
-                                  letterSpacing:"0.05em",minWidth:72}}>{phase}</span>
-                                <select value={selectedVar}
-                                  onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
-                                  style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
-                                    fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
-                                  {options.map(o => (
-                                    <option key={o.id} value={o.id}>
-                                      {o.id} — {o.name}{isOpener && recMap[o.id] ? " ★" : ""}
-                                    </option>
-                                  ))}
-                                </select>
+                                <div style={{display:"flex",flexDirection:"column",gap:1,marginRight:2}}>
+                                  <button disabled={idx===0} onClick={()=>movePhase(idx,idx-1)}
+                                    style={{background:"none",border:"none",padding:0,fontSize:11,lineHeight:1,
+                                      color:idx===0?C.t3+"50":C.t3,cursor:idx===0?"default":"pointer",
+                                      transition:"color 0.15s"}}
+                                    onMouseEnter={e=>{if(idx!==0)e.target.style.color=C.t1}}
+                                    onMouseLeave={e=>{e.target.style.color=idx===0?C.t3+"50":C.t3}}
+                                    title="Move up">▲</button>
+                                  <button disabled={idx===phaseOrder.length-1} onClick={()=>movePhase(idx,idx+1)}
+                                    style={{background:"none",border:"none",padding:0,fontSize:11,lineHeight:1,
+                                      color:idx===phaseOrder.length-1?C.t3+"50":C.t3,cursor:idx===phaseOrder.length-1?"default":"pointer",
+                                      transition:"color 0.15s"}}
+                                    onMouseEnter={e=>{if(idx!==phaseOrder.length-1)e.target.style.color=C.t1}}
+                                    onMouseLeave={e=>{e.target.style.color=idx===phaseOrder.length-1?C.t3+"50":C.t3}}
+                                    title="Move down">▼</button>
+                                </div>
+                                <span style={{fontSize:10,fontWeight:600,color:collapsed?C.t3:phaseColor,textTransform:"uppercase",
+                                  letterSpacing:"0.05em",minWidth:72}}>{phaseObj.label}</span>
+                                {/* On/off toggle switch */}
+                                <div onClick={()=>{
+                                  setCollapsedPhases(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(phase)) next.delete(phase); else next.add(phase);
+                                    try { localStorage.setItem("harmonia-collapsed-phases", JSON.stringify([...next])); } catch {}
+                                    return next;
+                                  });
+                                }}
+                                  style={{width:28,height:16,borderRadius:8,cursor:"pointer",position:"relative",flexShrink:0,
+                                    background:collapsed?C.t3+"40":phaseColor,transition:"background 0.2s ease"}}
+                                  title={collapsed?"Turn on":"Turn off"}>
+                                  <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",position:"absolute",top:2,
+                                    left:collapsed?2:14,transition:"left 0.2s ease",
+                                    boxShadow:"0 1px 2px rgba(0,0,0,.2)"}} />
+                                </div>
+                                {/* Bridge badge */}
+                                {!collapsed && isBridge && bridgeVariant?.badge && (
+                                  <span style={{fontSize:8,fontWeight:600,color:"#7c3aed",background:"#f5f0ff",
+                                    padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>{bridgeVariant.badge}</span>
+                                )}
+                                {/* Discovery branching badge */}
+                                {!collapsed && isDiscoveryPhase && Object.keys(branchData).length > 0 && (
+                                  <span style={{fontSize:8,fontWeight:600,color:"#B45309",background:"#FEF3C7",
+                                    padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>BRANCHING</span>
+                                )}
+                                {(!isCustomPhase || isBridge) && options.length > 0 && (
+                                  <select value={selectedVar}
+                                    onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
+                                    style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
+                                      fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
+                                    {options.map(o => (
+                                      <option key={o.id} value={o.id}>
+                                        {isBridge ? `${o.id} — ${o.name}${o.id==="1"?" \u2605":""}` :
+                                          `${o.id} — ${o.name}${isOpener && recMap[o.id] ? " \u2605" : ""}`}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+                                {isCustomPhase && !isBridge && (
+                                  <span style={{flex:1,fontSize:10,color:C.t3,fontStyle:"italic"}}>Custom phase</span>
+                                )}
                                 {isCustomized && (
                                   <button onClick={() => {
                                     if (window.confirm("This will erase your custom edits for this script. Reset?")) {
@@ -1666,49 +1997,409 @@ export default function HarmoniaOS() {
                                   </span>
                                 )}
                               </div>
-                              {/* Editable script text — display is interpolated, storage is raw template */}
-                              <textarea
-                                value={displayText}
-                                onChange={e => {
-                                  // Reverse interpolation: replace known values back to placeholders
+                              {!collapsed && (() => {
+                                const isDiscovery = phase === "discovery";
+                                const isClose = phase === "close";
+                                const scriptOnChange = e => {
                                   let edited = e.target.value;
                                   const ctx = placeholderCtx;
-                                  // Reverse-map: replace interpolated values back to {placeholder}
-                                  // Only replace exact matches to avoid false positives
                                   if (ctx.owner) edited = edited.split(ctx.owner).join("{owner}");
                                   if (ctx.caller) edited = edited.split(ctx.caller).join("{caller}");
                                   if (ctx.biz) edited = edited.split(ctx.biz).join("{biz}");
                                   if (ctx.city) edited = edited.split(ctx.city).join("{city}");
                                   if (ctx.leak) edited = edited.split(ctx.leak).join("{leak}");
                                   if (ctx.chairs && ctx.chairs !== "your") edited = edited.split(ctx.chairs).join("{chairs}");
-                                  // Convert newlines back to // for storage
                                   const rawVal = unformatScriptLines(edited);
                                   setCallerScripts(prev => {
                                     const next = {...prev, [scriptKey]: rawVal};
                                     try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
                                     return next;
                                   });
-                                  // Debounced save to webhook
                                   if (saveTimerRefs.current[phase]) clearTimeout(saveTimerRefs.current[phase]);
                                   setScriptSaveStatus(prev => ({...prev, [phase]: "saving"}));
                                   saveTimerRefs.current[phase] = setTimeout(() => {
                                     fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
                                       body:JSON.stringify({type:'caller_script_update',caller_name:callerName,
-                                        phase,variant_id:selectedVar,custom_script_text:rawVal})
+                                        phase,variant_id:isCustomPhase?"custom":selectedVar,custom_script_text:rawVal})
                                     }).catch(()=>{});
                                     setScriptSaveStatus(prev => ({...prev, [phase]: "saved"}));
                                     setTimeout(() => setScriptSaveStatus(prev => ({...prev, [phase]: null})), 2000);
                                   }, 2000);
-                                }}
-                                style={{width:"100%",border:"none",padding:"12px 16px",fontSize:13,
-                                  color:C.t1,lineHeight:1.75,background:"transparent",outline:"none",
-                                  resize:"vertical",minHeight:80,fontFamily:F,
-                                  fontStyle:phase==="opener"?"italic":"normal"}}
-                                placeholder={`No ${phase} script for this variant`}
-                              />
+                                };
+                                const scriptTextarea = (
+                                  <textarea
+                                    value={displayText}
+                                    onChange={scriptOnChange}
+                                    style={{width:"100%",border:"none",padding:"12px 16px",fontSize:13,
+                                      color:C.t1,lineHeight:1.75,background:"transparent",outline:"none",
+                                      resize:"none",fontFamily:F,
+                                      fontStyle:idx===0?"italic":"normal"}}
+                                    placeholder={isCustomPhase?`Type your ${phaseObj.label} script here...`:`No ${phase} script for this variant`}
+                                    data-phase-textarea={phase}
+                                  />
+                                );
+                                const resizeHandles = (
+                                  <>
+                                  <div style={{display:"flex",justifyContent:"center",cursor:"ns-resize",padding:"3px 0",userSelect:"none"}}
+                                    onMouseDown={e=>{
+                                      e.preventDefault();
+                                      const ta=document.querySelector(`[data-phase-textarea="${phase}"]`);
+                                      if(!ta)return;const startY=e.clientY;const startH=ta.offsetHeight;
+                                      const onMove=ev=>{ta.style.height=Math.max(0,startH+(ev.clientY-startY))+"px";};
+                                      const onUp=()=>{document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);};
+                                      document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+                                    }}>
+                                    <div style={{width:40,height:4,borderRadius:2,background:C.t3+"40",transition:"background 0.15s"}}
+                                      onMouseEnter={e=>{e.target.style.background=C.t3+"80"}}
+                                      onMouseLeave={e=>{e.target.style.background=C.t3+"40"}} />
+                                  </div>
+                                  <div style={{position:"absolute",right:-5,top:"50%",transform:"translateY(-50%)",
+                                    width:10,height:36,cursor:"ew-resize",display:"flex",alignItems:"center",justifyContent:"center",userSelect:"none",zIndex:1}}
+                                    onMouseDown={e=>{
+                                      e.preventDefault();
+                                      const box=document.querySelector(`[data-phase-block="${phase}"]`);
+                                      if(!box)return;const startX=e.clientX;const startW=box.offsetWidth;
+                                      const onMove=ev=>{box.style.width=Math.max(0,startW+(ev.clientX-startX))+"px";};
+                                      const onUp=()=>{document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);};
+                                      document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+                                    }}>
+                                    <div style={{width:4,height:28,borderRadius:2,background:C.t3+"40",transition:"background 0.15s"}}
+                                      onMouseEnter={e=>{e.target.style.background=C.t3+"80"}}
+                                      onMouseLeave={e=>{e.target.style.background=C.t3+"40"}} />
+                                  </div>
+                                  </>
+                                );
+
+                                /* ── BRIDGE: bubbles gate the script ── */
+                                if (isBridge && bridgeVariant) {
+                                  const activeBubbles = bubbleData.bridge.length > 0 ? bubbleData.bridge : bridgeBubbles;
+                                  return (<>
+                                    <div style={{padding:"8px 16px 12px"}}>
+                                      <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                                        letterSpacing:".06em",marginBottom:8}}>After opener, they say...</div>
+                                      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeBridgeBubble!==null?10:0}}>
+                                        {activeBubbles.map((obj,oi) => {
+                                          const isActive = activeBridgeBubble === oi;
+                                          const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
+                                          return (
+                                            <button key={oi} onClick={()=>setActiveBridgeBubble(isActive?null:oi)}
+                                              style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,
+                                                cursor:"pointer",transition:"all 0.15s",fontFamily:F,
+                                                border:`1.5px solid ${isActive?s.border:"#e5e5e5"}`,
+                                                background:isActive?s.bg:"#fff",
+                                                color:isActive?s.text:"#555",minHeight:36}}>
+                                              {obj.label}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                      {activeBridgeBubble !== null && activeBubbles[activeBridgeBubble] && (() => {
+                                        const obj = activeBubbles[activeBridgeBubble];
+                                        const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
+                                        const isGreen = obj.type === "green";
+                                        return (
+                                          <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                            padding:"12px 14px",transition:"all 0.2s ease"}}>
+                                            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                              <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
+                                              <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",
+                                                letterSpacing:".04em"}}>{s.label}</span>
+                                            </div>
+                                            {isGreen ? (
+                                              <>
+                                                <textarea
+                                                  value={displayText}
+                                                  onChange={scriptOnChange}
+                                                  style={{width:"100%",border:"none",padding:"4px 0",fontSize:13,
+                                                    color:s.text,lineHeight:1.75,background:"transparent",outline:"none",
+                                                    resize:"none",fontFamily:F}}
+                                                  placeholder="Bridge script..."
+                                                  data-phase-textarea={phase}
+                                                />
+                                                <div style={{fontSize:10,fontWeight:600,color:"#16a34a",marginTop:6,
+                                                  textTransform:"uppercase",letterSpacing:".04em"}}>
+                                                  Move to DISCOVERY
+                                                </div>
+                                              </>
+                                            ) : (
+                                              <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                                {fillPlaceholdersPlain(obj.response, placeholderCtx)}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                    {resizeHandles}
+                                  </>);
+                                }
+
+                                /* ── DISCOVERY: branching tree ── */
+                                if (isDiscovery) {
+                                  const variantBranches = branchData[selectedVar] || [];
+                                  if (variantBranches.length > 0) {
+                                    const tree = buildBranchTree(variantBranches);
+                                    const rootNode = tree.find(n => n.depth === 0);
+                                    const rootQuestion = rootNode?.rootQuestion || "";
+                                    const depth1 = rootNode ? rootNode.children : tree.filter(n => n.depth === 1);
+
+                                    const renderBranchLevel = (nodes, depth) => {
+                                      if (!nodes || nodes.length === 0) return null;
+                                      const activeId = activeBranches[depth];
+                                      const activeNode = nodes.find(n => n.branchId === activeId);
+                                      return (
+                                        <div>
+                                          {/* Connector line */}
+                                          <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
+                                            <div style={{width:2,height:20,background:activeNode?
+                                              (BUBBLE_STYLES[activeNode.type]||BUBBLE_STYLES.yellow).border:C.border}} />
+                                          </div>
+                                          {/* Label */}
+                                          <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                                            letterSpacing:".06em",textAlign:"center",marginBottom:8}}>
+                                            What do they say?
+                                          </div>
+                                          {/* Branch cards */}
+                                          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:8}}>
+                                            {nodes.map(node => {
+                                              const isActive = activeId === node.branchId;
+                                              const s = BUBBLE_STYLES[node.type] || BUBBLE_STYLES.yellow;
+                                              return (
+                                                <button key={node.branchId} onClick={() => {
+                                                  setActiveBranches(prev => {
+                                                    const next = {};
+                                                    Object.keys(prev).forEach(d => { if (parseInt(d) < depth) next[d] = prev[d]; });
+                                                    if (!isActive) next[depth] = node.branchId;
+                                                    return next;
+                                                  });
+                                                }}
+                                                  style={{padding:"10px 16px",borderRadius:10,fontSize:12,fontWeight:500,
+                                                    cursor:"pointer",transition:"all 0.15s",fontFamily:F,
+                                                    border:`1.5px solid ${isActive?s.border:"#e5e5e5"}`,
+                                                    background:isActive?s.bg:"#fff",color:isActive?s.text:"#555",
+                                                    minWidth:100,textAlign:"left",minHeight:44}}>
+                                                  {node.label}
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                          {/* Active branch response */}
+                                          {activeNode && (
+                                            <div>
+                                              {/* Colored connector */}
+                                              <div style={{display:"flex",justifyContent:"center",padding:"0 0 4px"}}>
+                                                <div style={{width:2,height:16,
+                                                  background:(BUBBLE_STYLES[activeNode.type]||BUBBLE_STYLES.yellow).border}} />
+                                              </div>
+                                              {(() => {
+                                                const s = BUBBLE_STYLES[activeNode.type] || BUBBLE_STYLES.yellow;
+                                                return (
+                                                  <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                                    padding:"12px 14px"}}>
+                                                    <div style={{fontSize:9,fontWeight:600,color:s.text,textTransform:"uppercase",
+                                                      letterSpacing:".06em",marginBottom:6}}>You say</div>
+                                                    <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line",
+                                                      fontStyle:"italic"}}>
+                                                      {fillPlaceholdersPlain(activeNode.response, placeholderCtx)}
+                                                    </div>
+                                                    {/* Terminal: show next phase */}
+                                                    {activeNode.children.length === 0 && activeNode.nextPhase && (
+                                                      <div style={{fontSize:10,fontWeight:600,color:"#16a34a",marginTop:8,
+                                                        textTransform:"uppercase",letterSpacing:".04em"}}>
+                                                        Move to {activeNode.nextPhase.toUpperCase()}
+                                                      </div>
+                                                    )}
+                                                    {/* Admin: add branch on terminal nodes */}
+                                                    {activeNode.children.length === 0 && callerName === "Javi" && (
+                                                      <div style={{marginTop:10}}>
+                                                        {addBranchForm && addBranchForm.parentId === activeNode.branchId ? (
+                                                          <div style={{border:`1px dashed ${C.border}`,borderRadius:8,padding:10,
+                                                            background:"#fff"}}>
+                                                            <div style={{fontSize:10,fontWeight:600,color:C.t2,marginBottom:8}}>
+                                                              After you say this, they might say...
+                                                            </div>
+                                                            <input value={newBranchLabel} onChange={e=>setNewBranchLabel(e.target.value)}
+                                                              placeholder="Branch label (what they say)"
+                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                                padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
+                                                                background:"#fff",color:C.t1,outline:"none"}} />
+                                                            <select value={newBranchType} onChange={e=>setNewBranchType(e.target.value)}
+                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                                padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
+                                                                background:"#fff",color:C.t1,outline:"none"}}>
+                                                              <option value="green">Green (positive)</option>
+                                                              <option value="yellow">Yellow (neutral)</option>
+                                                              <option value="red">Red (negative)</option>
+                                                            </select>
+                                                            <textarea value={newBranchResponse} onChange={e=>setNewBranchResponse(e.target.value)}
+                                                              placeholder="Response script (what you say back)"
+                                                              rows={3}
+                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                                padding:"6px 10px",fontSize:12,marginBottom:8,fontFamily:F,
+                                                                background:"#fff",color:C.t1,outline:"none",resize:"vertical"}} />
+                                                            <div style={{display:"flex",gap:8}}>
+                                                              <button onClick={async () => {
+                                                                if (!newBranchLabel.trim() || !newBranchResponse.trim()) return;
+                                                                const newId = `${addBranchForm.parentId}-${Date.now()}`;
+                                                                try {
+                                                                  await fetch(WEBHOOK_URL, {
+                                                                    method:'POST',headers:{'Content-Type':'application/json'},
+                                                                    body:JSON.stringify({
+                                                                      type:'add_branch', phase:'discovery',
+                                                                      variant_id: selectedVar,
+                                                                      branch_id: newId, parent_branch_id: addBranchForm.parentId,
+                                                                      depth: addBranchForm.depth, branch_label: newBranchLabel.trim(),
+                                                                      branch_type: newBranchType, branch_response: newBranchResponse.trim(),
+                                                                      next_phase: 'PITCH',
+                                                                    })
+                                                                  });
+                                                                  const fresh = await fetchSheet("branches").catch(()=>[]);
+                                                                  setBranchData(parseBranches(fresh));
+                                                                } catch(err) { console.error("Failed to add branch:", err); }
+                                                                setAddBranchForm(null); setNewBranchLabel(""); setNewBranchType("green"); setNewBranchResponse("");
+                                                              }}
+                                                                style={{padding:"5px 14px",borderRadius:6,border:"none",
+                                                                  background:C.accent,color:"#fff",fontSize:11,fontWeight:600,
+                                                                  cursor:"pointer"}}>Save</button>
+                                                              <button onClick={()=>{setAddBranchForm(null);setNewBranchLabel("");setNewBranchType("green");setNewBranchResponse("");}}
+                                                                style={{padding:"5px 14px",borderRadius:6,border:`1px solid ${C.border}`,
+                                                                  background:"#fff",color:C.t2,fontSize:11,cursor:"pointer"}}>Cancel</button>
+                                                            </div>
+                                                          </div>
+                                                        ) : (
+                                                          <button onClick={()=>setAddBranchForm({parentId:activeNode.branchId,depth:depth+1})}
+                                                            style={{padding:"5px 12px",borderRadius:6,border:`1px dashed ${C.border}`,
+                                                              background:"transparent",color:C.t3,fontSize:10,cursor:"pointer",
+                                                              fontFamily:F}}>
+                                                            + Add branch below
+                                                          </button>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                    {/* Recursive children */}
+                                                    {activeNode.children.length > 0 && renderBranchLevel(activeNode.children, depth + 1)}
+                                                  </div>
+                                                );
+                                              })()}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    };
+
+                                    return (<>
+                                      <div style={{padding:"8px 16px 12px"}}>
+                                        {/* Root question box */}
+                                        {rootQuestion && (
+                                          <div style={{background:"#FEF3C7",border:"1px solid rgba(245,158,11,0.3)",
+                                            borderRadius:10,padding:"10px 14px",marginBottom:4}}>
+                                            <div style={{fontSize:9,fontWeight:600,color:"#B45309",textTransform:"uppercase",
+                                              letterSpacing:".06em",marginBottom:4}}>You just asked</div>
+                                            <div style={{fontSize:13,color:"#92400E",lineHeight:1.6}}>
+                                              {fillPlaceholdersPlain(rootQuestion, placeholderCtx)}
+                                            </div>
+                                          </div>
+                                        )}
+                                        {renderBranchLevel(depth1, 1)}
+                                      </div>
+                                      {resizeHandles}
+                                    </>);
+                                  }
+                                  // Fallback: no branch data, show plain textarea
+                                  return (<>
+                                    {scriptTextarea}
+                                    {resizeHandles}
+                                  </>);
+                                }
+
+                                /* ── CLOSE: textarea + bubbles ── */
+                                if (isClose) {
+                                  const closeBubbles = bubbleData.close.length > 0 ? bubbleData.close : CLOSE_BUBBLES_FALLBACK;
+                                  return (<>
+                                    {scriptTextarea}
+                                    <div style={{padding:"0 16px 12px"}}>
+                                      <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                                        letterSpacing:".06em",marginBottom:8}}>They respond...</div>
+                                      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeCloseBubble!==null?10:0}}>
+                                        {closeBubbles.map((obj,oi) => {
+                                          const isActive = activeCloseBubble === oi;
+                                          const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
+                                          return (
+                                            <button key={oi} onClick={()=>setActiveCloseBubble(isActive?null:oi)}
+                                              style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,
+                                                cursor:"pointer",transition:"all 0.15s",fontFamily:F,
+                                                border:`1.5px solid ${isActive?s.border:"#e5e5e5"}`,
+                                                background:isActive?s.bg:"#fff",
+                                                color:isActive?s.text:"#555",minHeight:36}}>
+                                              {obj.label}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                      {activeCloseBubble !== null && closeBubbles[activeCloseBubble] && (() => {
+                                        const obj = closeBubbles[activeCloseBubble];
+                                        const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
+                                        return (
+                                          <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                            padding:"12px 14px",transition:"all 0.2s ease"}}>
+                                            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                              <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
+                                              <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",
+                                                letterSpacing:".04em"}}>{s.label}</span>
+                                            </div>
+                                            <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                              {fillPlaceholdersPlain(obj.response, placeholderCtx)}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                    {resizeHandles}
+                                  </>);
+                                }
+
+                                /* ── DEFAULT: opener, pitch, custom phases ── */
+                                return (<>
+                                  {scriptTextarea}
+                                  {resizeHandles}
+                                </>);
+                              })()}
                             </div>
                           );
                         })}
+                        {/* Add Phase button + inline form */}
+                        {showAddPhase ? (
+                          <div style={{border:`1px dashed ${C.border}`,borderRadius:10,padding:12,marginTop:4}}>
+                            <div style={{fontSize:11,fontWeight:600,color:C.t2,marginBottom:8}}>Add New Phase</div>
+                            <input value={newPhaseName} onChange={e=>setNewPhaseName(e.target.value)}
+                              placeholder="Phase name (e.g. Rebuttal, Follow Up)"
+                              onKeyDown={e=>{if(e.key==="Enter")addPhase();if(e.key==="Escape"){setShowAddPhase(false);setNewPhaseName("");}}}
+                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",
+                                fontSize:12,background:C.bg,color:C.t1,outline:"none",marginBottom:8,fontFamily:F}}
+                              autoFocus />
+                            <div style={{display:"flex",gap:8}}>
+                              <button onClick={addPhase}
+                                style={{padding:"4px 14px",borderRadius:6,border:"none",
+                                  background:C.accent,color:"#fff",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                                Add
+                              </button>
+                              <button onClick={()=>{setShowAddPhase(false);setNewPhaseName("");}}
+                                style={{padding:"4px 14px",borderRadius:6,border:`1px solid ${C.border}`,
+                                  background:C.bg,color:C.t3,fontSize:11,cursor:"pointer"}}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button onClick={()=>setShowAddPhase(true)}
+                            style={{width:"100%",padding:"8px 0",borderRadius:8,border:`1px dashed ${C.border}`,
+                              background:"transparent",color:C.t3,fontSize:11,cursor:"pointer",marginTop:4,
+                              transition:"all 0.15s"}}
+                            onMouseEnter={e=>{e.target.style.borderColor=C.accent;e.target.style.color=C.accent}}
+                            onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.t3}}>
+                            + Add Phase
+                          </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -1863,6 +2554,10 @@ export default function HarmoniaOS() {
                       </div>
                     ))}
                   </div>
+                )}
+
+                {tab==="roi"&&(
+                  <MissedCallCalculator embedded />
                 )}
 
               </div>

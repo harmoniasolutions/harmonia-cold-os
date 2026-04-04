@@ -58,6 +58,34 @@ export const SHEET_CONFIG = {
       }
     },
 
+    BUBBLES: {
+      name: 'bubbles',
+      fields: {
+        phase:       { sheetColumn: 'phase',       column: 'A' },
+        label:       { sheetColumn: 'label',       column: 'B' },
+        type:        { sheetColumn: 'type',        column: 'C' },
+        show_script: { sheetColumn: 'show_script', column: 'D' },
+        response:    { sheetColumn: 'response',    column: 'E' },
+      }
+    },
+
+    BRANCHES: {
+      name: 'branches',
+      fields: {
+        phase:             { sheetColumn: 'phase',             column: 'A' },
+        variant_id:        { sheetColumn: 'variant_id',        column: 'B' },
+        branch_id:         { sheetColumn: 'branch_id',         column: 'C' },
+        parent_branch_id:  { sheetColumn: 'parent_branch_id',  column: 'D' },
+        depth:             { sheetColumn: 'depth',             column: 'E' },
+        root_question:     { sheetColumn: 'root_question',     column: 'F' },
+        branch_label:      { sheetColumn: 'branch_label',      column: 'G' },
+        branch_type:       { sheetColumn: 'branch_type',       column: 'H' },
+        branch_response:   { sheetColumn: 'branch_response',   column: 'I' },
+        next_phase:        { sheetColumn: 'next_phase',        column: 'J' },
+        variant_label:     { sheetColumn: 'variant_label',     column: 'K' },
+      }
+    },
+
     SCRIPT_PERFORMANCE: { name: 'Script_Performance', fields: {} },
     SCRIPT_RANKINGS:    { name: 'Script_Rankings',    fields: {} },
   }
