@@ -59,75 +59,11 @@ const DEFAULT_PHASES = [
 const COLOR_PALETTE = ["#EF4444","#F59E0B","#3B82F6","#10B981","#8B5CF6","#EC4899","#14B8A6","#F97316","#6366F1","#84CC16"];
 
 // ── Bridge phase data ──
-const BRIDGE_VARIANTS = [
-  {
-    id: "1", name: "One-Line Frame", tag: "One-Line Frame",
-    text: `I work with salons and barbershops in the {city} area on their phone systems — quick question...`,
-    coaching: `Say this in ONE breath. Do NOT elaborate, do NOT mention AI or SARA. The only goal is to give them enough context that your Discovery questions feel natural. Then shut up and let them answer.`,
-    badge: "ONE LINE — NO PITCH",
-  },
-  {
-    id: "2", name: "Straight Line (Belfort)", tag: "Straight Line",
-    text: `Appreciate that, {owner}. So here's why I'm calling — I built an AI receptionist specifically for salons and barbershops. You know those calls that come in while you're mid-fade or elbow-deep in color? The ones that go to voicemail and never call back? That's money walking out your door every single week. My system picks up every call, books the appointment, and sounds like a real person — not some robot menu nobody wants to deal with. Quick question — how many calls a day would you say you're missing or sending to voicemail?`,
-    coaching: `This is the Belfort approach — you're telling them exactly what you do and WHY before asking questions. High energy, high conviction. The quick question at the end transitions directly into Discovery. Use this when the prospect sounds engaged and you have momentum from the Opener.`,
-  },
-  {
-    id: "3", name: "Hormozi Offer Frame", tag: "Hormozi Offer",
-    text: `I help salons and barbershops stop losing money to missed calls — and I can prove it works in 2 weeks for free. Quick question before I explain...`,
-    coaching: `Lead with the OFFER, not the product. Stop losing money + prove it for free = irresistible frame. You haven't explained HOW yet. That's the point. The offer is so good they want to hear the Discovery questions. Shortest bridge, highest curiosity.`,
-  },
-];
-
-const BRIDGE_OBJECTIONS = [
-  { label:"Go ahead...", type:"green", showScript:true, response:"" },
-  { label:"What's this about?", type:"green", showScript:true, response:"" },
-  { label:"I'm busy right now", type:"red", showScript:false,
-    response:`Totally get it — you're working. I need literally 30 seconds. If it's not relevant I'll hang up myself. Here's why I'm calling — I built an AI receptionist specifically for salons and barbershops that picks up every call, books appointments, and sounds like a real person. Quick question — how many calls a day would you say you're missing or sending to voicemail?` },
-  { label:"Not interested", type:"red", showScript:false,
-    response:`I hear you — and honestly most people say that on cold calls, I respect it. But quick question before I go — are you losing any calls to voicemail right now? Because if you are, I can show you how to stop that for free. If not, I'll never call again.` },
-];
-
+// BUBBLE_STYLES — rendering config only, not content data
 const BUBBLE_STYLES = {
   green:  { bg:"#f0fdf4", border:"#86efac", text:"#166534", dot:"#22c55e", label:"They're open — deliver this" },
   yellow: { bg:"#fefce8", border:"#fde047", text:"#854d0e", dot:"#eab308", label:"Pivot — redirect to Discovery" },
   red:    { bg:"#fef2f2", border:"#fca5a5", text:"#991b1b", dot:"#ef4444", label:"Handle — reframe and redirect" },
-};
-
-const CLOSE_BUBBLES_FALLBACK = [
-  { label:"They say yes / pick a time", type:"green",
-    response:`Perfect — I'll send you a calendar invite right now. It's a quick Zoom, I'll screen-share the whole setup. You're going to love this, {owner}. Talk soon.` },
-  { label:"They hesitate", type:"yellow",
-    response:`{owner}, let me be real with you — I'm not calling random businesses. I called YOU because you're clearly running a serious operation. The shops that win in this game aren't the ones with the best cuts — everybody's good. It's the ones that never let a client slip through the cracks. That's the edge. All I need is 15 minutes to show you how it works. What's better for you, tomorrow afternoon or Thursday morning?` },
-  { label:"Send me info", type:"yellow",
-    response:`I could send you a PDF, but honestly? You'll look at it for three seconds between clients and forget about it. That's not me being disrespectful, that's just how it goes — you're busy, I get it. Give me 10 minutes on a quick call, I'll screen-share SARA actually handling a booking in real time. You'll know in 10 minutes if this is for you. I've got a slot at [time] — can you do that?` },
-  { label:"Talk to my partner first", type:"yellow",
-    response:`Totally get it — would they be available to jump on the demo too? That way you both see it at the same time and can make a decision together. What time works for both of you?` },
-  { label:"Call me back another time", type:"red",
-    response:`I will — but honestly, we'll just have the same conversation. Let's just lock in 15 minutes and I'll prove it's worth your time. If it's not, you've lost 15 minutes. If it is, you stop losing money this month. What's better, mornings or afternoons?` },
-  { label:"Hard no", type:"red",
-    response:`Respect that completely. If anything changes and you get tired of calls going to voicemail, you've got my number. Have a great rest of your day, {owner}.` },
-];
-
-// ── Discovery branch fallback data (used when no branches sheet tab exists) ──
-const DISCOVERY_BRANCHES_FALLBACK = {
-  "1": [
-    { branchId:"ROOT", parentId:null, depth:0, rootQuestion:`Quick question — how many calls a day would you say you're missing or sending to voicemail?`, label:"", type:"", response:"", nextPhase:"", variantLabel:"Belfort Direct" },
-    { branchId:"1A", parentId:"ROOT", depth:1, rootQuestion:"", label:"They give a number", type:"green",
-      response:`Okay so let's do quick math — even if it's [X] calls a week, and even HALF of those are a $40-50 service, you're bleeding $[math] to a grand a month in lost revenue. Not because you're bad at what you do — you're clearly killing it — but because you physically can't answer the phone with a client in your chair. That's not a you problem, that's a physics problem. And I solve physics problems.`, nextPhase:"PITCH" },
-    { branchId:"1B", parentId:"ROOT", depth:1, rootQuestion:"", label:"I don't know", type:"yellow",
-      response:`That's actually the scariest answer, because it means you don't even know how much you're losing. Industry data says the average salon misses 30-40% of inbound calls. If you're doing any kind of volume, that's thousands a month just evaporating. And you'd never even know it because those people just book somewhere else.`, nextPhase:"PITCH" },
-    { branchId:"1C", parentId:"ROOT", depth:1, rootQuestion:"", label:"Not many / We're fine", type:"red",
-      response:`That's what most shops think — and I'm not saying you're wrong. But here's the thing: you only know about the calls you DO answer. The ones that ring 4 times and hang up? They don't leave a voicemail. They just Google the next spot. Industry average is 30-40% of calls missed. Even if you're better than average, at a $50 ticket that's hundreds a month you'd never even know about.`, nextPhase:"PITCH" },
-  ],
-  "2": [
-    { branchId:"ROOT", parentId:null, depth:0, rootQuestion:`Saturday morning, every chair is full, phone's ringing, you're mid-color or mid-fade... what happens to that call?`, label:"", type:"", response:"", nextPhase:"", variantLabel:"Scenario Paint" },
-    { branchId:"2A", parentId:"ROOT", depth:1, rootQuestion:"", label:"It goes to voicemail / We miss it", type:"green",
-      response:`Right — and that person who called, do you think they're sitting there waiting to call back, or are they just Googling the next spot and booking there? Here's what's wild — a brand new client calling for the first time has zero loyalty. If nobody picks up, you lost them forever AND the five to ten grand they would've spent with you over the next few years.`, nextPhase:"PITCH" },
-    { branchId:"2B", parentId:"ROOT", depth:1, rootQuestion:"", label:"Someone tries to grab it", type:"yellow",
-      response:`So someone's stepping away from a client to answer the phone — which means either the caller gets a rushed conversation or the client in the chair feels neglected. Either way somebody's getting a bad experience. What if you didn't have to choose?`, nextPhase:"PITCH" },
-    { branchId:"2C", parentId:"ROOT", depth:1, rootQuestion:"", label:"We don't miss calls", type:"red",
-      response:`What about after hours — 7, 8pm, someone's planning their week and wants to book for tomorrow morning. Where does that call go right now? Those people aren't leaving voicemails. They're just booking somewhere else.`, nextPhase:"PITCH" },
-  ],
 };
 
 const OUTCOMES = {
@@ -308,12 +244,7 @@ function parseObjections(rows) {
   return out;
 }
 
-// Extract bridge_bubble rows from Scripts sheet: name=label, tag=color(green/yellow/red), text=response
-function parseBridgeBubblesFromScripts(rows) {
-  return rows.filter(r => r.type === "bridge_bubble" && r.name && r.text).map(r => ({
-    label: r.name, type: r.tag || "yellow", response: r.text,
-  }));
-}
+
 
 // Unified parser for "bubbles & branches" tab (same columns as Scripts: icp, variant, name, tag, type, text)
 // type values:
@@ -416,7 +347,7 @@ export default function HarmoniaOS() {
   const [leads,    setLeads]    = useState([]);
   const [scripts,  setScripts]  = useState({});
   const [objections,setObjections]= useState({});
-  const [bridgeBubbles, setBridgeBubbles] = useState(BRIDGE_OBJECTIONS);
+  const [bridgeBubbles, setBridgeBubbles] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [loadError,setLoadError]= useState(null);
 
@@ -552,12 +483,10 @@ export default function HarmoniaOS() {
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
         setObjections(parseObjections(objectionsRaw));
-        // Parse bubbles, branches, and bridge bubbles all from Scripts tab
+        // Parse bubbles and branches from Scripts tab
         const parsed = parseBubblesAndBranches(scriptsRaw);
         if (parsed.bubbles.bridge.length > 0 || parsed.bubbles.close.length > 0) setBubbleData(parsed.bubbles);
         if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
-        const parsedBridgeBubbles = parseBridgeBubblesFromScripts(scriptsRaw);
-        if (parsedBridgeBubbles.length > 0) setBridgeBubbles(parsedBridgeBubbles);
         if (parsedLeads.length > 0) {
           setActive(parsedLeads[0]);
           const recs = getRecommendedOpeners(parsedLeads[0]);
@@ -1878,14 +1807,8 @@ export default function HarmoniaOS() {
                               options.push({ id: vid, name: label, tag: "", text: "" });
                             });
                           }
-                          // Default phases with no scripts: skip (unless bridge/discovery with fallback). Custom phases always render.
-                          if (!isCustomPhase && options.length === 0 && !isBridge && !isDiscoveryPhase) return null;
-                          // Bridge fallback: if no sheet rows found, use hardcoded defaults
-                          if (isBridge && options.length === 0) {
-                            BRIDGE_VARIANTS.forEach(bv => {
-                              options.push({ id: bv.id, name: bv.name, tag: bv.tag, text: bv.text });
-                            });
-                          }
+                          // Default phases with no scripts in sheet: skip. Custom phases always render.
+                          if (!isCustomPhase && options.length === 0) return null;
 
                           const selectedVar = isCustomPhase ? "custom" : (phaseSelections[phase] || options[0]?.id || "1");
                           const selectedOption = options.find(o => o.id === selectedVar) || options[0];
@@ -2071,8 +1994,12 @@ export default function HarmoniaOS() {
                                 );
 
                                 /* ── BRIDGE: bubbles gate the script ── */
-                                if (isBridge && bridgeVariant) {
+                                if (isBridge) {
                                   const activeBubbles = bubbleData.bridge.length > 0 ? bubbleData.bridge : bridgeBubbles;
+                                  if (activeBubbles.length === 0) {
+                                    // No bubble data in sheet — render plain textarea
+                                    return (<>{scriptTextarea}{resizeHandles}</>);
+                                  }
                                   return (<>
                                     <div style={{padding:"8px 16px 12px"}}>
                                       <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
@@ -2314,7 +2241,10 @@ export default function HarmoniaOS() {
 
                                 /* ── CLOSE: textarea + bubbles ── */
                                 if (isClose) {
-                                  const closeBubbles = bubbleData.close.length > 0 ? bubbleData.close : CLOSE_BUBBLES_FALLBACK;
+                                  const closeBubbles = bubbleData.close;
+                                  if (closeBubbles.length === 0) {
+                                    return (<>{scriptTextarea}{resizeHandles}</>);
+                                  }
                                   return (<>
                                     {scriptTextarea}
                                     <div style={{padding:"0 16px 12px"}}>
