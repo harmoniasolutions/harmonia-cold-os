@@ -472,41 +472,72 @@ export default function HarmoniaOS() {
   // Call history from Script_Performance tab — shared across all callers
   const [callHistory, setCallHistory] = useState({}); // { leadId: [{caller, outcome, duration, variant, timestamp, notes, spoke_with}, ...] }
 
+  // Clean broken formula values (#ERROR!, #NAME?, #REF!) and strip leading = from formula cells
+  function clean(v) {
+    if (!v || typeof v !== "string") return v || "";
+    if (v.startsWith("#") && (v.includes("ERROR") || v.includes("NAME") || v.includes("REF") || v.includes("VALUE"))) return "";
+    if (v.startsWith("=")) return v.slice(1);
+    return v;
+  }
+
+  // Parse a Script_Performance row — handles both sheet headers ("Lead ID") and webhook keys ("lead_id")
+  function parsePerfRow(r) {
+    const lid       = clean(r["Lead ID"] || r.lead_id || r.id || "");
+    const caller    = clean(r["Caller Name"] || r.caller_name || r.caller || "");
+    const outcome   = clean(r["Disposition"] || r.disposition || r.outcome || "");
+    const duration  = parseInt(r["Call Duration (Sec)"] || r["Total Time (Sec)"] || r.call_duration || r.duration) || 0;
+    const variant   = clean(r["Script Used"] || r.script_used || r.variant || "");
+    const timestamp = clean(r["Timestamp"] || r.call_timestamp || r.timestamp || "");
+    const notes     = clean(r["Notes"] || r.notes || "");
+    const spokeW    = clean(r["Spoke With"] || r.spoke_with || "");
+    const biz       = clean(r["Business Name"] || r.biz || "");
+    const gatekeeper= clean(r["Gatekeeper Name"] || r.gatekeeper_name || "");
+    return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper };
+  }
+
+  // Re-fetch Script_Performance and rebuild call history map
+  async function refreshCallHistory() {
+    try {
+      const perfRaw = await fetchSheet("Script_Performance");
+      const histMap = {};
+      perfRaw.forEach(r => {
+        const p = parsePerfRow(r);
+        if (!p.lid || !p.lid.trim()) return;
+        if (!histMap[p.lid]) histMap[p.lid] = [];
+        histMap[p.lid].push({
+          caller:     p.caller,
+          outcome:    p.outcome,
+          duration:   p.duration,
+          variant:    p.variant,
+          timestamp:  p.timestamp,
+          notes:      p.notes,
+          spoke_with: p.spoke_with,
+          biz:        p.biz,
+        });
+      });
+      Object.values(histMap).forEach(arr => arr.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)));
+      setCallHistory(histMap);
+      console.log("[Harmonia] Call history built for", Object.keys(histMap).length, "leads");
+    } catch(e) { console.error("[Harmonia] Failed to refresh call history:", e); }
+  }
+
   const sessRef = useRef(); const callRef = useRef();
 
   /* ── FETCH ALL SHEET DATA ON MOUNT ── */
   useEffect(() => {
     async function load() {
       try {
-        const [leadsRaw, scriptsRaw, objectionsRaw, perfRaw] = await Promise.all([
+        const [leadsRaw, scriptsRaw, objectionsRaw] = await Promise.all([
           fetchSheet("Leads"),
           fetchSheet("Scripts"),
           fetchSheet("Objections"),
-          fetchSheet("Script_Performance").catch(()=>[]),
         ]);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
         setObjections(parseObjections(objectionsRaw));
-        // Build call history map from Script_Performance tab
-        const histMap = {};
-        perfRaw.forEach(r => {
-          const lid = r.lead_id || r.id;
-          if (!lid) return;
-          if (!histMap[lid]) histMap[lid] = [];
-          histMap[lid].push({
-            caller:     r.caller_name || r.caller || "",
-            outcome:    r.disposition || r.outcome || "",
-            duration:   parseInt(r.call_duration || r.duration || r.callSecs) || 0,
-            variant:    r.script_used || r.variant || "",
-            timestamp:  r.call_timestamp || r.timestamp || "",
-            notes:      r.notes || "",
-            spoke_with: r.spoke_with || "",
-          });
-        });
-        // Sort each lead's history newest-first
-        Object.values(histMap).forEach(arr => arr.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)));
-        setCallHistory(histMap);
+        // Fetch call history from Script_Performance (non-blocking)
+        refreshCallHistory();
         // Parse bubbles and branches from Scripts tab
         const parsed = parseBubblesAndBranches(scriptsRaw);
         if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
@@ -538,6 +569,12 @@ export default function HarmoniaOS() {
     else clearInterval(callRef.current);
     return()=>clearInterval(callRef.current);
   },[callRun]);
+
+  // Auto-refresh call history every 60s so other callers' updates appear
+  useEffect(() => {
+    const interval = setInterval(() => refreshCallHistory(), 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Reset branch tree when discovery variant changes
   useEffect(() => {
@@ -783,7 +820,7 @@ export default function HarmoniaOS() {
       spoke_with: spokeWith || l.spoke_with || "",
     }:l));
 
-    // Append to shared call history (visible immediately to this session)
+    // Append to shared call history immediately (optimistic update)
     setCallHistory(prev => {
       const lid = active.id;
       const entry = {
@@ -797,6 +834,8 @@ export default function HarmoniaOS() {
       };
       return {...prev, [lid]: [entry, ...(prev[lid] || [])]};
     });
+    // Re-fetch from sheet after n8n has time to write the row
+    setTimeout(() => refreshCallHistory(), 5000);
 
     const flashMsg = outcome==="demo_booked"?"Demo booked ✦"
       :outcome==="loom_sent"?"Loom queued → Discord pinged"
@@ -835,6 +874,15 @@ export default function HarmoniaOS() {
       payload.competitor = active.competitor || "";
       fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       fetch(DISCORD_WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>{});
+      // High-value outcome → direct Discord notification
+      if (["demo_booked","loom_sent","followup_sent"].includes(outcome)) {
+        const emoji = outcome==="demo_booked"?"🎯":outcome==="loom_sent"?"🎥":"📧";
+        const label = OUTCOMES[outcome]?.label || outcome;
+        fetch("https://discord.com/api/webhooks/1490887089812672612/AaHbR7e7xDC6cWp_FDLHXVwDPQy-vFrZSjrz_QwrfYSj7i5RFKFCOvNlXeDLdqfYHhzy", {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ content: `${emoji} **${label}** — ${active.biz}${active.owner?` (${active.owner})`:""}${active.city?`, ${active.city}`:""}\nCaller: ${callerName||"Unknown"} | Script: ${scriptUsed} | Duration: ${fmt(dur)}${captureEmail?`\nEmail: ${captureEmail}`:""}${captureNotes?`\nNotes: ${captureNotes}`:""}` })
+        }).catch(()=>{});
+      }
     } catch(err){ console.error('webhook failed:',err); }
 
     resetCaptureFields();
@@ -1063,18 +1111,25 @@ export default function HarmoniaOS() {
                         {lead.script_used&&<span style={{color:C.t3,fontWeight:400}}> · Script {lead.script_used.toUpperCase()}</span>}
                       </div>
                     )}
-                    {/* No-answer / VM indicator from sheet data */}
-                    {!isDone && lead.call_count > 0 && (
+                    {/* Call history indicator from Script_Performance */}
+                    {!isDone && (callHistory[lead.id]?.length || 0) > 0 && (()=>{
+                      const hist = callHistory[lead.id];
+                      const last = hist[0];
+                      const lastLabel = OUTCOMES[last.outcome]?.short || last.outcome || "?";
+                      return (
                       <div style={{marginTop:3,display:"flex",alignItems:"center",gap:4}}>
-                        <span style={{fontSize:9,fontWeight:600,color:C.amber,
-                          background:"#FFF8E1",padding:"1px 5px",borderRadius:4}}>
-                          {lead.disposition==="voicemail"?"VM":"No ans"} ×{lead.call_count}
+                        <span style={{fontSize:9,fontWeight:600,color:OUTCOMES[last.outcome]?.color||C.amber,
+                          background:(OUTCOMES[last.outcome]?.color||C.amber)+"15",padding:"1px 5px",borderRadius:4}}>
+                          {lastLabel} ×{hist.length}
                         </span>
-                        {lead.last_call_timestamp && (
+                        {last.caller && (
+                          <span style={{fontSize:9,color:C.t3}}>{last.caller}</span>
+                        )}
+                        {last.timestamp && (
                           <span style={{fontSize:9,color:C.t3}}>
                             {(() => {
                               try {
-                                const d = new Date(lead.last_call_timestamp);
+                                const d = new Date(last.timestamp);
                                 const now = new Date();
                                 const diffMs = now - d;
                                 const diffH = Math.floor(diffMs / 3600000);
@@ -1087,7 +1142,8 @@ export default function HarmoniaOS() {
                           </span>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -1573,67 +1629,100 @@ export default function HarmoniaOS() {
                           letterSpacing:"0.03em"}}>Call History ({totalCalls} call{totalCalls!==1?"s":""})</div>
 
                         {totalCalls === 0 ? (
-                          <div style={{fontSize:12,color:C.t3,padding:"4px 0"}}>Never called — fresh lead</div>
+                          <div style={{fontSize:13,color:C.green,fontWeight:500,padding:"4px 0"}}>
+                            Never called — fresh lead
+                          </div>
                         ) : (
                           <>
-                            {/* Summary row */}
-                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-                              <div>
-                                <div style={{fontSize:10,color:C.t3}}>Previously Called</div>
-                                <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2}}>Yes</div>
+                            {/* Quick-glance summary */}
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                              <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
+                                border:`1px solid ${C.border}`}}>
+                                <div style={{fontSize:18,fontWeight:500,color:C.t1,fontFamily:FM}}>{totalCalls}</div>
+                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Total Calls</div>
                               </div>
-                              <div>
-                                <div style={{fontSize:10,color:C.t3}}>Total Calls</div>
-                                <div style={{fontSize:13,color:C.t1,fontWeight:500,marginTop:2,fontFamily:FM}}>{totalCalls}</div>
-                              </div>
-                              <div>
-                                <div style={{fontSize:10,color:C.t3}}>Last Disposition</div>
-                                <div style={{fontSize:12,color:OUTCOMES[lastCall.outcome]?.color||C.t1,fontWeight:500,marginTop:2}}>
+                              <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
+                                border:`1px solid ${OUTCOMES[lastCall.outcome]?.color||C.border}`}}>
+                                <div style={{fontSize:12,fontWeight:600,color:OUTCOMES[lastCall.outcome]?.color||C.t1,lineHeight:1.3}}>
                                   {OUTCOMES[lastCall.outcome]?.label || lastCall.outcome || "—"}
                                 </div>
+                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last Result</div>
                               </div>
-                              <div>
-                                <div style={{fontSize:10,color:C.t3}}>Last Called By</div>
-                                <div style={{fontSize:12,color:C.accent,fontWeight:500,marginTop:2}}>
+                              <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
+                                border:`1px solid ${C.border}`}}>
+                                <div style={{fontSize:12,fontWeight:500,color:C.accent,lineHeight:1.3}}>
                                   {lastCall.caller || "—"}
                                 </div>
+                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last Caller</div>
                               </div>
                             </div>
 
+                            {/* Unique callers who touched this lead */}
+                            {(()=>{
+                              const callers = [...new Set(hist.map(h=>h.caller).filter(Boolean))];
+                              return callers.length > 0 && (
+                                <div style={{marginBottom:10}}>
+                                  <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Called by</div>
+                                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                                    {callers.map(c=>(
+                                      <span key={c} style={{fontSize:10,padding:"2px 8px",borderRadius:100,
+                                        background:C.accent+"15",color:C.accent,fontWeight:500}}>{c}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
                             {/* Full call log — every call, every caller */}
                             <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
-                              <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500}}>All calls (newest first)</div>
-                              <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:200,overflowY:"auto"}}>
+                              <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500}}>
+                                Every call (newest first)
+                              </div>
+                              <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:260,overflowY:"auto"}}>
                                 {hist.map((h,i) => (
                                   <div key={i} style={{background:C.bg,borderRadius:8,padding:"8px 10px",
-                                    border:`1px solid ${C.border}`}}>
+                                    border:`1px solid ${OUTCOMES[h.outcome]?.color||C.border}40`}}>
+                                    {/* Row 1: disposition + duration */}
                                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                                       <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                                        <span style={{fontSize:11,fontWeight:600,color:OUTCOMES[h.outcome]?.color||C.t1}}>
-                                          {OUTCOMES[h.outcome]?.label || h.outcome || "—"}
+                                        <span style={{width:6,height:6,borderRadius:"50%",
+                                          background:OUTCOMES[h.outcome]?.color||C.t3,flexShrink:0}}/>
+                                        <span style={{fontSize:12,fontWeight:600,color:OUTCOMES[h.outcome]?.color||C.t1}}>
+                                          {OUTCOMES[h.outcome]?.label || h.outcome || "Unknown"}
                                         </span>
-                                        {h.variant && (
-                                          <span style={{fontSize:9,color:C.t3,background:C.surface,borderRadius:4,
-                                            padding:"1px 5px"}}>S:{h.variant}</span>
-                                        )}
                                       </div>
                                       <span style={{fontSize:10,color:C.t3,fontFamily:FM}}>
                                         {h.duration ? fmt(h.duration) : ""}
                                       </span>
                                     </div>
-                                    <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}>
-                                      <span style={{fontSize:10,color:C.accent,fontWeight:500}}>{h.caller}</span>
-                                      <span style={{fontSize:10,color:C.t3}}>
-                                        {h.timestamp ? new Date(h.timestamp).toLocaleDateString("en-US",
-                                          {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}
+                                    {/* Row 2: caller, date, script */}
+                                    <div style={{display:"flex",justifyContent:"space-between",marginTop:4,
+                                      alignItems:"center",flexWrap:"wrap",gap:4}}>
+                                      <span style={{fontSize:11,color:C.accent,fontWeight:500}}>
+                                        {h.caller || "Unknown caller"}
                                       </span>
+                                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                        {h.variant && (
+                                          <span style={{fontSize:9,color:C.t3,background:C.surface,borderRadius:4,
+                                            padding:"1px 5px",border:`1px solid ${C.border}`}}>Script {h.variant}</span>
+                                        )}
+                                        <span style={{fontSize:10,color:C.t3}}>
+                                          {h.timestamp ? new Date(h.timestamp).toLocaleDateString("en-US",
+                                            {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}
+                                        </span>
+                                      </div>
                                     </div>
+                                    {/* Row 3: spoke with */}
                                     {h.spoke_with && (
-                                      <div style={{fontSize:10,color:C.t2,marginTop:3}}>Spoke with: {h.spoke_with}</div>
+                                      <div style={{fontSize:10,color:C.t2,marginTop:4}}>
+                                        Spoke with: <strong>{h.spoke_with}</strong>
+                                      </div>
                                     )}
+                                    {/* Row 4: notes */}
                                     {h.notes && (
-                                      <div style={{fontSize:10,color:C.t2,marginTop:3,fontStyle:"italic"}}>
-                                        "{h.notes.slice(0,120)}{h.notes.length>120?"…":""}"
+                                      <div style={{fontSize:10,color:C.t2,marginTop:3,fontStyle:"italic",
+                                        background:C.surface,borderRadius:6,padding:"4px 8px"}}>
+                                        "{h.notes.slice(0,200)}{h.notes.length>200?"…":""}"
                                       </div>
                                     )}
                                   </div>
