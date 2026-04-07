@@ -2333,7 +2333,7 @@ export default function HarmoniaOS() {
                       <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Book a Demo</div>
                       <div style={{fontSize:11,color:C.t3,marginBottom:12}}>Schedule a call with the Harmonia team</div>
                       <iframe
-                        src="https://cal.com/team/harmonia-solutions/book-a-demo?embed=true&theme=light"
+                        src="https://cal.com/team/harmonia-solutions/cc-demo-booked?embed=true&theme=light"
                         style={{width:"100%",height:500,border:"none",borderRadius:12}}
                         title="Book a Demo"
                       />
@@ -2502,7 +2502,7 @@ export default function HarmoniaOS() {
                     <div style={{fontSize:14,fontWeight:600,color:C.t1}}>Book a Demo</div>
                     <div style={{fontSize:12,color:C.t2}}>Schedule a call with the Harmonia Solutions team</div>
                     <iframe
-                      src="https://cal.com/team/harmonia-solutions/book-a-demo?embed=true&theme=light"
+                      src="https://cal.com/team/harmonia-solutions/cc-demo-booked?embed=true&theme=light"
                       style={{width:"100%",height:600,border:"none",borderRadius:12}}
                       title="Book a Demo"
                     />
