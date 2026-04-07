@@ -1439,6 +1439,7 @@ export default function HarmoniaOS() {
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
                   {id:"roi",        label:"ROI Calc"},
+                  {id:"booking",    label:"Booking"},
                 ].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id)}
                     style={{padding:"10px 15px",border:"none",background:"transparent",
@@ -2326,6 +2327,17 @@ export default function HarmoniaOS() {
                         )}
                       </>
                     )}
+
+                    {/* ── Book a Demo (bottom of script tab) ── */}
+                    <div style={{marginTop:32,borderTop:`1px solid ${C.border}`,paddingTop:20}}>
+                      <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Book a Demo</div>
+                      <div style={{fontSize:11,color:C.t3,marginBottom:12}}>Schedule a call with the Harmonia team</div>
+                      <iframe
+                        src="https://cal.com/team/harmonia-solutions/book-a-demo?embed=true&theme=light"
+                        style={{width:"100%",height:500,border:"none",borderRadius:12}}
+                        title="Book a Demo"
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -2482,6 +2494,19 @@ export default function HarmoniaOS() {
 
                 {tab==="roi"&&(
                   <MissedCallCalculator embedded />
+                )}
+
+                {/* ── BOOKING ── */}
+                {tab==="booking"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                    <div style={{fontSize:14,fontWeight:600,color:C.t1}}>Book a Demo</div>
+                    <div style={{fontSize:12,color:C.t2}}>Schedule a call with the Harmonia Solutions team</div>
+                    <iframe
+                      src="https://cal.com/team/harmonia-solutions/book-a-demo?embed=true&theme=light"
+                      style={{width:"100%",height:600,border:"none",borderRadius:12}}
+                      title="Book a Demo"
+                    />
+                  </div>
                 )}
 
               </div>
