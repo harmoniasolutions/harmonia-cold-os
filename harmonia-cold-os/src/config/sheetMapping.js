@@ -86,6 +86,15 @@ export const SHEET_CONFIG = {
       }
     },
 
+    OFFERS: {
+      name: 'Offers',
+      fields: {
+        id:    { sheetColumn: 'id',    column: 'A' },
+        label: { sheetColumn: 'label', column: 'B' },
+        text:  { sheetColumn: 'text',  column: 'C' },
+      }
+    },
+
     SCRIPT_PERFORMANCE: { name: 'Script_Performance', fields: {} },
     SCRIPT_RANKINGS:    { name: 'Script_Rankings',    fields: {} },
   }
