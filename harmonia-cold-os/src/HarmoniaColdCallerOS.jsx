@@ -445,13 +445,10 @@ export default function HarmoniaOS() {
   const [showAddPhase, setShowAddPhase] = useState(false);
   const [newPhaseName, setNewPhaseName] = useState("");
   const [offers, setOffers] = useState([]); // from Offers sheet tab
-  const [offerOrder, setOfferOrder] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("harmonia-offer-order")) || null; }
-    catch { return null; }
-  });
-  const [collapsedOffers, setCollapsedOffers] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("harmonia-collapsed-offers")) || []); }
-    catch { return new Set(); }
+  const [selectedOfferId, setSelectedOfferId] = useState(""); // which offer is picked in dropdown
+  const [offerCollapsed, setOfferCollapsed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-offer-collapsed")) === true; }
+    catch { return false; }
   });
   const [activeBridgeBubble, setActiveBridgeBubble] = useState(null); // index of expanded bubble
   const [activeCloseBubble, setActiveCloseBubble] = useState(null);  // index of expanded close bubble
@@ -2508,139 +2505,132 @@ export default function HarmoniaOS() {
                             </div>
                           );
                         })}
-                        {/* ── OFFERS — sheet-driven, phase-style blocks ── */}
-                        {(()=>{
-                          // Build ordered list: use stored order if available, else sheet order
-                          const sortedOffers = offerOrder
-                            ? offerOrder.map(id=>offers.find(o=>o.id===id)).filter(Boolean)
-                              .concat(offers.filter(o=>!offerOrder.includes(o.id)))
-                            : offers;
-                          if (sortedOffers.length === 0) return null;
-
-                          const moveOffer = (fromIdx, toIdx) => {
-                            const next = [...sortedOffers];
-                            const [moved] = next.splice(fromIdx, 1);
-                            next.splice(toIdx, 0, moved);
-                            const ids = next.map(o=>o.id);
-                            setOfferOrder(ids);
-                            try { localStorage.setItem("harmonia-offer-order", JSON.stringify(ids)); } catch {}
-                          };
-
+                        {/* ── OFFERS — single phase block with dropdown selector ── */}
+                        {offers.length > 0 && (()=>{
+                          const offerColor = "#F97316";
+                          const curOfferId = selectedOfferId || offers[0]?.id || "";
+                          const curOffer = offers.find(o=>o.id===curOfferId) || offers[0];
+                          const offerKey = `offer_${curOfferId}`;
                           const offerPlaceholderCtx = buildPlaceholderContext(active, callerName);
+                          const customText = callerScripts[offerKey];
+                          const masterText = curOffer?.text || "";
+                          const rawText = customText !== undefined && customText !== null ? customText : masterText;
+                          const isCustomized = customText !== undefined && customText !== null;
+                          const displayText = fillPlaceholdersPlain(formatScriptLines(rawText), offerPlaceholderCtx);
 
-                          return sortedOffers.map((offer, oi) => {
-                            const collapsed = collapsedOffers.has(offer.id);
-                            const offerKey = `offer_${offer.id}`;
-                            const customText = callerScripts[offerKey];
-                            const masterText = offer.text;
-                            const rawText = customText !== undefined && customText !== null ? customText : masterText;
-                            const isCustomized = customText !== undefined && customText !== null;
-                            const displayText = fillPlaceholdersPlain(formatScriptLines(rawText), offerPlaceholderCtx);
-
-                            return (
-                              <div key={offer.id} data-offer-block={offer.id} style={{borderLeft:`3px solid ${collapsed?C.t3+"60":offer.color}`,marginBottom:8,
-                                background:collapsed?"transparent":`${offer.color}04`,borderRadius:"0 10px 10px 0",overflow:"visible",
-                                transition:"all 0.2s ease",position:"relative",opacity:collapsed?0.5:1}}>
-                                {/* Offer header */}
-                                <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
-                                  borderBottom:`1px solid ${offer.color}15`}}>
-                                  <div style={{display:"flex",flexDirection:"column",gap:1,marginRight:2}}>
-                                    <button disabled={oi===0} onClick={()=>moveOffer(oi,oi-1)}
-                                      style={{background:"none",border:"none",padding:0,fontSize:11,lineHeight:1,
-                                        color:oi===0?C.t3+"50":C.t3,cursor:oi===0?"default":"pointer",
-                                        transition:"color 0.15s"}}
-                                      onMouseEnter={e=>{if(oi!==0)e.target.style.color=C.t1}}
-                                      onMouseLeave={e=>{e.target.style.color=oi===0?C.t3+"50":C.t3}}
-                                      title="Move up">▲</button>
-                                    <button disabled={oi===sortedOffers.length-1} onClick={()=>moveOffer(oi,oi+1)}
-                                      style={{background:"none",border:"none",padding:0,fontSize:11,lineHeight:1,
-                                        color:oi===sortedOffers.length-1?C.t3+"50":C.t3,cursor:oi===sortedOffers.length-1?"default":"pointer",
-                                        transition:"color 0.15s"}}
-                                      onMouseEnter={e=>{if(oi!==sortedOffers.length-1)e.target.style.color=C.t1}}
-                                      onMouseLeave={e=>{e.target.style.color=oi===sortedOffers.length-1?C.t3+"50":C.t3}}
-                                      title="Move down">▼</button>
-                                  </div>
-                                  <span style={{fontSize:10,fontWeight:600,color:collapsed?C.t3:offer.color,textTransform:"uppercase",
-                                    letterSpacing:"0.05em",minWidth:72}}>{offer.label}</span>
-                                  {/* On/off toggle */}
-                                  <div onClick={()=>{
-                                    setCollapsedOffers(prev=>{
-                                      const next = new Set(prev);
-                                      if(next.has(offer.id)) next.delete(offer.id); else next.add(offer.id);
-                                      try { localStorage.setItem("harmonia-collapsed-offers", JSON.stringify([...next])); } catch {}
-                                      return next;
-                                    });
-                                  }}
-                                    style={{width:28,height:16,borderRadius:8,cursor:"pointer",position:"relative",flexShrink:0,
-                                      background:collapsed?C.t3+"40":offer.color,transition:"background 0.2s ease"}}
-                                    title={collapsed?"Turn on":"Turn off"}>
-                                    <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",position:"absolute",top:2,
-                                      left:collapsed?2:14,transition:"left 0.2s ease",
-                                      boxShadow:"0 1px 2px rgba(0,0,0,.2)"}} />
-                                  </div>
-                                  <span style={{flex:1,fontSize:8,fontWeight:600,color:offer.color,background:`${offer.color}15`,
-                                    padding:"2px 6px",borderRadius:4,letterSpacing:".04em",width:"fit-content"}}>OFFER</span>
-                                  {isCustomized && (
-                                    <button onClick={() => {
-                                      if (window.confirm("Reset this offer script to the original from the sheet?")) {
-                                        setCallerScripts(prev => {
-                                          const next = {...prev};
-                                          delete next[offerKey];
-                                          try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
-                                          return next;
-                                        });
-                                      }
-                                    }}
-                                      style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
-                                        background:C.bg,color:C.t3,fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>
-                                      Reset to Original
-                                    </button>
-                                  )}
+                          return (
+                            <div data-offer-block="offers" style={{borderLeft:`3px solid ${offerCollapsed?C.t3+"60":offerColor}`,marginBottom:8,
+                              background:offerCollapsed?"transparent":`${offerColor}04`,borderRadius:"0 10px 10px 0",overflow:"visible",
+                              transition:"all 0.2s ease",position:"relative",opacity:offerCollapsed?0.5:1}}>
+                              {/* Header — matches phase headers exactly */}
+                              <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
+                                borderBottom:`1px solid ${offerColor}15`}}>
+                                <span style={{fontSize:10,fontWeight:600,color:offerCollapsed?C.t3:offerColor,textTransform:"uppercase",
+                                  letterSpacing:"0.05em",minWidth:72}}>Offers</span>
+                                {/* On/off toggle */}
+                                <div onClick={()=>{
+                                  setOfferCollapsed(prev=>{
+                                    const next = !prev;
+                                    try { localStorage.setItem("harmonia-offer-collapsed", JSON.stringify(next)); } catch {}
+                                    return next;
+                                  });
+                                }}
+                                  style={{width:28,height:16,borderRadius:8,cursor:"pointer",position:"relative",flexShrink:0,
+                                    background:offerCollapsed?C.t3+"40":offerColor,transition:"background 0.2s ease"}}
+                                  title={offerCollapsed?"Turn on":"Turn off"}>
+                                  <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",position:"absolute",top:2,
+                                    left:offerCollapsed?2:14,transition:"left 0.2s ease",
+                                    boxShadow:"0 1px 2px rgba(0,0,0,.2)"}} />
                                 </div>
-                                {!collapsed && (
-                                  <>
-                                    <textarea
-                                      value={displayText}
-                                      onChange={e=>{
-                                        let edited = e.target.value;
-                                        const ctx = offerPlaceholderCtx;
-                                        if (ctx.owner) edited = edited.split(ctx.owner).join("{owner}");
-                                        if (ctx.caller) edited = edited.split(ctx.caller).join("{caller}");
-                                        if (ctx.biz) edited = edited.split(ctx.biz).join("{biz}");
-                                        if (ctx.city) edited = edited.split(ctx.city).join("{city}");
-                                        if (ctx.leak) edited = edited.split(ctx.leak).join("{leak}");
-                                        if (ctx.chairs && ctx.chairs !== "your") edited = edited.split(ctx.chairs).join("{chairs}");
-                                        const rawVal = unformatScriptLines(edited);
-                                        setCallerScripts(prev => {
-                                          const next = {...prev, [offerKey]: rawVal};
-                                          try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
-                                          return next;
-                                        });
-                                      }}
-                                      style={{width:"100%",border:"none",padding:"12px 16px",fontSize:13,
-                                        color:C.t1,lineHeight:1.75,background:"transparent",outline:"none",
-                                        resize:"none",fontFamily:F}}
-                                      placeholder="No offer script — add text in the Offers sheet tab"
-                                      data-offer-textarea={offer.id}
-                                    />
-                                    <div style={{display:"flex",justifyContent:"center",cursor:"ns-resize",padding:"3px 0",userSelect:"none"}}
-                                      onMouseDown={e=>{
-                                        e.preventDefault();
-                                        const ta=document.querySelector(`[data-offer-textarea="${offer.id}"]`);
-                                        if(!ta)return;const startY=e.clientY;const startH=ta.offsetHeight;
-                                        const onMove=ev=>{ta.style.height=Math.max(0,startH+(ev.clientY-startY))+"px";};
-                                        const onUp=()=>{document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);};
-                                        document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
-                                      }}>
-                                      <div style={{width:40,height:4,borderRadius:2,background:C.t3+"40",transition:"background 0.15s"}}
-                                        onMouseEnter={e=>{e.target.style.background=C.t3+"80"}}
-                                        onMouseLeave={e=>{e.target.style.background=C.t3+"40"}} />
-                                    </div>
-                                  </>
+                                {/* Variant dropdown */}
+                                <select value={curOfferId}
+                                  onChange={e=>setSelectedOfferId(e.target.value)}
+                                  style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
+                                    fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
+                                  {offers.map(o=>(
+                                    <option key={o.id} value={o.id}>{o.label}</option>
+                                  ))}
+                                </select>
+                                {isCustomized && (
+                                  <button onClick={() => {
+                                    if (window.confirm("Reset this offer script to the original from the sheet?")) {
+                                      setCallerScripts(prev => {
+                                        const next = {...prev};
+                                        delete next[offerKey];
+                                        try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
+                                        return next;
+                                      });
+                                      setScriptSaveStatus(prev => ({...prev, offers: "reset"}));
+                                      setTimeout(() => setScriptSaveStatus(prev => ({...prev, offers: null})), 2000);
+                                    }
+                                  }}
+                                    style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                                      background:C.bg,color:C.t3,fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>
+                                    Reset to Original
+                                  </button>
+                                )}
+                                {scriptSaveStatus.offers && (
+                                  <span style={{fontSize:10,fontWeight:500,whiteSpace:"nowrap",
+                                    color:scriptSaveStatus.offers==="saved"?C.green:
+                                      scriptSaveStatus.offers==="reset"?C.amber:C.t3}}>
+                                    {scriptSaveStatus.offers==="saved"?"Saved":scriptSaveStatus.offers==="reset"?"Reset":"Saving..."}
+                                  </span>
                                 )}
                               </div>
-                            );
-                          });
+                              {!offerCollapsed && (
+                                <>
+                                  <textarea
+                                    value={displayText}
+                                    onChange={e=>{
+                                      let edited = e.target.value;
+                                      const ctx = offerPlaceholderCtx;
+                                      if (ctx.owner) edited = edited.split(ctx.owner).join("{owner}");
+                                      if (ctx.caller) edited = edited.split(ctx.caller).join("{caller}");
+                                      if (ctx.biz) edited = edited.split(ctx.biz).join("{biz}");
+                                      if (ctx.city) edited = edited.split(ctx.city).join("{city}");
+                                      if (ctx.leak) edited = edited.split(ctx.leak).join("{leak}");
+                                      if (ctx.chairs && ctx.chairs !== "your") edited = edited.split(ctx.chairs).join("{chairs}");
+                                      const rawVal = unformatScriptLines(edited);
+                                      setCallerScripts(prev => {
+                                        const next = {...prev, [offerKey]: rawVal};
+                                        try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
+                                        return next;
+                                      });
+                                      if (saveTimerRefs.current.offers) clearTimeout(saveTimerRefs.current.offers);
+                                      setScriptSaveStatus(prev => ({...prev, offers: "saving"}));
+                                      saveTimerRefs.current.offers = setTimeout(() => {
+                                        fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                                          body:JSON.stringify({type:'caller_script_update',caller_name:callerName,
+                                            phase:'offers',variant_id:curOfferId,custom_script_text:rawVal})
+                                        }).catch(()=>{});
+                                        setScriptSaveStatus(prev => ({...prev, offers: "saved"}));
+                                        setTimeout(() => setScriptSaveStatus(prev => ({...prev, offers: null})), 2000);
+                                      }, 2000);
+                                    }}
+                                    style={{width:"100%",border:"none",padding:"12px 16px",fontSize:13,
+                                      color:C.t1,lineHeight:1.75,background:"transparent",outline:"none",
+                                      resize:"none",fontFamily:F}}
+                                    placeholder="No offer script — add text in the Offers sheet tab"
+                                    data-offer-textarea="offers"
+                                  />
+                                  {/* Vertical resize handle */}
+                                  <div style={{display:"flex",justifyContent:"center",cursor:"ns-resize",padding:"3px 0",userSelect:"none"}}
+                                    onMouseDown={e=>{
+                                      e.preventDefault();
+                                      const ta=document.querySelector('[data-offer-textarea="offers"]');
+                                      if(!ta)return;const startY=e.clientY;const startH=ta.offsetHeight;
+                                      const onMove=ev=>{ta.style.height=Math.max(0,startH+(ev.clientY-startY))+"px";};
+                                      const onUp=()=>{document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp);};
+                                      document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+                                    }}>
+                                    <div style={{width:40,height:4,borderRadius:2,background:C.t3+"40",transition:"background 0.15s"}}
+                                      onMouseEnter={e=>{e.target.style.background=C.t3+"80"}}
+                                      onMouseLeave={e=>{e.target.style.background=C.t3+"40"}} />
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
                         })()}
 
                         {/* Add Phase button + inline form */}
