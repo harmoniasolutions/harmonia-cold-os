@@ -80,6 +80,20 @@ const OUTCOMES = {
   dnc:            { label:"Do not call",    color:C.red,     short:"DNC",  ghl:"Do Not Contact",      discord:null                                                    },
 };
 
+// ── Offers — free value drops callers can pitch during close/pitch ──
+const OFFER_OPTIONS = [
+  { id: "free_trial",   label: "Free Trial",        color: "#10B981",
+    script: "We're actually running a beta program right now — I can set you up with a full 14-day free trial. No card, no commitment. You'll see exactly how many calls you're missing and how the AI handles them. Can I get that spun up for you today?" },
+  { id: "free_website", label: "Free Website",       color: "#3B82F6",
+    script: "One thing we do for our early partners — we build you a brand-new website completely free. Mobile-optimized, booking built in, shows up on Google. It's yours to keep regardless. Want me to get our design team started on that?" },
+  { id: "free_inbox",   label: "Free Inbox Manager", color: "#8B5CF6",
+    script: "Here's something we're doing for a handful of {icp} in {city} — a free AI inbox manager. It handles your DMs, emails, review replies, all of it. Saves owners like you 5-10 hours a week. Want me to set that up at no cost?" },
+  { id: "free_audit",   label: "Free Missed-Call Audit", color: "#F59E0B",
+    script: "Tell you what — let me run a free missed-call audit on your business. I'll show you exactly how many calls you missed last month and what that cost you in revenue. Takes 2 minutes, zero obligation. Sound fair?" },
+  { id: "free_reviews", label: "Free Review Boost",  color: "#EC4899",
+    script: "We're offering a free automated review system to {icp} like {biz}. It texts your happy customers after their appointment and gets them to leave a 5-star review. Most shops double their review count in 30 days. Want me to turn that on for you?" },
+];
+
 const OUTCOME_ROWS = [
   ["demo_booked", "loom_sent", "callback", "followup_sent"],
   ["answered", "voicemail", "gatekeeper", "no_answer"],
@@ -433,6 +447,7 @@ export default function HarmoniaOS() {
   });
   const [showAddPhase, setShowAddPhase] = useState(false);
   const [newPhaseName, setNewPhaseName] = useState("");
+  const [selectedOffer, setSelectedOffer] = useState(null);
   const [activeBridgeBubble, setActiveBridgeBubble] = useState(null); // index of expanded bubble
   const [activeCloseBubble, setActiveCloseBubble] = useState(null);  // index of expanded close bubble
   const [bubbleData, setBubbleData] = useState({}); // { [icp]: { bridge:[], close:[] } }
@@ -2485,6 +2500,58 @@ export default function HarmoniaOS() {
                             </div>
                           );
                         })}
+                        {/* ── OFFERS BOX ── */}
+                        <div style={{borderLeft:`3px solid #F97316`,marginBottom:8,
+                          background:"#F9741606",borderRadius:"0 10px 10px 0",overflow:"hidden"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
+                            borderBottom:"1px solid #F9741615"}}>
+                            <span style={{fontSize:10,fontWeight:600,color:"#F97316",textTransform:"uppercase",
+                              letterSpacing:"0.05em",minWidth:72}}>Offers</span>
+                            <span style={{fontSize:10,color:C.t3,fontStyle:"italic"}}>Free value drops — pick one to pitch</span>
+                          </div>
+                          <div style={{padding:"12px 16px"}}>
+                            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:selectedOffer?12:0}}>
+                              {OFFER_OPTIONS.map(o=>{
+                                const isActive = selectedOffer===o.id;
+                                return (
+                                  <button key={o.id} onClick={()=>setSelectedOffer(isActive?null:o.id)}
+                                    style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,
+                                      cursor:"pointer",transition:"all 0.15s",fontFamily:F,
+                                      border:`1.5px solid ${isActive?o.color:"#e5e5e5"}`,
+                                      background:isActive?o.color+"12":"#fff",
+                                      color:isActive?o.color:"#555"}}>
+                                    {o.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {selectedOffer && (()=>{
+                              const o = OFFER_OPTIONS.find(x=>x.id===selectedOffer);
+                              if(!o) return null;
+                              const offerCtx = buildPlaceholderContext(active, callerName);
+                              const offerText = fillPlaceholdersPlain(
+                                o.script.replace(/\{icp\}/g, ICP_LABEL[active?.icp]||"businesses")
+                                  .replace(/\{biz\}/g, active?.biz||"your business")
+                                  .replace(/\{city\}/g, active?.city||"your area"),
+                                offerCtx
+                              );
+                              return (
+                                <div style={{background:o.color+"08",border:`1px solid ${o.color}30`,
+                                  borderRadius:10,padding:"12px 14px",transition:"all 0.2s ease"}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                    <div style={{width:7,height:7,borderRadius:"50%",background:o.color}}/>
+                                    <span style={{fontSize:10,fontWeight:600,color:o.color,textTransform:"uppercase",
+                                      letterSpacing:".04em"}}>{o.label}</span>
+                                  </div>
+                                  <div style={{fontSize:13,color:C.t1,lineHeight:1.75,whiteSpace:"pre-line"}}>
+                                    {offerText}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+
                         {/* Add Phase button + inline form */}
                         {showAddPhase ? (
                           <div style={{border:`1px dashed ${C.border}`,borderRadius:10,padding:12,marginTop:4}}>
