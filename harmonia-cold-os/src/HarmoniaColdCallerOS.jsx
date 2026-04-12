@@ -467,7 +467,14 @@ export default function HarmoniaOS() {
       return new Set(valid.length > 0 ? valid : []);
     } catch { return new Set(); }
   });
+  const [disabledIcps, setDisabledIcps] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("harmonia-admin-disabled-icps"));
+      return new Set(stored || []);
+    } catch { return new Set(); }
+  });
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [adminTab, setAdminTab] = useState("icps");
 
   // Call history from Script_Performance tab — shared across all callers
   const [callHistory, setCallHistory] = useState({}); // { leadId: [{caller, outcome, duration, variant, timestamp, notes, spoke_with}, ...] }
@@ -616,7 +623,8 @@ export default function HarmoniaOS() {
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
-  const filtered     = leads.filter(l => filter==="all" || l.icp===filter);
+  const activeLeads  = leads.filter(l => !disabledIcps.has(l.icp));
+  const filtered     = activeLeads.filter(l => filter==="all" || l.icp===filter);
   const queueLeft    = filtered.filter(l=>l.status==="queued").length;
   const totalAns     = stats.answered + stats.demos;
   const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
@@ -1060,7 +1068,7 @@ export default function HarmoniaOS() {
           display:"flex",flexDirection:"column",flexShrink:0}}>
           <div style={{padding:"9px 10px 8px",borderBottom:`1px solid ${C.border}`,
             display:"flex",gap:4,flexWrap:"wrap"}}>
-            {["all","hvac","salon","barbershop"].map(f=>(
+            {["all","hvac","salon","barbershop"].filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
               <button key={f} onClick={()=>setFilter(f)}
                 style={{padding:"3px 10px",borderRadius:100,
                   border:`1px solid ${filter===f?C.t1:C.border}`,
@@ -2934,50 +2942,113 @@ export default function HarmoniaOS() {
           onClick={e=>{if(e.target===e.currentTarget)setShowAdminPanel(false);}}>
           <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)"}}/>
           <div style={{position:"relative",background:C.bg,borderRadius:16,padding:"24px 28px",
-            width:420,maxHeight:"80vh",overflowY:"auto",
+            width:460,maxHeight:"80vh",overflowY:"auto",
             boxShadow:"0 8px 40px rgba(0,0,0,0.18)",animation:"slideDown 0.2s ease"}}>
-            <div style={{display:"flex",alignItems:"center",marginBottom:18}}>
-              <span style={{fontSize:15,fontWeight:600}}>Admin — Script Management</span>
+            <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
+              <span style={{fontSize:15,fontWeight:600}}>Admin Settings</span>
               <button onClick={()=>setShowAdminPanel(false)}
                 style={{marginLeft:"auto",border:"none",background:"transparent",fontSize:16,
                   color:C.t3,cursor:"pointer",padding:"4px 8px"}}>✕</button>
             </div>
-            <div style={{fontSize:11,color:C.t3,marginBottom:14}}>
-              Toggle scripts on/off for all callers. Disabled scripts are hidden from everyone's Script Mixer.
+
+            {/* ── Admin tab navigation ── */}
+            <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:`1px solid ${C.border}`,paddingBottom:8}}>
+              {[{id:"icps",label:"ICPs"},{id:"scripts",label:"Scripts"}].map(t=>(
+                <button key={t.id} onClick={()=>setAdminTab(t.id)}
+                  style={{padding:"5px 16px",borderRadius:8,border:"none",
+                    background:adminTab===t.id?C.t1:"transparent",
+                    color:adminTab===t.id?C.bg:C.t2,
+                    fontSize:11,fontWeight:600,cursor:"pointer",transition:"all 0.15s"}}>
+                  {t.label}
+                </button>
+              ))}
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {(SCRIPT_OPTIONS.salon||SCRIPT_OPTIONS.hvac||[]).map(s=>{
-                const isDisabled = disabledScripts.has(s.variant);
-                return (
-                  <div key={s.variant} style={{display:"flex",alignItems:"center",gap:12,
-                    padding:"10px 14px",borderRadius:10,
-                    border:`1px solid ${isDisabled?C.border:C.green+"40"}`,
-                    background:isDisabled?C.surface:`${C.green}06`}}>
-                    <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{s.variant}</span>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:12,fontWeight:500,color:isDisabled?C.t3:C.t1}}>{s.name}</div>
-                      <div style={{fontSize:10,color:C.t3}}>{s.tag}</div>
-                    </div>
-                    <button onClick={()=>{
-                      setDisabledScripts(prev => {
-                        const next = new Set(prev);
-                        if (next.has(s.variant)) next.delete(s.variant);
-                        else next.add(s.variant);
-                        localStorage.setItem("harmonia-admin-disabled-scripts", JSON.stringify([...next]));
-                        return next;
-                      });
-                    }}
-                      style={{padding:"4px 14px",borderRadius:100,fontSize:11,fontWeight:500,
-                        border:`1px solid ${isDisabled?C.border:C.green}`,
-                        background:isDisabled?"transparent":`${C.green}15`,
-                        color:isDisabled?C.t3:C.green,cursor:"pointer",
-                        transition:"all 0.15s",minWidth:72}}>
-                      {isDisabled?"Disabled":"Enabled"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+
+            {/* ── ICPs tab ── */}
+            {adminTab==="icps"&&(
+              <div>
+                <div style={{fontSize:11,color:C.t3,marginBottom:14}}>
+                  Toggle verticals on/off. Disabled ICPs are hidden from the queue and filters for all callers.
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {Object.entries(ICP_LABEL).map(([key,label])=>{
+                    const isOff = disabledIcps.has(key);
+                    const count = leads.filter(l=>l.icp===key).length;
+                    return (
+                      <div key={key} style={{display:"flex",alignItems:"center",gap:12,
+                        padding:"12px 14px",borderRadius:10,
+                        border:`1px solid ${isOff?C.border:C.green+"40"}`,
+                        background:isOff?C.surface:`${C.green}06`}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:13,fontWeight:600,color:isOff?C.t3:C.t1}}>{label}</div>
+                          <div style={{fontSize:10,color:C.t3}}>{count} lead{count!==1?"s":""} in queue</div>
+                        </div>
+                        <button onClick={()=>{
+                          setDisabledIcps(prev=>{
+                            const next = new Set(prev);
+                            if(next.has(key)) next.delete(key);
+                            else next.add(key);
+                            localStorage.setItem("harmonia-admin-disabled-icps",JSON.stringify([...next]));
+                            return next;
+                          });
+                          // Reset filter if current filter is being disabled
+                          if(!disabledIcps.has(key) && filter===key) setFilter("all");
+                        }}
+                          style={{padding:"5px 16px",borderRadius:100,fontSize:11,fontWeight:500,
+                            border:`1px solid ${isOff?C.border:C.green}`,
+                            background:isOff?"transparent":`${C.green}15`,
+                            color:isOff?C.t3:C.green,cursor:"pointer",
+                            transition:"all 0.15s",minWidth:76}}>
+                          {isOff?"Disabled":"Enabled"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── Scripts tab ── */}
+            {adminTab==="scripts"&&(
+              <div>
+                <div style={{fontSize:11,color:C.t3,marginBottom:14}}>
+                  Toggle scripts on/off for all callers. Disabled scripts are hidden from everyone's Script Mixer.
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {(SCRIPT_OPTIONS.salon||SCRIPT_OPTIONS.hvac||[]).map(s=>{
+                    const isDisabled = disabledScripts.has(s.variant);
+                    return (
+                      <div key={s.variant} style={{display:"flex",alignItems:"center",gap:12,
+                        padding:"10px 14px",borderRadius:10,
+                        border:`1px solid ${isDisabled?C.border:C.green+"40"}`,
+                        background:isDisabled?C.surface:`${C.green}06`}}>
+                        <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{s.variant}</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:12,fontWeight:500,color:isDisabled?C.t3:C.t1}}>{s.name}</div>
+                          <div style={{fontSize:10,color:C.t3}}>{s.tag}</div>
+                        </div>
+                        <button onClick={()=>{
+                          setDisabledScripts(prev => {
+                            const next = new Set(prev);
+                            if (next.has(s.variant)) next.delete(s.variant);
+                            else next.add(s.variant);
+                            localStorage.setItem("harmonia-admin-disabled-scripts", JSON.stringify([...next]));
+                            return next;
+                          });
+                        }}
+                          style={{padding:"4px 14px",borderRadius:100,fontSize:11,fontWeight:500,
+                            border:`1px solid ${isDisabled?C.border:C.green}`,
+                            background:isDisabled?"transparent":`${C.green}15`,
+                            color:isDisabled?C.t3:C.green,cursor:"pointer",
+                            transition:"all 0.15s",minWidth:72}}>
+                          {isDisabled?"Disabled":"Enabled"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
