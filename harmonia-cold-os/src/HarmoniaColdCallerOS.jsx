@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { SCRIPT_OPTIONS, OBJECTION_PRESETS } from './config/sheetMapping';
+import { OBJECTION_PRESETS } from './config/sheetMapping';
 import MissedCallCalculator from './MissedCallCalculator';
 
 /* ─────────────────────────────────────────────
@@ -231,7 +231,7 @@ function parseScripts(rows) {
     if (!icp || !id) return;
     if (!out[icp]) out[icp] = {};
     if (!out[icp][id]) out[icp][id] = { name, tag, lines: [] };
-    if (type && text) out[icp][id].lines.push({ type, text });
+    if (type && text) out[icp][id].lines.push({ type, text, name, tag });
   });
   return out;
 }
@@ -567,6 +567,9 @@ export default function HarmoniaOS() {
         refreshCallHistory();
         // Parse bubbles and branches from Scripts tab
         const parsed = parseBubblesAndBranches(scriptsRaw);
+        console.log('[Harmonia] parsed bubbles by icp:',
+          Object.fromEntries(Object.entries(parsed.bubbles).map(([k, v]) =>
+            [k, { bridge: v.bridge.length, close: v.close.length }])));
         if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
         if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
         if (parsedLeads.length > 0) {
@@ -805,7 +808,12 @@ export default function HarmoniaOS() {
     const scriptUsed = selectedScript === "custom"
       ? `Custom: ${customScript}`
       : selectedScript
-        ? (() => { const opt = (SCRIPT_OPTIONS[active.icp]||[]).find(s=>s.variant===selectedScript); return opt ? `${active.icp}-${opt.variant}: ${opt.name}` : selectedScript; })()
+        ? (() => {
+            const script = scripts[active.icp]?.[selectedScript];
+            const opener = script?.lines.find(l => l.type === "opener");
+            const name = opener?.name || script?.name;
+            return name ? `${active.icp}-${selectedScript}: ${name}` : selectedScript;
+          })()
         : variant;
 
     const objection = customObjection.trim() || objectionRaised;
@@ -1348,9 +1356,18 @@ export default function HarmoniaOS() {
                     style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
                       fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
                     <option value="">Select script...</option>
-                    {(SCRIPT_OPTIONS[active.icp]||[]).filter(s=>!disabledScripts.has(s.variant)).map(s=>(
-                      <option key={s.variant} value={s.variant}>{s.label}</option>
-                    ))}
+                    {Object.entries(scripts[active?.icp]||{})
+                      .filter(([varId]) => !disabledScripts.has(varId) && !["7","8"].includes(varId))
+                      .map(([varId, script]) => {
+                        const opener = script.lines.find(l => l.type === "opener");
+                        const name = opener?.name || script.name;
+                        const tag = opener?.tag || script.tag;
+                        return (
+                          <option key={varId} value={varId}>
+                            {`${varId} — ${name}${tag ? ` (${tag})` : ''}`}
+                          </option>
+                        );
+                      })}
                     <option value="custom">Custom...</option>
                   </select>
                   {selectedScript==="custom"&&(
@@ -2006,13 +2023,20 @@ export default function HarmoniaOS() {
                               if (REMOVED_VARIANTS.has(varId)) return;
                               if (disabledScripts.has(varId)) return;
                               const line = script.lines.find(l => l.type === phase);
-                              // Show all variants in every dropdown — text may be empty if no row for this phase
-                              options.push({ id: varId, name: script.name, tag: script.tag, text: line?.text || "" });
+                              // Show all variants in every dropdown — text may be empty if no row for this phase.
+                              // Prefer the per-phase row's name/tag (sheet is master) so close phase shows e.g. "Two-Choice Time Close"
+                              // instead of the opener's "Email Pretense" label.
+                              options.push({
+                                id: varId,
+                                name: line?.name || script.name,
+                                tag: line?.tag || script.tag,
+                                text: line?.text || "",
+                              });
                             });
                           }
 
                           const isDiscoveryPhase = phase === "discovery";
-                          const icpBranches = branchData[active?.icp] || {};
+                          const icpBranches = branchData[(active?.icp || '').toLowerCase().trim()] || {};
                           // Default phases with no scripts in sheet: skip. Custom phases always render.
                           if (!isCustomPhase && options.length === 0) return null;
 
@@ -2201,7 +2225,7 @@ export default function HarmoniaOS() {
 
                                 /* ── BRIDGE: bubbles gate the script ── */
                                 if (isBridge) {
-                                  const icpBubbles = bubbleData[active?.icp] || { bridge: [], close: [] };
+                                  const icpBubbles = bubbleData[(active?.icp || '').toLowerCase().trim()] || { bridge: [], close: [] };
                                   const activeBubbles = icpBubbles.bridge.length > 0 ? icpBubbles.bridge : bridgeBubbles;
                                   if (activeBubbles.length === 0) {
                                     // No bubble data in sheet — render plain textarea
@@ -2270,7 +2294,7 @@ export default function HarmoniaOS() {
 
                                 /* ── DISCOVERY: branching tree ── */
                                 if (isDiscovery) {
-                                  const variantBranches = (branchData[active?.icp] || {})[selectedVar] || [];
+                                  const variantBranches = (branchData[(active?.icp || '').toLowerCase().trim()] || {})[selectedVar] || [];
                                   if (variantBranches.length > 0) {
                                     const tree = buildBranchTree(variantBranches);
                                     const rootNode = tree.find(n => n.depth === 0);
@@ -2449,7 +2473,7 @@ export default function HarmoniaOS() {
 
                                 /* ── CLOSE: textarea + bubbles ── */
                                 if (isClose) {
-                                  const closeBubbles = (bubbleData[active?.icp] || { close: [] }).close;
+                                  const closeBubbles = (bubbleData[(active?.icp || '').toLowerCase().trim()] || { close: [] }).close;
                                   if (closeBubbles.length === 0) {
                                     return (<>{scriptTextarea}{resizeHandles}</>);
                                   }
@@ -3163,23 +3187,26 @@ export default function HarmoniaOS() {
                   Toggle scripts on/off for all callers. Disabled scripts are hidden from everyone's Script Mixer.
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {(SCRIPT_OPTIONS.salon||SCRIPT_OPTIONS.hvac||[]).map(s=>{
-                    const isDisabled = disabledScripts.has(s.variant);
+                  {Object.entries(scripts.salon || scripts.hvac || {}).map(([varId, script])=>{
+                    const isDisabled = disabledScripts.has(varId);
+                    const opener = script.lines.find(l => l.type === "opener");
+                    const name = opener?.name || script.name;
+                    const tag = opener?.tag || script.tag;
                     return (
-                      <div key={s.variant} style={{display:"flex",alignItems:"center",gap:12,
+                      <div key={varId} style={{display:"flex",alignItems:"center",gap:12,
                         padding:"10px 14px",borderRadius:10,
                         border:`1px solid ${isDisabled?C.border:C.green+"40"}`,
                         background:isDisabled?C.surface:`${C.green}06`}}>
-                        <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{s.variant}</span>
+                        <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{varId}</span>
                         <div style={{flex:1}}>
-                          <div style={{fontSize:12,fontWeight:500,color:isDisabled?C.t3:C.t1}}>{s.name}</div>
-                          <div style={{fontSize:10,color:C.t3}}>{s.tag}</div>
+                          <div style={{fontSize:12,fontWeight:500,color:isDisabled?C.t3:C.t1}}>{name}</div>
+                          <div style={{fontSize:10,color:C.t3}}>{tag}</div>
                         </div>
                         <button onClick={()=>{
                           setDisabledScripts(prev => {
                             const next = new Set(prev);
-                            if (next.has(s.variant)) next.delete(s.variant);
-                            else next.add(s.variant);
+                            if (next.has(varId)) next.delete(varId);
+                            else next.add(varId);
                             localStorage.setItem("harmonia-admin-disabled-scripts", JSON.stringify([...next]));
                             return next;
                           });
