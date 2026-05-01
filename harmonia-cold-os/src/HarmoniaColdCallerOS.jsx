@@ -2045,7 +2045,12 @@ export default function HarmoniaOS() {
                           // Default phases with no scripts in sheet: skip. Custom phases always render.
                           if (!isCustomPhase && options.length === 0) return null;
 
-                          const selectedVar = isCustomPhase ? "custom" : (phaseSelections[phase] || options[0]?.id || "1");
+                          // Clamp the selection to an option that actually exists in this phase, so a stale
+                          // localStorage value (e.g. close=3 from before the variant-3 close row existed)
+                          // can't desync the dropdown label from the textarea text or pull a stale customText.
+                          const persistedSel = phaseSelections[phase];
+                          const validPersisted = options.find(o => o.id === persistedSel) ? persistedSel : null;
+                          const selectedVar = isCustomPhase ? "custom" : (validPersisted || options[0]?.id || "1");
                           const selectedOption = options.find(o => o.id === selectedVar) || options[0];
                           const masterText = selectedOption?.text || "";
                           const scriptKey = isCustomPhase ? `${phase}_custom` : `${phase}_${selectedVar}`;
