@@ -2041,9 +2041,15 @@ export default function HarmoniaOS() {
                           }
 
                           const isDiscoveryPhase = phase === "discovery";
-                          const icpBranches = branchData[(active?.icp || '').toLowerCase().trim()] || {};
-                          // Default phases with no scripts in sheet: skip. Custom phases always render.
-                          if (!isCustomPhase && options.length === 0) return null;
+                          const icpKey = (active?.icp || '').toLowerCase().trim();
+                          const icpBranches = branchData[icpKey] || {};
+                          // Skip a default phase ONLY if it has no scripts AND no bubble/branch data for this ICP.
+                          // Bridge/close still render their bubble chips even when no script row exists for the variant.
+                          const phaseBubbles = bubbleData[icpKey] || { bridge: [], close: [] };
+                          const hasBubblesHere = (phase === "bridge" && phaseBubbles.bridge.length > 0)
+                                              || (phase === "close"  && phaseBubbles.close.length > 0);
+                          const hasBranchesHere = phase === "discovery" && Object.keys(icpBranches).length > 0;
+                          if (!isCustomPhase && options.length === 0 && !hasBubblesHere && !hasBranchesHere) return null;
 
                           // Clamp the selection to an option that actually exists in this phase, so a stale
                           // localStorage value (e.g. close=3 from before the variant-3 close row existed)
