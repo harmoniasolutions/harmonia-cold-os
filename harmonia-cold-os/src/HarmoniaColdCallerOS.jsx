@@ -229,6 +229,9 @@ function parseScripts(rows) {
     const icp = r.icp, id = r.opener_id || r.variant;
     const { name, tag, type, text } = r;
     if (!icp || !id) return;
+    // Bubble/branch rows belong to parseBubblesAndBranches; skip here so they don't create phantom variants.
+    const t = (type || '').toLowerCase().trim();
+    if (t === 'bridge_bubble' || t === 'close_bubble' || t === 'discovery_branch') return;
     if (!out[icp]) out[icp] = {};
     if (!out[icp][id]) out[icp][id] = { name, tag, lines: [] };
     if (type && text) out[icp][id].lines.push({ type, text, name, tag });
@@ -2023,9 +2026,11 @@ export default function HarmoniaOS() {
                               if (REMOVED_VARIANTS.has(varId)) return;
                               if (disabledScripts.has(varId)) return;
                               const line = script.lines.find(l => l.type === phase);
-                              // Show all variants in every dropdown — text may be empty if no row for this phase.
-                              // Prefer the per-phase row's name/tag (sheet is master) so close phase shows e.g. "Two-Choice Time Close"
-                              // instead of the opener's "Email Pretense" label.
+                              // Sheet is master: only include variants that actually have a row for this phase
+                              // (so close dropdown shows just "Two-Choice Time Close" / "NEPQ Soft Close" — not
+                              // every variant falling back to its opener name). Opener phase always shows all
+                              // variants since each variant is defined by its opener row.
+                              if (!line && phase !== "opener") return;
                               options.push({
                                 id: varId,
                                 name: line?.name || script.name,
