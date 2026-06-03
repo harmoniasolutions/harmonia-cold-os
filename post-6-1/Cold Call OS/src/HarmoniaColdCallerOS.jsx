@@ -45,7 +45,37 @@ const C = {
 const F  = "'DM Sans', -apple-system, sans-serif";
 const FM = "'DM Mono', 'SF Mono', monospace";
 
-const ICP_LABEL  = { hvac:"HVAC", salon:"Salon", barbershop:"Barber" };
+// Raw Leads-tab icp values → canonical group used by the Scripts/Objections tabs + filter buttons.
+// The raw icp is kept on the lead so the card shows the specific sub-type; the group is for lookup/filtering.
+const ICP_GROUP = {
+  hair_salon:'salon', hair_and_spa:'salon', nail_salon:'salon', salon:'salon',
+  barbershop:'barbershop',
+  medspa:'beauty_spa', day_spa:'beauty_spa', lash_brow:'beauty_spa', beauty_spa:'beauty_spa',
+  hvac:'hvac',
+};
+// Junk/off-target icps (pet_groomer, non_salon, mlm_distributor, corporate_hq) fall through as
+// themselves → no script set, visible only under "All".
+const icpGroup = (raw) => {
+  const k = (raw || '').toLowerCase().trim();
+  return ICP_GROUP[k] || k;
+};
+const FILTER_GROUPS = ["all", "salon", "barbershop", "beauty_spa"];
+const GROUP_LABEL   = { salon:"Salon", barbershop:"Barber", beauty_spa:"Spa", hvac:"HVAC" };
+
+// Caller-facing label per raw icp — stays specific (caller must know exactly what they're dialing).
+const ICP_LABEL  = {
+  hvac:"HVAC", salon:"Salon", barbershop:"Barber", beauty_spa:"Spa",
+  hair_salon:"Salon", hair_and_spa:"Hair & Spa", nail_salon:"Nail Salon",
+  medspa:"Medspa", day_spa:"Day Spa", lash_brow:"Lash & Brow",
+  pet_groomer:"Pet Groomer", non_salon:"Non-Salon", mlm_distributor:"MLM", corporate_hq:"Corporate HQ",
+};
+// Openers benched for this week's test — DISPLAY filter only (rows stay in the Scripts sheet as the
+// iteration bank). Edit this one line to change which openers are live. Applies to the opener list only;
+// downstream phases (bridge/discovery/pitch/close) and objections are unaffected.
+// 1=Email Pretense  2=Honest Cold Call  3=Missed Call Flip  4=Beta Test  5=Blunt Founder
+// 6=Review Call-Out  7=Competitor Ghost  8=Competitor Scarcity
+const ACTIVE_OPENERS = ["1", "2"];
+
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
 const LINE_COLOR = { opener:C.accent, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
 
@@ -206,10 +236,18 @@ function StarRow({ stars }) {
 ───────────────────────────────────────────── */
 function parseLeads(rows) {
   return rows
-    .filter(r => r.biz && r.biz.trim() !== "")
-    .map((r, i) => ({
+    // Sheet header migrated: biz→biz_name, phone→corporate_phone/mobile_phone, intel_comments→intel,
+    // score→reviews_rating. Map current headers onto the names the render/intel path reads.
+    .filter(r => (r.biz_name || r.biz || "").trim() !== "")
+    .map((r, i) => {
+      const phone = r.corporate_phone || r.mobile_phone || r.phone || "";
+      return {
       ...r,
-      id:            r.id || r.phone || `lead-${i}`,
+      biz:           r.biz_name ?? r.biz ?? "",
+      phone,
+      intel_comments:r.intel ?? r.intel_comments ?? "",
+      score:         r.reviews_rating ?? r.score ?? "",   // numeric rating; SCORE_DOT falls back to neutral
+      id:            r.id || phone || `lead-${i}`,
       pain:          parseInt(r.pain) || 0,
       chairs:        r.chairs ? parseInt(r.chairs) : null,
       reviews_count: parseInt(r.reviews_count) || 0,
@@ -220,7 +258,8 @@ function parseLeads(rows) {
       call_count:         parseInt(r.call_count) || 0,
       last_call_timestamp: r.last_call_timestamp || "",
       disposition:         r.disposition || "",
-    }));
+      };
+    });
 }
 
 function parseScripts(rows) {
@@ -578,7 +617,7 @@ export default function HarmoniaOS() {
         if (parsedLeads.length > 0) {
           setActive(parsedLeads[0]);
           const recs = getRecommendedOpeners(parsedLeads[0]);
-          const avail = Object.keys(parseScripts(scriptsRaw)[parsedLeads[0]?.icp] || {});
+          const avail = Object.keys(parseScripts(scriptsRaw)[icpGroup(parsedLeads[0]?.icp)] || {});
           const pick = recs.find(r => avail.includes(r.openerId));
           setVariant(pick ? pick.openerId : avail[0] || "1");
         }
@@ -649,16 +688,16 @@ export default function HarmoniaOS() {
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
-  const activeLeads  = leads.filter(l => !disabledIcps.has(l.icp));
-  const filtered     = activeLeads.filter(l => filter==="all" || l.icp===filter);
+  const activeLeads  = leads.filter(l => !disabledIcps.has(icpGroup(l.icp)));
+  const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
   const queueLeft    = filtered.filter(l=>l.status==="queued").length;
   const totalAns     = stats.answered + stats.demos;
   const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
   const demoRate     = totalAns>0    ? Math.round(stats.demos/totalAns*100) : 0;
 
-  const curScripts   = scripts[active?.icp] || {};
+  const curScripts   = scripts[icpGroup(active?.icp)] || {};
   const curScript    = curScripts[variant]  || curScripts[Object.keys(curScripts)[0]];
-  const curObjs      = [...(objections[active?.icp] || []), ...(customObjections[active?.icp] || [])];
+  const curObjs      = [...(objections[icpGroup(active?.icp)] || []), ...(customObjections[active?.icp] || [])];
   const variants     = Object.keys(curScripts);
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
@@ -731,7 +770,7 @@ export default function HarmoniaOS() {
     setCloseEmail(lead?.prospect_email||lead?.email||"");
     setCloseEmailStatus(null);
     const recs = getRecommendedOpeners(lead);
-    const avail = Object.keys(scripts[lead?.icp] || {});
+    const avail = Object.keys(scripts[icpGroup(lead?.icp)] || {});
     const pick = recs.find(r => avail.includes(r.openerId));
     setVariant(pick ? pick.openerId : avail[0] || "1");
     // Set phase selections — opener from recommendation, others default to first available
@@ -812,7 +851,7 @@ export default function HarmoniaOS() {
       ? `Custom: ${customScript}`
       : selectedScript
         ? (() => {
-            const script = scripts[active.icp]?.[selectedScript];
+            const script = scripts[icpGroup(active.icp)]?.[selectedScript];
             const opener = script?.lines.find(l => l.type === "opener");
             const name = opener?.name || script?.name;
             return name ? `${active.icp}-${selectedScript}: ${name}` : selectedScript;
@@ -1099,13 +1138,13 @@ export default function HarmoniaOS() {
           display:"flex",flexDirection:"column",flexShrink:0}}>
           <div style={{padding:"9px 10px 8px",borderBottom:`1px solid ${C.border}`,
             display:"flex",gap:4,flexWrap:"wrap"}}>
-            {["all","hvac","salon","barbershop"].filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
+            {FILTER_GROUPS.filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
               <button key={f} onClick={()=>setFilter(f)}
                 style={{padding:"3px 10px",borderRadius:100,
                   border:`1px solid ${filter===f?C.t1:C.border}`,
                   background:filter===f?C.t1:"transparent",
                   color:filter===f?C.bg:C.t2,fontSize:10,fontWeight:500,transition:"all 0.12s"}}>
-                {f==="all"?"All":ICP_LABEL[f]}
+                {f==="all"?"All":GROUP_LABEL[f]}
               </button>
             ))}
           </div>
@@ -1359,8 +1398,8 @@ export default function HarmoniaOS() {
                     style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
                       fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
                     <option value="">Select script...</option>
-                    {Object.entries(scripts[active?.icp]||{})
-                      .filter(([varId]) => !disabledScripts.has(varId) && !["7","8"].includes(varId))
+                    {Object.entries(scripts[icpGroup(active?.icp)]||{})
+                      .filter(([varId]) => !disabledScripts.has(varId) && ACTIVE_OPENERS.includes(varId))
                       .map(([varId, script]) => {
                         const opener = script.lines.find(l => l.type === "opener");
                         const name = opener?.name || script.name;
@@ -1540,7 +1579,7 @@ export default function HarmoniaOS() {
                         <select value={objectionRaised} onChange={e=>setObjectionRaised(e.target.value)}
                           style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,background:C.bg,color:C.t1,outline:"none"}}>
                           <option value="">Select objection...</option>
-                          {[...(OBJECTION_PRESETS[active.icp]||[]),...(OBJECTION_PRESETS._global||[])].map(o=>(
+                          {[...(OBJECTION_PRESETS[icpGroup(active.icp)]||[]),...(OBJECTION_PRESETS._global||[])].map(o=>(
                             <option key={o} value={o}>{o}</option>
                           ))}
                         </select>
@@ -2018,11 +2057,14 @@ export default function HarmoniaOS() {
                           const isBridge = phase === "bridge";
 
                           // Get available variants for this phase
-                          const icpScripts = scripts[active?.icp] || {};
+                          const icpScripts = scripts[icpGroup(active?.icp)] || {};
                           const REMOVED_VARIANTS = new Set(["7","8"]);
                           const options = [];
                           if (!isCustomPhase) {
                             Object.entries(icpScripts).forEach(([varId, script]) => {
+                              // Opener phase: bench all but the active openers (display only). Downstream
+                              // phases keep their full variant list — ACTIVE_OPENERS is opener-scoped.
+                              if (phase === "opener" && !ACTIVE_OPENERS.includes(varId)) return;
                               if (REMOVED_VARIANTS.has(varId)) return;
                               if (disabledScripts.has(varId)) return;
                               const line = script.lines.find(l => l.type === phase);
@@ -2041,7 +2083,7 @@ export default function HarmoniaOS() {
                           }
 
                           const isDiscoveryPhase = phase === "discovery";
-                          const icpKey = (active?.icp || '').toLowerCase().trim();
+                          const icpKey = icpGroup(active?.icp);
                           const icpBranches = branchData[icpKey] || {};
                           // Skip a default phase ONLY if it has no scripts AND no bubble/branch data for this ICP.
                           // Bridge/close still render their bubble chips even when no script row exists for the variant.
@@ -2241,7 +2283,7 @@ export default function HarmoniaOS() {
 
                                 /* ── BRIDGE: bubbles gate the script ── */
                                 if (isBridge) {
-                                  const icpBubbles = bubbleData[(active?.icp || '').toLowerCase().trim()] || { bridge: [], close: [] };
+                                  const icpBubbles = bubbleData[icpGroup(active?.icp)] || { bridge: [], close: [] };
                                   const activeBubbles = icpBubbles.bridge.length > 0 ? icpBubbles.bridge : bridgeBubbles;
                                   if (activeBubbles.length === 0) {
                                     // No bubble data in sheet — render plain textarea
@@ -2310,7 +2352,7 @@ export default function HarmoniaOS() {
 
                                 /* ── DISCOVERY: branching tree ── */
                                 if (isDiscovery) {
-                                  const variantBranches = (branchData[(active?.icp || '').toLowerCase().trim()] || {})[selectedVar] || [];
+                                  const variantBranches = (branchData[icpGroup(active?.icp)] || {})[selectedVar] || [];
                                   if (variantBranches.length > 0) {
                                     const tree = buildBranchTree(variantBranches);
                                     const rootNode = tree.find(n => n.depth === 0);
@@ -2489,7 +2531,7 @@ export default function HarmoniaOS() {
 
                                 /* ── CLOSE: textarea + bubbles ── */
                                 if (isClose) {
-                                  const closeBubbles = (bubbleData[(active?.icp || '').toLowerCase().trim()] || { close: [] }).close;
+                                  const closeBubbles = (bubbleData[icpGroup(active?.icp)] || { close: [] }).close;
                                   if (closeBubbles.length === 0) {
                                     return (<>{scriptTextarea}{resizeHandles}</>);
                                   }
@@ -2734,7 +2776,7 @@ export default function HarmoniaOS() {
                       <>
                         <div style={{fontSize:11,color:C.t3,marginBottom:4}}>Tap to expand</div>
                         {curObjs.map((obj,i)=>{
-                          const sheetCount = (objections[active?.icp] || []).length;
+                          const sheetCount = (objections[icpGroup(active?.icp)] || []).length;
                           const isCustom = i >= sheetCount;
                           const customIdx = i - sheetCount;
                           return (
@@ -3159,9 +3201,9 @@ export default function HarmoniaOS() {
                   Toggle verticals on/off. Disabled ICPs are hidden from the queue and filters for all callers.
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {Object.entries(ICP_LABEL).map(([key,label])=>{
+                  {Object.entries(GROUP_LABEL).map(([key,label])=>{
                     const isOff = disabledIcps.has(key);
-                    const count = leads.filter(l=>l.icp===key).length;
+                    const count = leads.filter(l=>icpGroup(l.icp)===key).length;
                     return (
                       <div key={key} style={{display:"flex",alignItems:"center",gap:12,
                         padding:"12px 14px",borderRadius:10,
