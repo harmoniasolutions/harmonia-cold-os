@@ -17,8 +17,17 @@ const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/
 
 async function fetchSheet(tab) {
   const res = await fetch(`${BASE}/${tab}?key=${API_KEY}`);
-  const json = await res.json();
-  const [headers, ...rows] = json.values || [];
+  const json = await res.json().catch(() => null);
+  // Fail loudly on any non-200 (bad tab name, bad key, etc.) instead of returning [] —
+  // an empty array reads as "no data" and silently hides a wrong tab name.
+  if (!res.ok) {
+    const apiMsg = json?.error?.message || res.statusText || "unknown error";
+    const msg = `fetchSheet("${tab}") failed: HTTP ${res.status} — ${apiMsg}`;
+    console.error(`[Harmonia] ${msg}`);
+    throw new Error(msg);
+  }
+  const [headers, ...rows] = json?.values || [];
+  if (!headers) return []; // 200 with a genuinely empty tab
   return rows.map(row =>
     Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""]))
   );
@@ -59,15 +68,17 @@ const icpGroup = (raw) => {
   const k = (raw || '').toLowerCase().trim();
   return ICP_GROUP[k] || k;
 };
-const FILTER_GROUPS = ["all", "salon", "barbershop", "beauty_spa"];
-const GROUP_LABEL   = { salon:"Salon", barbershop:"Barber", beauty_spa:"Spa", hvac:"HVAC" };
+// Active ICPs — only hair salon & barbershop. Any lead whose group is not one of these is
+// hidden from the queue/filters entirely (see VISIBLE_GROUPS / activeLeads).
+const FILTER_GROUPS = ["all", "salon", "barbershop"];
+const GROUP_LABEL   = { salon:"Hair Salon", barbershop:"Barbershop" };
+// Groups that show anywhere in the app. Everything else (spa/nail/medspa/pet/junk) is filtered out.
+const VISIBLE_GROUPS = new Set(["salon", "barbershop"]);
 
-// Caller-facing label per raw icp — stays specific (caller must know exactly what they're dialing).
+// Caller-facing label per raw icp — collapses to just "Hair Salon" / "Barbershop".
 const ICP_LABEL  = {
-  hvac:"HVAC", salon:"Salon", barbershop:"Barber", beauty_spa:"Spa",
-  hair_salon:"Salon", hair_and_spa:"Hair & Spa", nail_salon:"Nail Salon",
-  medspa:"Medspa", day_spa:"Day Spa", lash_brow:"Lash & Brow",
-  pet_groomer:"Pet Groomer", non_salon:"Non-Salon", mlm_distributor:"MLM", corporate_hq:"Corporate HQ",
+  salon:"Hair Salon", hair_salon:"Hair Salon", hair_and_spa:"Hair Salon",
+  nail_salon:"Hair Salon", barbershop:"Barbershop",
 };
 // Openers benched for this week's test — DISPLAY filter only (rows stay in the Scripts sheet as the
 // iteration bank). Edit this one line to change which openers are live. Applies to the opener list only;
@@ -75,6 +86,20 @@ const ICP_LABEL  = {
 // 1=Email Pretense  2=Honest Cold Call  3=Missed Call Flip  4=Beta Test  5=Blunt Founder
 // 6=Review Call-Out  7=Competitor Ghost  8=Competitor Scarcity
 const ACTIVE_OPENERS = ["1", "2"];
+
+// "Emailed?" status shown in Intel — fed from the Leads tab `emailed` column.
+// Use a checkbox (TRUE/FALSE), "yes"/"no", or a date — any non-empty value that isn't an
+// explicit no/false/0 counts as emailed. Lets a date double as "when".
+const EMAILED_NEGATIVE = new Set(["", "false", "no", "n", "0", "not emailed", "pending", "none", "-", "—"]);
+const EMAILED_GENERIC  = new Set(["true", "yes", "y", "sent", "1", "✓", "emailed", "done"]);
+function leadEmailed(lead) {
+  let raw = (lead?.emailed ?? "").toString().trim();
+  if (raw.startsWith("=")) raw = raw.slice(1).trim();
+  const sent = raw !== "" && !EMAILED_NEGATIVE.has(raw.toLowerCase());
+  // If the value carries extra info (e.g. a date) rather than a generic yes, surface it.
+  const detail = sent && !EMAILED_GENERIC.has(raw.toLowerCase()) ? raw : "";
+  return { sent, detail };
+}
 
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
 const LINE_COLOR = { opener:C.accent, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
@@ -114,10 +139,12 @@ const OUTCOMES = {
 const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B","#14B8A6","#EF4444"];
 
 const OUTCOME_ROWS = [
-  ["demo_booked", "loom_sent", "callback", "followup_sent"],
-  ["answered", "voicemail", "gatekeeper", "no_answer"],
-  ["not_interested", "not_qualified", "dnc"],
+  ["demo_booked", "followup_sent", "voicemail"],
+  ["not_qualified", "dnc"],
 ];
+
+// Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
+const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel"];
 
 const pad  = (n) => String(n).padStart(2,"0");
 const fmt  = (s) => `${pad(Math.floor(s/60))}:${pad(s%60)}`;
@@ -535,8 +562,12 @@ export default function HarmoniaOS() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [adminTab, setAdminTab] = useState("icps");
 
-  // Call history from Script_Performance tab — shared across all callers
+  // Call history from the "history" tab — shared across all callers
   const [callHistory, setCallHistory] = useState({}); // { leadId: [{caller, outcome, duration, variant, timestamp, notes, spoke_with}, ...] }
+
+  // Leaderboard: top-level view toggle + Booked Demos rows (source of Shows)
+  const [mainView, setMainView] = useState("workspace"); // "workspace" | "leaderboard"
+  const [bookedDemos, setBookedDemos] = useState([]); // [{caller, status}]
 
   // Clean broken formula values (#ERROR!, #NAME?, #REF!) and strip leading = from formula cells
   function clean(v) {
@@ -546,7 +577,7 @@ export default function HarmoniaOS() {
     return v;
   }
 
-  // Parse a Script_Performance row — handles both sheet headers ("Lead ID") and webhook keys ("lead_id")
+  // Parse a "history" tab row — handles both sheet headers ("Lead ID") and webhook keys ("lead_id")
   function parsePerfRow(r) {
     const lid       = clean(r["Lead ID"] || r.lead_id || r.id || "");
     const caller    = clean(r["Caller Name"] || r.caller_name || r.caller || "");
@@ -561,10 +592,10 @@ export default function HarmoniaOS() {
     return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper };
   }
 
-  // Re-fetch Script_Performance and rebuild call history map
+  // Re-fetch the "history" tab (per-call log written by n8n) and rebuild call history map
   async function refreshCallHistory() {
     try {
-      const perfRaw = await fetchSheet("Script_Performance");
+      const perfRaw = await fetchSheet("history");
       const histMap = {};
       perfRaw.forEach(r => {
         const p = parsePerfRow(r);
@@ -605,8 +636,15 @@ export default function HarmoniaOS() {
         setObjections(parseObjections(objectionsRaw));
         const parsedOffers = parseOffers(offersRaw);
         setOffers(parsedOffers);
-        // Fetch call history from Script_Performance (non-blocking)
+        // Fetch call history from the "history" tab (non-blocking)
         refreshCallHistory();
+        // Booked Demos tab → source of leaderboard "Shows" (empty for now; degrade to [])
+        fetchSheet("Booked Demos").then(rows => {
+          setBookedDemos(rows.map(r => ({
+            caller: clean(r["Caller Name"] || r.caller_name || ""),
+            status: clean(r["Status"] || r.status || ""),
+          })));
+        }).catch(() => setBookedDemos([]));
         // Parse bubbles and branches from Scripts tab
         const parsed = parseBubblesAndBranches(scriptsRaw);
         console.log('[Harmonia] parsed bubbles by icp:',
@@ -614,10 +652,12 @@ export default function HarmoniaOS() {
             [k, { bridge: v.bridge.length, close: v.close.length }])));
         if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
         if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
-        if (parsedLeads.length > 0) {
-          setActive(parsedLeads[0]);
-          const recs = getRecommendedOpeners(parsedLeads[0]);
-          const avail = Object.keys(parseScripts(scriptsRaw)[icpGroup(parsedLeads[0]?.icp)] || {});
+        // Land on the first visible (hair salon / barbershop) lead, not a hidden vertical.
+        const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp))) || parsedLeads[0];
+        if (firstVisible) {
+          setActive(firstVisible);
+          const recs = getRecommendedOpeners(firstVisible);
+          const avail = Object.keys(parseScripts(scriptsRaw)[icpGroup(firstVisible?.icp)] || {});
           const pick = recs.find(r => avail.includes(r.openerId));
           setVariant(pick ? pick.openerId : avail[0] || "1");
         }
@@ -688,7 +728,7 @@ export default function HarmoniaOS() {
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
-  const activeLeads  = leads.filter(l => !disabledIcps.has(icpGroup(l.icp)));
+  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)));
   const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
   const queueLeft    = filtered.filter(l=>l.status==="queued").length;
   const totalAns     = stats.answered + stats.demos;
@@ -1066,7 +1106,6 @@ export default function HarmoniaOS() {
                 {name:"Julian", phone:"+16092771636"},
                 {name:"Owen",   phone:"+16094120214"},
                 {name:"Joel",   phone:"+16096743986"},
-                {name:"Pete",   phone:null},
               ].find(c=>c.name===sel);
               if(match) setCaller(match.phone);
             }}
@@ -1078,7 +1117,6 @@ export default function HarmoniaOS() {
               {name:"Julian", phone:"+16092771636"},
               {name:"Owen",   phone:"+16094120214"},
               {name:"Joel",   phone:"+16096743986"},
-              {name:"Pete",   phone:null},
             ].map(c=><option key={c.name} value={c.name}>{c.name}</option>)}
           </select>
         </div>
@@ -1108,6 +1146,12 @@ export default function HarmoniaOS() {
           {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
+        <button onClick={()=>setMainView("leaderboard")}
+          style={{padding:"4px 10px",borderRadius:6,
+            border:`1px solid ${C.border}`,background:"transparent",
+            color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",transition:"all 0.15s"}}>
+          Leaderboard
+        </button>
         <button onClick={()=>setShowStatsPanel(v=>!v)}
           style={{padding:"4px 10px",borderRadius:6,
             border:`1px solid ${showStatsPanel?C.t1:C.border}`,
@@ -1129,6 +1173,88 @@ export default function HarmoniaOS() {
           </>
         )}
       </div>
+
+      {/* ── LEADERBOARD (top-level view) ── */}
+      {mainView==="leaderboard" && (
+        <div style={{position:"fixed",inset:0,zIndex:8000,background:C.bg,
+          display:"flex",flexDirection:"column"}}>
+          {/* Leaderboard header */}
+          <div style={{borderBottom:`1px solid ${C.border}`,padding:"0 20px",display:"flex",
+            alignItems:"center",gap:14,height:52,flexShrink:0}}>
+            <span style={{fontSize:14,fontWeight:500,letterSpacing:"-0.01em"}}>Leaderboard</span>
+            <span style={{fontSize:11,color:C.t3}}>All callers · from shared call history</span>
+            <div style={{flex:1}}/>
+            <button onClick={()=>setMainView("workspace")}
+              style={{padding:"4px 12px",borderRadius:6,border:`1px solid ${C.border}`,
+                background:"transparent",color:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+              ← Back to caller
+            </button>
+          </div>
+          {/* Table */}
+          <div style={{flex:1,overflowY:"auto",padding:"28px 20px"}}>
+            {(()=>{
+              const COLS = "44px 1fr 92px 92px 92px 92px";
+              const agg = {};
+              CALLER_ROSTER.forEach(c => { agg[c] = { dials:0, booked:0, shows:0 }; });
+              // Dials + Booked from the shared call-history log
+              Object.values(callHistory).flat().forEach(e => {
+                const c = (e.caller||"").trim();
+                if (!c || c === "#NAME?") return;           // skip junk/formula-error callers
+                if (!agg[c]) agg[c] = { dials:0, booked:0, shows:0 };
+                agg[c].dials++;
+                if (e.outcome === "demo_booked") agg[c].booked++;
+              });
+              // Shows from the Booked Demos tab (Status marked showed/attended/completed)
+              bookedDemos.forEach(d => {
+                const c = (d.caller||"").trim();
+                if (c && /show|attend|complet/i.test(d.status||"")) {
+                  if (!agg[c]) agg[c] = { dials:0, booked:0, shows:0 };
+                  agg[c].shows++;
+                }
+              });
+              const rows = Object.entries(agg)
+                .map(([caller,s]) => ({ caller, ...s, bookPct: s.dials ? Math.round(s.booked/s.dials*100) : 0 }))
+                .sort((a,b) => b.booked-a.booked || b.dials-a.dials || b.shows-a.shows);
+              const totalShows = rows.reduce((n,r)=>n+r.shows,0);
+              return (
+                <div style={{maxWidth:760,margin:"0 auto"}}>
+                  {/* column headers */}
+                  <div style={{display:"grid",gridTemplateColumns:COLS,padding:"0 16px 10px",
+                    borderBottom:`1px solid ${C.border}`}}>
+                    {["#","Caller","Dials","Booked","Shows","Book%"].map((h,i)=>(
+                      <div key={h} style={{fontSize:10,color:C.t3,fontWeight:600,letterSpacing:"0.05em",
+                        textTransform:"uppercase",textAlign:i<2?"left":"right"}}>{h}</div>
+                    ))}
+                  </div>
+                  {rows.map((r,i)=>(
+                    <div key={r.caller} style={{display:"grid",gridTemplateColumns:COLS,alignItems:"center",
+                      padding:"15px 16px",borderBottom:`1px solid ${C.border}`,
+                      background:i===0&&r.dials>0?`${C.green}08`:"transparent"}}>
+                      <div style={{fontSize:13,fontWeight:600,color:i===0&&r.dials>0?C.green:C.t3}}>{i+1}</div>
+                      <div style={{fontSize:14,fontWeight:500,color:C.t1}}>{r.caller}</div>
+                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,color:C.t1}}>{r.dials}</div>
+                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,fontWeight:600,
+                        color:r.booked?C.green:C.t3}}>{r.booked}</div>
+                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,
+                        color:r.shows?C.t1:C.t3}}>{r.shows}</div>
+                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,fontWeight:600,
+                        color:r.bookPct?C.accent:C.t3}}>{r.bookPct}%</div>
+                    </div>
+                  ))}
+                  {/* footnotes */}
+                  <div style={{marginTop:18,fontSize:11,color:C.t3,lineHeight:1.6}}>
+                    <div>Dials &amp; Booked are live from the shared call history. Book% = Booked ÷ Dials.</div>
+                    {totalShows===0 && (
+                      <div>Shows reads from the “Booked Demos” tab (Status = showed/attended) — 0 until demos are logged there.</div>
+                    )}
+                    <div style={{color:C.t3,marginTop:2}}>30s+ talk-time column coming once real talk-time is wired.</div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* ── BODY ── */}
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
@@ -1189,7 +1315,7 @@ export default function HarmoniaOS() {
                         {lead.script_used&&<span style={{color:C.t3,fontWeight:400}}> · Script {lead.script_used.toUpperCase()}</span>}
                       </div>
                     )}
-                    {/* Call history indicator from Script_Performance */}
+                    {/* Call history indicator from the "history" tab */}
                     {!isDone && (callHistory[lead.id]?.length || 0) > 0 && (()=>{
                       const hist = callHistory[lead.id];
                       const last = hist[0];
@@ -1421,32 +1547,9 @@ export default function HarmoniaOS() {
                 </div>
               )}
 
-              {/* Outcome buttons — during live call, before confirming */}
-              {callRun&&!pendingOutcome&&(
-                <div style={{padding:"10px 20px",flexShrink:0,borderBottom:`1px solid ${C.border}`}}>
-                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                    {OUTCOME_ROWS.map((row,ri)=>(
-                      <div key={ri} style={{display:"grid",
-                        gridTemplateColumns:`repeat(${row.length},1fr)`,gap:4}}>
-                        {row.map(key=>{
-                          const o=OUTCOMES[key];
-                          return (
-                            <button key={key} onClick={()=>selectOutcome(key)}
-                              style={{padding:"5px 6px",borderRadius:7,
-                                border:`1px solid ${o.color}35`,background:`${o.color}08`,
-                                color:o.color,fontSize:10,fontWeight:500,whiteSpace:"nowrap",
-                                transition:"all 0.1s"}}>
-                              {o.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                )}
+              {/* Disposition logging happens only after End Call, via the dispo bar modal */}
 
-              {pendingOutcome&&(
+              {pendingOutcome&&!dispoBarOpen&&(
                 <div style={{padding:"12px 20px 14px",flexShrink:0,
                   borderBottom:`1px solid ${C.border}`,background:C.surface,
                   animation:"slideDown 0.2s ease",overflowY:"auto",maxHeight:"50vh"}}>
@@ -1641,6 +1744,23 @@ export default function HarmoniaOS() {
                   <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
                     {/* Left column — Pre-call dossier */}
                     <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 320px",minWidth:280}}>
+                      {/* Email outreach status — fed from Leads `emailed` column */}
+                      {(()=>{ const e=leadEmailed(active); return (
+                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
+                          <div style={{fontSize:10,color:C.t3,marginBottom:8}}>Outreach</div>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <div style={{width:8,height:8,borderRadius:"50%",
+                              background:e.sent?C.green:C.t3,flexShrink:0}}/>
+                            <span style={{fontSize:13,fontWeight:500,color:e.sent?C.green:C.t2}}>
+                              {e.sent?"Emailed":"Not emailed yet"}
+                            </span>
+                          </div>
+                          {e.detail&&(
+                            <div style={{fontSize:11,color:C.t3,marginTop:4,marginLeft:16}}>{e.detail}</div>
+                          )}
+                        </div>
+                      );})()}
+
                       {active.leak&&active.leak!=="—"&&(
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Revenue leak / mo</div>
@@ -1705,7 +1825,7 @@ export default function HarmoniaOS() {
 
                     {/* Right column — Shared Lead Notes */}
                     <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 280px",minWidth:260}}>
-                      {/* Call History from Script_Performance — shared across all callers */}
+                      {/* Call History from the "history" tab — shared across all callers */}
                       {(()=>{
                         const hist = callHistory[active.id] || [];
                         const totalCalls = hist.length;
@@ -3015,7 +3135,7 @@ export default function HarmoniaOS() {
       </div>
 
       {/* Persistent "Log Disposition" button */}
-      {active&&!dispoBarOpen&&sessRun&&(
+      {active&&!dispoBarOpen&&!callRun&&sessRun&&(
         <button onClick={openDispoBar}
           style={{position:"fixed",bottom:16,right:20,padding:"6px 16px",borderRadius:100,
             border:`1px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,

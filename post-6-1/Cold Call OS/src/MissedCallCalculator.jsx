@@ -31,7 +31,6 @@ function useAnimatedNumber(target, duration = 350) {
 const PRESETS = [
   { label: "Hair Salon",  missed: 15, value: 75, rate: 40 },
   { label: "Barbershop",  missed: 20, value: 35, rate: 50 },
-  { label: "Nail Salon",  missed: 12, value: 45, rate: 45 },
 ];
 
 const HARMONIA_PRICE = 297;
