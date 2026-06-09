@@ -101,6 +101,22 @@ function leadEmailed(lead) {
   return { sent, detail };
 }
 
+// Owner name — the Leads sheet only has a single full-name `owner` column, so split it
+// into first/last here (skip leading titles like Dr./Mr. and trailing suffixes like Jr./III).
+const NAME_TITLES   = new Set(["dr", "mr", "mrs", "ms", "miss", "mx", "prof"]);
+const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "md", "dds", "phd", "esq"]);
+function parseOwnerName(owner) {
+  let raw = (owner ?? "").toString().trim();
+  if (raw.startsWith("=")) raw = raw.slice(1).trim();
+  let parts = raw.replace(/\s+/g, " ").split(" ").filter(Boolean);
+  if (parts.length > 1 && NAME_TITLES.has(parts[0].toLowerCase().replace(/\./g, ""))) parts = parts.slice(1);
+  if (parts.length > 1 && NAME_SUFFIXES.has(parts[parts.length - 1].toLowerCase().replace(/[.,]/g, ""))) parts = parts.slice(0, -1);
+  if (!parts.length) return { first: "", last: "", full: "" };
+  const first = parts[0];
+  const last = parts.length > 1 ? parts.slice(1).join(" ") : "";
+  return { first, last, full: [first, last].filter(Boolean).join(" ") };
+}
+
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
 const LINE_COLOR = { opener:C.accent, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
 
@@ -131,6 +147,7 @@ const OUTCOMES = {
   gatekeeper:     { label:"Gatekeeper",     color:C.t2,      short:"GK",   ghl:null,                  discord:null,                needsGatekeeper:true                },
   robo_responder: { label:"Robo responder", color:C.teal,    short:"Robo", ghl:null,                  discord:null                                                    },
   owner:          { label:"Owner",          color:C.accent,  short:"Own",  ghl:null,                  discord:null                                                    },
+  number_error:   { label:"Number Error",   color:C.amber,   short:"Err",  ghl:null,                  discord:null                                                    },
   no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
@@ -143,7 +160,7 @@ const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B
 const OUTCOME_ROWS = [
   ["demo_booked", "followup_sent", "owner"],
   ["voicemail", "gatekeeper", "robo_responder"],
-  ["not_qualified", "dnc"],
+  ["not_qualified", "dnc", "number_error"],
 ];
 
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
@@ -1210,6 +1227,13 @@ export default function HarmoniaOS() {
                   agg[c].shows++;
                 }
               });
+              // Overlay the active caller's LIVE session — the shared history log only gains a
+              // row once a disposition is logged + the n8n webhook writes it, so mid-session it
+              // lags behind real dials. max() keeps all-time history when it's already higher.
+              if (callerName && agg[callerName]) {
+                agg[callerName].dials  = Math.max(agg[callerName].dials,  stats.dials);
+                agg[callerName].booked = Math.max(agg[callerName].booked, stats.demos);
+              }
               const rows = Object.entries(agg)
                 .map(([caller,s]) => ({ caller, ...s, bookPct: s.dials ? Math.round(s.booked/s.dials*100) : 0 }))
                 .sort((a,b) => b.booked-a.booked || b.dials-a.dials || b.shows-a.shows);
@@ -1241,7 +1265,7 @@ export default function HarmoniaOS() {
                   ))}
                   {/* footnotes */}
                   <div style={{marginTop:18,fontSize:11,color:C.t3,lineHeight:1.6}}>
-                    <div>Dials &amp; Booked are live from the shared call history. Book% = Booked ÷ Dials.</div>
+                    <div>Dials &amp; Booked come from the shared call history{callerName?`; your row (${callerName}) reflects your live session in real time`:""}. Book% = Booked ÷ Dials.</div>
                     {totalShows===0 && (
                       <div>Shows reads from the “Booked Demos” tab (Status = showed/attended) — 0 until demos are logged there.</div>
                     )}
@@ -1745,6 +1769,7 @@ export default function HarmoniaOS() {
                       {/* Contact — phone in use, email status, and web links in one box */}
                       {(()=>{
                         const e=leadEmailed(active);
+                        const o=parseOwnerName(active.owner);
                         const phones=getLeadPhones(active);
                         const primary=phones.find(p=>p.number===lastDialedPhone)||phones[0];
                         const phoneDot=!primary?C.t3:primary.label==="Mobile"?C.green:C.amber;
@@ -1758,6 +1783,16 @@ export default function HarmoniaOS() {
                           <div style={{fontSize:10,fontWeight:600,letterSpacing:"0.08em",color:C.t3,
                             textTransform:"uppercase",marginBottom:13}}>Contact</div>
                           <div style={{display:"flex",flexDirection:"column",gap:11}}>
+                            {/* Owner — first + last parsed from the Leads `owner` column */}
+                            {o.full&&(
+                              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                                <div style={{width:7,height:7,borderRadius:"50%",background:C.accent,flexShrink:0}}/>
+                                <span style={lbl}>Owner</span>
+                                <span style={{fontSize:13,fontWeight:600,color:C.t1,whiteSpace:"nowrap"}}>
+                                  {o.first}{o.last&&<span style={{fontWeight:400,color:C.t2}}> {o.last}</span>}
+                                </span>
+                              </div>
+                            )}
                             {/* Phone — Mobile (preferred) vs Corporate/Home, number on one line */}
                             <div style={{display:"flex",alignItems:"center",gap:10}}>
                               <div style={{width:7,height:7,borderRadius:"50%",background:phoneDot,flexShrink:0}}/>
