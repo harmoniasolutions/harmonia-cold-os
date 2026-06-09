@@ -129,6 +129,7 @@ const OUTCOMES = {
   answered:       { label:"Answered",       color:C.accent,  short:"Ans",  ghl:null,                  discord:null                                                    },
   voicemail:      { label:"Left voicemail", color:C.amber,   short:"VM",   ghl:null,                  discord:null                                                    },
   gatekeeper:     { label:"Gatekeeper",     color:C.t2,      short:"GK",   ghl:null,                  discord:null,                needsGatekeeper:true                },
+  robo_responder: { label:"Robo responder", color:C.teal,    short:"Robo", ghl:null,                  discord:null                                                    },
   no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
@@ -139,7 +140,8 @@ const OUTCOMES = {
 const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B","#14B8A6","#EF4444"];
 
 const OUTCOME_ROWS = [
-  ["demo_booked", "followup_sent", "voicemail", "gatekeeper"],
+  ["demo_booked", "followup_sent"],
+  ["voicemail", "gatekeeper", "robo_responder"],
   ["not_qualified", "dnc"],
 ];
 
@@ -267,7 +269,7 @@ function parseLeads(rows) {
     // score→reviews_rating. Map current headers onto the names the render/intel path reads.
     .filter(r => (r.biz_name || r.biz || "").trim() !== "")
     .map((r, i) => {
-      const phone = r.corporate_phone || r.mobile_phone || r.phone || "";
+      const phone = r.mobile_phone || r.corporate_phone || r.phone || "";
       return {
       ...r,
       biz:           r.biz_name ?? r.biz ?? "",
@@ -830,8 +832,9 @@ export default function HarmoniaOS() {
 
   function getLeadPhones(lead) {
     const phones = [];
-    if (lead.corporate_phone) phones.push({ label: "Corporate", number: lead.corporate_phone });
+    // Mobile first — callers should prioritize the direct line over the corporate number.
     if (lead.mobile_phone)    phones.push({ label: "Mobile",    number: lead.mobile_phone });
+    if (lead.corporate_phone) phones.push({ label: "Corporate", number: lead.corporate_phone });
     if (lead.home_phone)      phones.push({ label: "Home",      number: lead.home_phone });
     // fallback for old data that still has single "phone" field
     if (phones.length === 0 && lead.phone) phones.push({ label: "Phone", number: lead.phone });
@@ -969,7 +972,7 @@ export default function HarmoniaOS() {
 
     try {
       const payload = {
-        lead_id:active.id, biz:active.biz, owner:active.owner, phone:lastDialedPhone||active.corporate_phone||active.mobile_phone||active.home_phone||active.phone,
+        lead_id:active.id, biz:active.biz, owner:active.owner, phone:lastDialedPhone||active.mobile_phone||active.corporate_phone||active.home_phone||active.phone,
         city:active.city, state:active.state, icp:active.icp,
         disposition:outcome, status:meta.ghl||"called",
         ghl_stage:meta.ghl||null, discord_channel:meta.discord||null,
@@ -1744,10 +1747,24 @@ export default function HarmoniaOS() {
                   <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
                     {/* Left column — Pre-call dossier */}
                     <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 320px",minWidth:280}}>
-                      {/* Email outreach status — fed from Leads `emailed` column */}
-                      {(()=>{ const e=leadEmailed(active); return (
-                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
-                          <div style={{fontSize:10,color:C.t3,marginBottom:8}}>Outreach</div>
+                      {/* Contact & outreach — phone type being dialed + email status, one box */}
+                      {(()=>{
+                        const e=leadEmailed(active);
+                        const phones=getLeadPhones(active);
+                        const primary=phones.find(p=>p.number===lastDialedPhone)||phones[0];
+                        const phoneDot=!primary?C.t3:primary.label==="Mobile"?C.green:C.amber;
+                        return (
+                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:240}}>
+                          <div style={{fontSize:10,color:C.t3,marginBottom:10}}>Contact</div>
+                          {/* Phone type — Mobile (preferred) vs Corporate/Home */}
+                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:9}}>
+                            <div style={{width:8,height:8,borderRadius:"50%",background:phoneDot,flexShrink:0}}/>
+                            <span style={{fontSize:13,fontWeight:500,color:C.t1}}>
+                              {primary?`${primary.label} phone`:"No phone"}
+                            </span>
+                            {primary&&<span style={{fontSize:11,color:C.t3}}>{primary.number}</span>}
+                          </div>
+                          {/* Email outreach status — fed from Leads `emailed` column */}
                           <div style={{display:"flex",alignItems:"center",gap:8}}>
                             <div style={{width:8,height:8,borderRadius:"50%",
                               background:e.sent?C.green:C.t3,flexShrink:0}}/>
