@@ -139,7 +139,7 @@ const OUTCOMES = {
 const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B","#14B8A6","#EF4444"];
 
 const OUTCOME_ROWS = [
-  ["demo_booked", "followup_sent", "voicemail"],
+  ["demo_booked", "followup_sent", "voicemail", "gatekeeper"],
   ["not_qualified", "dnc"],
 ];
 
