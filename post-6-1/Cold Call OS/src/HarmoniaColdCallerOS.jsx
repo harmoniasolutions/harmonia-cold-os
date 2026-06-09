@@ -130,6 +130,7 @@ const OUTCOMES = {
   voicemail:      { label:"Left voicemail", color:C.amber,   short:"VM",   ghl:null,                  discord:null                                                    },
   gatekeeper:     { label:"Gatekeeper",     color:C.t2,      short:"GK",   ghl:null,                  discord:null,                needsGatekeeper:true                },
   robo_responder: { label:"Robo responder", color:C.teal,    short:"Robo", ghl:null,                  discord:null                                                    },
+  owner:          { label:"Owner",          color:C.accent,  short:"Own",  ghl:null,                  discord:null                                                    },
   no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
@@ -140,13 +141,17 @@ const OUTCOMES = {
 const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B","#14B8A6","#EF4444"];
 
 const OUTCOME_ROWS = [
-  ["demo_booked", "followup_sent"],
+  ["demo_booked", "followup_sent", "owner"],
   ["voicemail", "gatekeeper", "robo_responder"],
   ["not_qualified", "dnc"],
 ];
 
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
 const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel"];
+const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986" };
+// Remember the last-selected caller so their saved scripts reload on reopen.
+const CALLER_LS_KEY = "harmonia-current-caller";
+const storedCaller = (() => { try { const v = localStorage.getItem(CALLER_LS_KEY) || ""; return CALLER_ROSTER.includes(v) ? v : ""; } catch { return ""; } })();
 
 const pad  = (n) => String(n).padStart(2,"0");
 const fmt  = (s) => `${pad(Math.floor(s/60))}:${pad(s%60)}`;
@@ -438,7 +443,7 @@ export default function HarmoniaOS() {
   const [filter,   setFilter]   = useState("all");
   const [tab,      setTab]      = useState("intel");
   const [variant,  setVariant]  = useState("1");
-  const [caller,   setCaller]   = useState("+16178006699");
+  const [caller,   setCaller]   = useState(CALLER_PHONES[storedCaller] || "+16178006699");
   const [sessRun,  setSessRun]  = useState(false);
   const [sessSecs, setSessSecs] = useState(0);
   const [callRun,  setCallRun]  = useState(false);
@@ -447,7 +452,7 @@ export default function HarmoniaOS() {
   const [log,      setLog]      = useState([]);
   const [openObj,  setOpenObj]  = useState(null);
   const [flash,    setFlash]    = useState(null);
-  const [callerName,       setCallerName]       = useState("");   // Task 4a — session-level, persists
+  const [callerName,       setCallerName]       = useState(storedCaller);   // persisted in localStorage so the caller + their saved scripts reload on reopen
   const [selectedScript,   setSelectedScript]   = useState("");   // Task 2 — resets per call
   const [customScript,     setCustomScript]     = useState("");   // Task 2 — custom script name
   const [objectionRaised,  setObjectionRaised]  = useState("");   // Task 3 — resets per call
@@ -1104,23 +1109,13 @@ export default function HarmoniaOS() {
           <select value={callerName} onChange={e=>{
               const sel=e.target.value;
               setCallerName(sel);
-              const match=[
-                {name:"Javi",   phone:"+16102153863"},
-                {name:"Julian", phone:"+16092771636"},
-                {name:"Owen",   phone:"+16094120214"},
-                {name:"Joel",   phone:"+16096743986"},
-              ].find(c=>c.name===sel);
-              if(match) setCaller(match.phone);
+              try { localStorage.setItem(CALLER_LS_KEY, sel); } catch {}
+              if(CALLER_PHONES[sel]) setCaller(CALLER_PHONES[sel]);
             }}
             style={{border:`1px solid ${callerName?C.border:C.amber}`,borderRadius:6,padding:"3px 8px",
               fontSize:12,background:C.bg,color:callerName?C.t1:C.t3,outline:"none"}}>
             <option value="">Select caller...</option>
-            {[
-              {name:"Javi",   phone:"+16102153863"},
-              {name:"Julian", phone:"+16092771636"},
-              {name:"Owen",   phone:"+16094120214"},
-              {name:"Joel",   phone:"+16096743986"},
-            ].map(c=><option key={c.name} value={c.name}>{c.name}</option>)}
+            {CALLER_ROSTER.map(name=><option key={name} value={name}>{name}</option>)}
           </select>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
@@ -1747,33 +1742,59 @@ export default function HarmoniaOS() {
                   <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
                     {/* Left column — Pre-call dossier */}
                     <div style={{display:"flex",flexDirection:"column",gap:12,flex:"1 1 320px",minWidth:280}}>
-                      {/* Contact & outreach — phone type being dialed + email status, one box */}
+                      {/* Contact — phone in use, email status, and web links in one box */}
                       {(()=>{
                         const e=leadEmailed(active);
                         const phones=getLeadPhones(active);
                         const primary=phones.find(p=>p.number===lastDialedPhone)||phones[0];
                         const phoneDot=!primary?C.t3:primary.label==="Mobile"?C.green:C.amber;
+                        const site=(active.website||"").trim();
+                        const li=(active.linkedin||"").trim();
+                        const href=(u)=>/^https?:\/\//i.test(u)?u:`https://${u}`;
+                        const siteLabel=site.replace(/^https?:\/\//i,"").replace(/\/$/,"");
+                        const lbl={width:54,flexShrink:0,fontSize:11,color:C.t3};
                         return (
-                        <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:240}}>
-                          <div style={{fontSize:10,color:C.t3,marginBottom:10}}>Contact</div>
-                          {/* Phone type — Mobile (preferred) vs Corporate/Home */}
-                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:9}}>
-                            <div style={{width:8,height:8,borderRadius:"50%",background:phoneDot,flexShrink:0}}/>
-                            <span style={{fontSize:13,fontWeight:500,color:C.t1}}>
-                              {primary?`${primary.label} phone`:"No phone"}
-                            </span>
-                            {primary&&<span style={{fontSize:11,color:C.t3}}>{primary.number}</span>}
+                        <div style={{background:C.surface,borderRadius:14,padding:"15px 18px",maxWidth:340,width:"100%"}}>
+                          <div style={{fontSize:10,fontWeight:600,letterSpacing:"0.08em",color:C.t3,
+                            textTransform:"uppercase",marginBottom:13}}>Contact</div>
+                          <div style={{display:"flex",flexDirection:"column",gap:11}}>
+                            {/* Phone — Mobile (preferred) vs Corporate/Home, number on one line */}
+                            <div style={{display:"flex",alignItems:"center",gap:10}}>
+                              <div style={{width:7,height:7,borderRadius:"50%",background:phoneDot,flexShrink:0}}/>
+                              <span style={lbl}>{primary?primary.label:"Phone"}</span>
+                              <span style={{fontSize:13,fontWeight:500,color:C.t1,fontFamily:FM,whiteSpace:"nowrap"}}>
+                                {primary?primary.number:"—"}
+                              </span>
+                            </div>
+                            {/* Email outreach status — fed from Leads `emailed` column */}
+                            <div style={{display:"flex",alignItems:"center",gap:10}}>
+                              <div style={{width:7,height:7,borderRadius:"50%",background:e.sent?C.green:C.t3,flexShrink:0}}/>
+                              <span style={lbl}>Email</span>
+                              <span style={{fontSize:13,fontWeight:500,color:e.sent?C.green:C.t2,whiteSpace:"nowrap"}}>
+                                {e.sent?"Emailed":"Not emailed yet"}
+                              </span>
+                              {e.sent&&e.detail&&(
+                                <span style={{fontSize:11,color:C.t3,marginLeft:6,whiteSpace:"nowrap"}}>{e.detail}</span>
+                              )}
+                            </div>
                           </div>
-                          {/* Email outreach status — fed from Leads `emailed` column */}
-                          <div style={{display:"flex",alignItems:"center",gap:8}}>
-                            <div style={{width:8,height:8,borderRadius:"50%",
-                              background:e.sent?C.green:C.t3,flexShrink:0}}/>
-                            <span style={{fontSize:13,fontWeight:500,color:e.sent?C.green:C.t2}}>
-                              {e.sent?"Emailed":"Not emailed yet"}
-                            </span>
-                          </div>
-                          {e.detail&&(
-                            <div style={{fontSize:11,color:C.t3,marginTop:4,marginLeft:16}}>{e.detail}</div>
+                          {(site||li)&&(
+                            <div style={{display:"flex",alignItems:"center",gap:16,marginTop:13,
+                              paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+                              {site&&(
+                                <a href={href(site)} target="_blank" rel="noreferrer" onClick={ev=>ev.stopPropagation()}
+                                  style={{fontSize:12,color:C.accent,textDecoration:"none",whiteSpace:"nowrap",
+                                    overflow:"hidden",textOverflow:"ellipsis",maxWidth:170}}>
+                                  ↗ {siteLabel}
+                                </a>
+                              )}
+                              {li&&(
+                                <a href={href(li)} target="_blank" rel="noreferrer" onClick={ev=>ev.stopPropagation()}
+                                  style={{fontSize:12,color:C.accent,textDecoration:"none",whiteSpace:"nowrap"}}>
+                                  LinkedIn ↗
+                                </a>
+                              )}
+                            </div>
                           )}
                         </div>
                       );})()}
