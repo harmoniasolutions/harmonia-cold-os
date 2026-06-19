@@ -678,7 +678,7 @@ export default function HarmoniaOS() {
         if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
         if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
         // Land on the first visible (hair salon / barbershop) lead, not a hidden vertical.
-        const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp))) || parsedLeads[0];
+        const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0) || parsedLeads[0];
         if (firstVisible) {
           setActive(firstVisible);
           const recs = getRecommendedOpeners(firstVisible);
@@ -766,7 +766,8 @@ export default function HarmoniaOS() {
     return "queued";
   }
 
-  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)));
+  // Hide leads with no dialable number — nothing to call, so they shouldn't take up a queue slot.
+  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0);
   const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
   const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
   const totalAns     = stats.answered + stats.demos;
