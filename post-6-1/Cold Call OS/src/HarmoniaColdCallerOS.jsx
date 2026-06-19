@@ -57,8 +57,8 @@ const FM = "'DM Mono', 'SF Mono', monospace";
 // Raw Leads-tab icp values → canonical group used by the Scripts/Objections tabs + filter buttons.
 // The raw icp is kept on the lead so the card shows the specific sub-type; the group is for lookup/filtering.
 const ICP_GROUP = {
-  hair_salon:'salon', hair_and_spa:'salon', nail_salon:'salon', salon:'salon',
-  barbershop:'barbershop',
+  hair_salon:'salon', hair_and_spa:'salon', nail_salon:'salon', salon:'salon', hair:'salon',
+  barbershop:'barbershop', barber:'barbershop',
   medspa:'beauty_spa', day_spa:'beauty_spa', lash_brow:'beauty_spa', beauty_spa:'beauty_spa',
   hvac:'hvac',
 };
@@ -78,7 +78,8 @@ const VISIBLE_GROUPS = new Set(["salon", "barbershop"]);
 // Caller-facing label per raw icp — collapses to just "Hair Salon" / "Barbershop".
 const ICP_LABEL  = {
   salon:"Hair Salon", hair_salon:"Hair Salon", hair_and_spa:"Hair Salon",
-  nail_salon:"Hair Salon", barbershop:"Barbershop",
+  nail_salon:"Hair Salon", hair:"Hair Salon",
+  barbershop:"Barbershop", barber:"Barbershop",
 };
 // Openers benched for this week's test — DISPLAY filter only (rows stay in the Scripts sheet as the
 // iteration bank). Edit this one line to change which openers are live. Applies to the opener list only;
@@ -752,9 +753,22 @@ export default function HarmoniaOS() {
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
 
+  // A lead is "retired" from the OS only on an explicit yes (demo booked) or
+  // never-call (DNC) — logged this session (lead.status) or on any prior call in the
+  // shared history tab, so a booked/DNC lead never pops back into the queue on reload.
+  // Every other outcome keeps the lead queued and re-dialable, call after call.
+  function leadStatusEffective(lead) {
+    if (!lead) return "queued";
+    if (lead.status === "demo_booked" || lead.status === "dnc") return lead.status;
+    const hist = callHistory[lead.id] || [];
+    if (hist.some(h => h.outcome === "dnc")) return "dnc";
+    if (hist.some(h => h.outcome === "demo_booked")) return "demo_booked";
+    return "queued";
+  }
+
   const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)));
   const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
-  const queueLeft    = filtered.filter(l=>l.status==="queued").length;
+  const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
   const totalAns     = stats.answered + stats.demos;
   const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
   const demoRate     = totalAns>0    ? Math.round(stats.demos/totalAns*100) : 0;
@@ -864,7 +878,7 @@ export default function HarmoniaOS() {
   }
 
   async function dial(lead, phoneNumber){
-    if(!sessRun||callRun||lead.status!=="queued"||!callerName) return;
+    if(!sessRun||callRun||leadStatusEffective(lead)!=="queued"||!callerName) return;
     const num = phoneNumber || getLeadPhones(lead)[0]?.number;
     if (!num) return;
     setActive(lead);setCallRun(true);setCallSecs(0);setTab("script");setOpenObj(null);
@@ -949,11 +963,11 @@ export default function HarmoniaOS() {
     const newCallCount = (active.call_count || 0) + 1;
     const newTimestamp = new Date().toISOString();
     setLeads(ls=>ls.map(l=>l.id===active.id?{...l,
+      // A lead stays in the queue and fully dialable no matter the outcome — only an
+      // explicit "yes" (demo booked) or "never call again" (DNC) retires it from the OS.
       status: outcome==="demo_booked"?"demo_booked"
             : outcome==="dnc"?"dnc"
-            : outcome==="not_qualified"?"not_qualified"
-            : (outcome==="no_answer"||outcome==="voicemail")?"queued"
-            : "called",
+            : "queued",
       script_used:scriptUsed,
       prospect_email: captureEmail || l.prospect_email || "",
       pain: hasDiscoveryInput ? livePain : l.pain,
@@ -1030,7 +1044,7 @@ export default function HarmoniaOS() {
 
     resetCaptureFields();
     setDispoBarOpen(false);
-    const next=filtered.find(l=>l.id!==active.id&&l.status==="queued");
+    const next=filtered.find(l=>l.id!==active.id&&leadStatusEffective(l)==="queued");
     if(next){selectLead(next);setTab("intel");}
     // Sheets write handled by n8n webhook above
   }
@@ -1208,24 +1222,16 @@ export default function HarmoniaOS() {
           {/* Table */}
           <div style={{flex:1,overflowY:"auto",padding:"28px 20px"}}>
             {(()=>{
-              const COLS = "44px 1fr 92px 92px 92px 92px";
+              const COLS = "44px 1fr 110px 110px";
               const agg = {};
-              CALLER_ROSTER.forEach(c => { agg[c] = { dials:0, booked:0, shows:0 }; });
+              CALLER_ROSTER.forEach(c => { agg[c] = { dials:0, booked:0 }; });
               // Dials + Booked from the shared call-history log
               Object.values(callHistory).flat().forEach(e => {
                 const c = (e.caller||"").trim();
                 if (!c || c === "#NAME?") return;           // skip junk/formula-error callers
-                if (!agg[c]) agg[c] = { dials:0, booked:0, shows:0 };
+                if (!agg[c]) agg[c] = { dials:0, booked:0 };
                 agg[c].dials++;
                 if (e.outcome === "demo_booked") agg[c].booked++;
-              });
-              // Shows from the Booked Demos tab (Status marked showed/attended/completed)
-              bookedDemos.forEach(d => {
-                const c = (d.caller||"").trim();
-                if (c && /show|attend|complet/i.test(d.status||"")) {
-                  if (!agg[c]) agg[c] = { dials:0, booked:0, shows:0 };
-                  agg[c].shows++;
-                }
               });
               // Overlay the active caller's LIVE session — the shared history log only gains a
               // row once a disposition is logged + the n8n webhook writes it, so mid-session it
@@ -1235,15 +1241,14 @@ export default function HarmoniaOS() {
                 agg[callerName].booked = Math.max(agg[callerName].booked, stats.demos);
               }
               const rows = Object.entries(agg)
-                .map(([caller,s]) => ({ caller, ...s, bookPct: s.dials ? Math.round(s.booked/s.dials*100) : 0 }))
-                .sort((a,b) => b.booked-a.booked || b.dials-a.dials || b.shows-a.shows);
-              const totalShows = rows.reduce((n,r)=>n+r.shows,0);
+                .map(([caller,s]) => ({ caller, ...s }))
+                .sort((a,b) => b.booked-a.booked || b.dials-a.dials);
               return (
                 <div style={{maxWidth:760,margin:"0 auto"}}>
                   {/* column headers */}
                   <div style={{display:"grid",gridTemplateColumns:COLS,padding:"0 16px 10px",
                     borderBottom:`1px solid ${C.border}`}}>
-                    {["#","Caller","Dials","Booked","Shows","Book%"].map((h,i)=>(
+                    {["#","Caller","Dials","Booked"].map((h,i)=>(
                       <div key={h} style={{fontSize:10,color:C.t3,fontWeight:600,letterSpacing:"0.05em",
                         textTransform:"uppercase",textAlign:i<2?"left":"right"}}>{h}</div>
                     ))}
@@ -1257,19 +1262,11 @@ export default function HarmoniaOS() {
                       <div style={{textAlign:"right",fontFamily:FM,fontSize:14,color:C.t1}}>{r.dials}</div>
                       <div style={{textAlign:"right",fontFamily:FM,fontSize:14,fontWeight:600,
                         color:r.booked?C.green:C.t3}}>{r.booked}</div>
-                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,
-                        color:r.shows?C.t1:C.t3}}>{r.shows}</div>
-                      <div style={{textAlign:"right",fontFamily:FM,fontSize:14,fontWeight:600,
-                        color:r.bookPct?C.accent:C.t3}}>{r.bookPct}%</div>
                     </div>
                   ))}
-                  {/* footnotes */}
+                  {/* footnote */}
                   <div style={{marginTop:18,fontSize:11,color:C.t3,lineHeight:1.6}}>
-                    <div>Dials &amp; Booked come from the shared call history{callerName?`; your row (${callerName}) reflects your live session in real time`:""}. Book% = Booked ÷ Dials.</div>
-                    {totalShows===0 && (
-                      <div>Shows reads from the “Booked Demos” tab (Status = showed/attended) — 0 until demos are logged there.</div>
-                    )}
-                    <div style={{color:C.t3,marginTop:2}}>30s+ talk-time column coming once real talk-time is wired.</div>
+                    <div>Dials &amp; Booked come from the shared call history{callerName?`; your row (${callerName}) reflects your live session in real time`:""}.</div>
                   </div>
                 </div>
               );
@@ -1307,7 +1304,8 @@ export default function HarmoniaOS() {
               </div>
             )}
             {filtered.map(lead=>{
-              const isActive=active?.id===lead.id, isDone=lead.status!=="queued";
+              const isActive=active?.id===lead.id;
+              const effStatus=leadStatusEffective(lead), isDone=effStatus!=="queued";
               return (
                 <div key={lead.id} onClick={()=>selectLead(lead)}
                   style={{padding:"9px 14px",cursor:isDone?"default":"pointer",
@@ -1327,49 +1325,16 @@ export default function HarmoniaOS() {
                       {ICP_LABEL[lead.icp]||lead.icp} · {lead.city}
                       {lead.competitor&&<span style={{color:C.t3}}> · vs. {lead.competitor}</span>}
                     </div>
+                    {/* Retired leads (demo booked / DNC) show a label; merely-called leads stay
+                        visually identical to fresh ones — "called" is surfaced in the main panel,
+                        not the sidebar. */}
                     {isDone&&(
                       <div style={{marginTop:3,fontSize:10,fontWeight:500,
-                        color:lead.status==="demo_booked"?C.green:C.t3}}>
-                        {lead.status==="demo_booked"?"✦ Demo booked"
-                         :lead.status==="dnc"?"⛔ DNC"
-                         :lead.status==="not_qualified"?"— Not qualified"
-                         :"Called"}
-                        {lead.script_used&&<span style={{color:C.t3,fontWeight:400}}> · Script {lead.script_used.toUpperCase()}</span>}
+                        color:effStatus==="demo_booked"?C.green:C.red}}>
+                        {effStatus==="demo_booked"?"✦ Demo booked":"⛔ Do not call"}
+                        {effStatus==="demo_booked"&&lead.script_used&&<span style={{color:C.t3,fontWeight:400}}> · Script {lead.script_used.toUpperCase()}</span>}
                       </div>
                     )}
-                    {/* Call history indicator from the "history" tab */}
-                    {!isDone && (callHistory[lead.id]?.length || 0) > 0 && (()=>{
-                      const hist = callHistory[lead.id];
-                      const last = hist[0];
-                      const lastLabel = OUTCOMES[last.outcome]?.short || last.outcome || "?";
-                      return (
-                      <div style={{marginTop:3,display:"flex",alignItems:"center",gap:4}}>
-                        <span style={{fontSize:9,fontWeight:600,color:OUTCOMES[last.outcome]?.color||C.amber,
-                          background:(OUTCOMES[last.outcome]?.color||C.amber)+"15",padding:"1px 5px",borderRadius:4}}>
-                          {lastLabel} ×{hist.length}
-                        </span>
-                        {last.caller && (
-                          <span style={{fontSize:9,color:C.t3}}>{last.caller}</span>
-                        )}
-                        {last.timestamp && (
-                          <span style={{fontSize:9,color:C.t3}}>
-                            {(() => {
-                              try {
-                                const d = new Date(last.timestamp);
-                                const now = new Date();
-                                const diffMs = now - d;
-                                const diffH = Math.floor(diffMs / 3600000);
-                                const diffD = Math.floor(diffH / 24);
-                                if (diffD > 0) return `${diffD}d ago`;
-                                if (diffH > 0) return `${diffH}h ago`;
-                                return `${Math.floor(diffMs/60000)}m ago`;
-                              } catch { return ""; }
-                            })()}
-                          </span>
-                        )}
-                      </div>
-                      );
-                    })()}
                   </div>
                 </div>
               );
@@ -1432,10 +1397,12 @@ export default function HarmoniaOS() {
                     </>
                   )}
                   {(()=>{
-                    const canDial=sessRun&&active.status==="queued"&&!!callerName;
+                    const eff=leadStatusEffective(active);
+                    const calledBefore=(callHistory[active.id]?.length||0)>0;
+                    const canDial=sessRun&&eff==="queued"&&!!callerName;
                     const phones=getLeadPhones(active);
                     if(!callRun&&!pendingOutcome) {
-                      const btnLabel=active.status!=="queued"?"Called":!callerName?"Select caller":sessRun?"Dial":"Start session";
+                      const btnLabel=eff==="demo_booked"?"Demo booked":eff==="dnc"?"Do not call":!callerName?"Select caller":!sessRun?"Start session":calledBefore?"Dial again":"Dial";
                       if(phones.length<=1) return (
                         <button onClick={()=>dial(active)}
                           disabled={!canDial}
@@ -1740,7 +1707,6 @@ export default function HarmoniaOS() {
                 gap:0,flexShrink:0,background:C.bg}}>
                 {[
                   {id:"intel",      label:"Intel"},
-                  {id:"reviews",    label:`Reviews (${active.google_reviews?.length||0})`},
                   {id:"script",     label:"Script"},
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
@@ -1880,11 +1846,6 @@ export default function HarmoniaOS() {
                               </div>
                             </div>
                           ))}
-                          <button onClick={()=>setTab("reviews")}
-                            style={{marginTop:8,fontSize:11,color:C.accent,border:"none",
-                              background:"transparent",padding:0,cursor:"pointer"}}>
-                            View all {active.google_reviews?.length} reviews →
-                          </button>
                         </div>
                       )}
 
@@ -2067,48 +2028,6 @@ export default function HarmoniaOS() {
                 )}
 
                 {/* ── REVIEWS ── */}
-                {tab==="reviews"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:10,maxWidth:660}}>
-                    {active.google_reviews?.length === 0 ? (
-                      <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
-                        No reviews scraped yet — n8n will populate this column.
-                      </div>
-                    ):(
-                      <>
-                        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:2}}>
-                          <span style={{fontSize:11,color:C.t3}}>
-                            {active.google_reviews?.length||0} reviews
-                          </span>
-                          {flaggedReviews.length>0&&(
-                            <span style={{fontSize:11,padding:"2px 9px",borderRadius:100,
-                              background:"#FFFBF0",border:`1px solid ${C.amber}30`,color:C.amber,fontWeight:500}}>
-                              {flaggedReviews.length} pain signal{flaggedReviews.length!==1?"s":""}
-                            </span>
-                          )}
-                        </div>
-                        {(active.google_reviews||[]).map((r,i)=>(
-                          <div key={i} style={{borderRadius:12,
-                            border:`1px solid ${(r.flagged||r.flagged==="TRUE")?"#FF950040":C.border}`,
-                            padding:"13px 16px",
-                            background:(r.flagged||r.flagged==="TRUE")?"#FFFBF0":C.bg}}>
-                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
-                              <StarRow stars={r.stars}/>
-                              <span style={{fontSize:12,fontWeight:500}}>{r.author}</span>
-                              <span style={{fontSize:11,color:C.t3,marginLeft:"auto"}}>{r.date}</span>
-                              {(r.flagged||r.flagged==="TRUE")&&(
-                                <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,
-                                  background:`${C.amber}15`,color:C.amber,fontWeight:500,
-                                  border:`1px solid ${C.amber}30`}}>pain signal</span>
-                              )}
-                            </div>
-                            <div style={{fontSize:13,color:C.t1,lineHeight:1.65}}>"{r.text}"</div>
-                          </div>
-                        ))}
-                      </>
-                    )}
-                  </div>
-                )}
-
                 {/* ── SCRIPT MIXER ── */}
                 {tab==="script"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:0}}>
