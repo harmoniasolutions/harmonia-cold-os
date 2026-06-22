@@ -165,8 +165,8 @@ const OUTCOME_ROWS = [
 ];
 
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
-const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel"];
-const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986" };
+const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel", "Nick", "Blake"];
+const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986", Nick:"+18563943453", Blake:"+12019574476" };
 // Remember the last-selected caller so their saved scripts reload on reopen.
 const CALLER_LS_KEY = "harmonia-current-caller";
 const storedCaller = (() => { try { const v = localStorage.getItem(CALLER_LS_KEY) || ""; return CALLER_ROSTER.includes(v) ? v : ""; } catch { return ""; } })();
