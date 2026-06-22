@@ -15,6 +15,16 @@ const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || 'https://infoharmonia.ap
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
+// ── Cross-device caller settings (a SEPARATE spreadsheet, not Harmonia Leads OS) ──
+// Holds one row per caller (scripts + layout) + reserved rows for team-shared
+// objections (__OBJECTIONS__) and admin toggles (__ADMIN__). Read via the Sheets API
+// key, written via the caller-settings-save n8n webhook (upsert by caller_name).
+const CALLER_SETTINGS_SHEET_ID = import.meta.env.VITE_CALLER_SETTINGS_SHEET_ID || '1PTg69597Xf-aOsKlOFQ2nnLjQ-eOjfUfUDsIE0qKvSc';
+const CALLER_SETTINGS_TAB      = 'Settings';
+const CALLER_SETTINGS_WEBHOOK  = import.meta.env.VITE_CALLER_SETTINGS_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/caller-settings-save';
+const OBJECTIONS_KEY = '__OBJECTIONS__';
+const ADMIN_KEY      = '__ADMIN__';
+
 async function fetchSheet(tab) {
   const res = await fetch(`${BASE}/${tab}?key=${API_KEY}`);
   const json = await res.json().catch(() => null);
@@ -31,6 +41,20 @@ async function fetchSheet(tab) {
   return rows.map(row =>
     Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""]))
   );
+}
+
+// Read the separate Caller Settings spreadsheet. Degrades to [] on any failure
+// (e.g. the sheet isn't shared link-viewable yet) so it never blocks app load.
+async function fetchSettingsSheet() {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${CALLER_SETTINGS_SHEET_ID}/values/${CALLER_SETTINGS_TAB}?key=${API_KEY}`;
+    const res = await fetch(url);
+    const json = await res.json().catch(() => null);
+    if (!res.ok) { console.warn(`[Harmonia] caller-settings read failed: HTTP ${res.status}`); return []; }
+    const [headers, ...rows] = json?.values || [];
+    if (!headers) return [];
+    return rows.map(row => Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""])));
+  } catch (e) { console.warn('[Harmonia] caller-settings read error', e); return []; }
 }
 
 /* ─────────────────────────────────────────────
@@ -598,6 +622,15 @@ export default function HarmoniaOS() {
   const [mainView, setMainView] = useState("workspace"); // "workspace" | "leaderboard"
   const [bookedDemos, setBookedDemos] = useState([]); // [{caller, status}]
 
+  // Cross-device caller settings (separate sheet): raw rows + hydration/save gates
+  const [allCallerSettings, setAllCallerSettings] = useState([]);
+  const personalHydrated   = useRef(false);
+  const objectionsHydrated = useRef(false);
+  const adminHydrated      = useRef(false);
+  const personalSaveTimer   = useRef(null);
+  const objectionsSaveTimer = useRef(null);
+  const adminSaveTimer      = useRef(null);
+
   // Clean broken formula values (#ERROR!, #NAME?, #REF!) and strip leading = from formula cells
   function clean(v) {
     if (!v || typeof v !== "string") return v || "";
@@ -647,18 +680,94 @@ export default function HarmoniaOS() {
     } catch(e) { console.error("[Harmonia] Failed to refresh call history:", e); }
   }
 
+  // ── Cross-device caller settings: parse / reconcile / hydrate ──
+  function reconcilePhases(stored) {
+    if (!Array.isArray(stored) || stored.length === 0) return DEFAULT_PHASES;
+    const next = [...stored];
+    DEFAULT_PHASES.forEach((dp, di) => {
+      if (!next.find(p => p.id === dp.id)) {
+        const prevDefault = DEFAULT_PHASES[di - 1];
+        const insertAfter = prevDefault ? next.findIndex(p => p.id === prevDefault.id) : -1;
+        next.splice(insertAfter >= 0 ? insertAfter + 1 : Math.min(di, next.length), 0, dp);
+      }
+    });
+    return next;
+  }
+  function parseSettingsRow(row) {
+    if (!row || !row.settings_json) return null;
+    try { const b = JSON.parse(row.settings_json); if (!b.updated_at) b.updated_at = row.updated_at || ""; return b; }
+    catch { return null; }
+  }
+  function pickNewer(a, b) {            // newest updated_at wins; ties → a (server passed first)
+    if (!a) return b; if (!b) return a;
+    return (b.updated_at || "") > (a.updated_at || "") ? b : a;
+  }
+  function readLocal(key) { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } }
+  function postSettings(callerKey, blob) {
+    fetch(CALLER_SETTINGS_WEBHOOK, { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ caller_name: callerKey, settings_json: JSON.stringify(blob), updated_at: blob.updated_at })
+    }).catch(()=>{});
+  }
+
+  // Hydrate the team-shared rows (objections + admin) — server-or-local, newest wins.
+  function hydrateTeam(rows) {
+    const obj = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OBJECTIONS_KEY)), readLocal("harmonia-team-objections"));
+    if (obj && obj.customObjections) setCustomObjections(obj.customObjections);
+    const adm = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === ADMIN_KEY)), readLocal("harmonia-team-admin"));
+    if (adm) {
+      if (Array.isArray(adm.disabledScripts)) setDisabledScripts(new Set(adm.disabledScripts.filter(id => id!=="7" && id!=="8")));
+      if (Array.isArray(adm.disabledIcps))    setDisabledIcps(new Set(adm.disabledIcps));
+    }
+    objectionsHydrated.current = true;
+    adminHydrated.current = true;
+  }
+
+  // Hydrate one caller's personal scripts + layout. isInitial preserves this device's
+  // legacy global layout for its regular user the first time (pre-migration only).
+  function hydrateCaller(name, rows, isInitial = false) {
+    if (!name) return;
+    const server = parseSettingsRow((rows || allCallerSettings).find(r => (r.caller_name||"").trim() === name));
+    const chosen = pickNewer(server, readLocal(`harmonia-settings-${name}`));
+    if (chosen) {
+      setCallerScripts(chosen.scripts || {});
+      setPhaseOrder(reconcilePhases(chosen.phaseOrder));
+      setCollapsedPhases(new Set(Array.isArray(chosen.collapsedPhases) ? chosen.collapsedPhases : []));
+      setOfferCollapsed(chosen.offerCollapsed === true);
+    } else {
+      setCallerScripts(readLocal(`harmonia-scripts-${name}`) || {});   // legacy per-caller scripts
+      if (isInitial) {                                                  // keep this device's existing layout once
+        const po = readLocal("harmonia-phase-order");
+        setPhaseOrder(reconcilePhases(Array.isArray(po) && po.length ? po : DEFAULT_PHASES));
+        const cp = readLocal("harmonia-collapsed-phases");
+        setCollapsedPhases(new Set(Array.isArray(cp) ? cp : []));
+        setOfferCollapsed(readLocal("harmonia-offer-collapsed") === true);
+      } else {
+        setPhaseOrder(DEFAULT_PHASES);
+        setCollapsedPhases(new Set());
+        setOfferCollapsed(false);
+      }
+    }
+    personalHydrated.current = true;
+  }
+
   const sessRef = useRef(); const callRef = useRef();
 
   /* ── FETCH ALL SHEET DATA ON MOUNT ── */
   useEffect(() => {
     async function load() {
       try {
-        const [leadsRaw, scriptsRaw, objectionsRaw, offersRaw] = await Promise.all([
+        const [leadsRaw, scriptsRaw, objectionsRaw, offersRaw, callerSettingsRaw] = await Promise.all([
           fetchSheet("Leads"),
           fetchSheet("Scripts"),
           fetchSheet("Objections"),
           fetchSheet("Offers").catch(() => []),
+          fetchSettingsSheet(),
         ]);
+        // Cross-device settings: stash rows, hydrate team-shared now, and this device's
+        // remembered caller (server is the source of truth; localStorage is the fallback).
+        setAllCallerSettings(callerSettingsRaw);
+        hydrateTeam(callerSettingsRaw);
+        if (storedCaller) hydrateCaller(storedCaller, callerSettingsRaw, true);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
@@ -729,15 +838,35 @@ export default function HarmoniaOS() {
     return()=>clearInterval(phaseRef.current);
   },[callRun]);
 
-  // Load per-caller custom scripts from localStorage
+  // ── Cross-device persistence: save settings (debounced 800ms). The mutation sites
+  // already call setState, so these effects catch every script/layout/objection/admin
+  // change and upsert the full blob. Gated by the hydrated refs so loading data never
+  // counts as an edit. localStorage is written first as the offline cache. ──
   useEffect(() => {
-    if (callerName) {
-      try {
-        const stored = JSON.parse(localStorage.getItem(`harmonia-scripts-${callerName}`) || "{}");
-        setCallerScripts(stored);
-      } catch { setCallerScripts({}); }
-    }
-  }, [callerName]);
+    if (!callerName || !personalHydrated.current) return;
+    const blob = { version:1, updated_at:new Date().toISOString(),
+      scripts: callerScripts, phaseOrder, collapsedPhases:[...collapsedPhases], offerCollapsed };
+    try { localStorage.setItem(`harmonia-settings-${callerName}`, JSON.stringify(blob)); } catch {}
+    if (personalSaveTimer.current) clearTimeout(personalSaveTimer.current);
+    personalSaveTimer.current = setTimeout(() => postSettings(callerName, blob), 800);
+  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, callerName]);
+
+  useEffect(() => {
+    if (!objectionsHydrated.current) return;
+    const blob = { version:1, updated_at:new Date().toISOString(), customObjections };
+    try { localStorage.setItem("harmonia-team-objections", JSON.stringify(blob)); } catch {}
+    if (objectionsSaveTimer.current) clearTimeout(objectionsSaveTimer.current);
+    objectionsSaveTimer.current = setTimeout(() => postSettings(OBJECTIONS_KEY, blob), 800);
+  }, [customObjections]);
+
+  useEffect(() => {
+    if (!adminHydrated.current) return;
+    const blob = { version:1, updated_at:new Date().toISOString(),
+      disabledScripts:[...disabledScripts], disabledIcps:[...disabledIcps] };
+    try { localStorage.setItem("harmonia-team-admin", JSON.stringify(blob)); } catch {}
+    if (adminSaveTimer.current) clearTimeout(adminSaveTimer.current);
+    adminSaveTimer.current = setTimeout(() => postSettings(ADMIN_KEY, blob), 800);
+  }, [disabledScripts, disabledIcps]);
 
   const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
@@ -1147,6 +1276,9 @@ export default function HarmoniaOS() {
               setCallerName(sel);
               try { localStorage.setItem(CALLER_LS_KEY, sel); } catch {}
               if(CALLER_PHONES[sel]) setCaller(CALLER_PHONES[sel]);
+              // Load this caller's scripts + layout from the cloud (or defaults if brand-new).
+              personalHydrated.current = false;
+              hydrateCaller(sel, allCallerSettings);
             }}
             style={{border:`1px solid ${callerName?C.border:C.amber}`,borderRadius:6,padding:"3px 8px",
               fontSize:12,background:C.bg,color:callerName?C.t1:C.t3,outline:"none"}}>
