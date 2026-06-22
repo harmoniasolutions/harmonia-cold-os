@@ -770,8 +770,8 @@ export default function HarmoniaOS() {
     return "queued";
   }
 
-  // Hide leads with no dialable number — nothing to call, so they shouldn't take up a queue slot.
-  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0);
+  // Only surface leads that have a MOBILE number — corporate-only or no-number leads are hidden.
+  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && (l.mobile_phone || "").trim() !== "");
   const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
   const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
   const totalAns     = stats.answered + stats.demos;
