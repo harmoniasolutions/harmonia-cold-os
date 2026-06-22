@@ -167,6 +167,10 @@ const OUTCOME_ROWS = [
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
 const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel", "Nick", "Blake"];
 const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986", Nick:"+18563943453", Blake:"+12019574476" };
+// Leaderboard temporarily hidden (per request) — flip to true to restore the button + view.
+const SHOW_LEADERBOARD = false;
+// Callers excluded from the leaderboard ranking (e.g. admins/owners who aren't cold-calling).
+const LEADERBOARD_EXCLUDE = new Set(["Javi"]);
 // Remember the last-selected caller so their saved scripts reload on reopen.
 const CALLER_LS_KEY = "harmonia-current-caller";
 const storedCaller = (() => { try { const v = localStorage.getItem(CALLER_LS_KEY) || ""; return CALLER_ROSTER.includes(v) ? v : ""; } catch { return ""; } })();
@@ -1176,12 +1180,14 @@ export default function HarmoniaOS() {
           {new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
+        {SHOW_LEADERBOARD && (
         <button onClick={()=>setMainView("leaderboard")}
           style={{padding:"4px 10px",borderRadius:6,
             border:`1px solid ${C.border}`,background:"transparent",
             color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",transition:"all 0.15s"}}>
           Leaderboard
         </button>
+        )}
         <button onClick={()=>setShowStatsPanel(v=>!v)}
           style={{padding:"4px 10px",borderRadius:6,
             border:`1px solid ${showStatsPanel?C.t1:C.border}`,
@@ -1205,7 +1211,7 @@ export default function HarmoniaOS() {
       </div>
 
       {/* ── LEADERBOARD (top-level view) ── */}
-      {mainView==="leaderboard" && (
+      {SHOW_LEADERBOARD && mainView==="leaderboard" && (
         <div style={{position:"fixed",inset:0,zIndex:8000,background:C.bg,
           display:"flex",flexDirection:"column"}}>
           {/* Leaderboard header */}
@@ -1225,11 +1231,12 @@ export default function HarmoniaOS() {
             {(()=>{
               const COLS = "44px 1fr 110px 110px";
               const agg = {};
-              CALLER_ROSTER.forEach(c => { agg[c] = { dials:0, booked:0 }; });
+              CALLER_ROSTER.filter(c => !LEADERBOARD_EXCLUDE.has(c)).forEach(c => { agg[c] = { dials:0, booked:0 }; });
               // Dials + Booked from the shared call-history log
               Object.values(callHistory).flat().forEach(e => {
                 const c = (e.caller||"").trim();
                 if (!c || c === "#NAME?") return;           // skip junk/formula-error callers
+                if (LEADERBOARD_EXCLUDE.has(c)) return;      // skip excluded (admins/owners)
                 if (!agg[c]) agg[c] = { dials:0, booked:0 };
                 agg[c].dials++;
                 if (e.outcome === "demo_booked") agg[c].booked++;
