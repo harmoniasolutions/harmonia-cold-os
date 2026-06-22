@@ -60,23 +60,25 @@ async function fetchSettingsSheet() {
 /* ─────────────────────────────────────────────
    DESIGN TOKENS
 ───────────────────────────────────────────── */
+// Harmonia brand palette — white glass canvas, deep-ink/slate text, sky reserved for payoff.
 const C = {
   bg:       "#FFFFFF",
-  surface:  "#F5F5F7",
-  border:   "#E5E5EA",
-  borderMd: "#D1D1D6",
-  t1:       "#1D1D1F",
-  t2:       "#6E6E73",
-  t3:       "#AEAEB2",
-  accent:   "#0071E3",
-  green:    "#34C759",
-  amber:    "#FF9500",
-  red:      "#FF3B30",
-  teal:     "#32ADE6",
-  purple:   "#AF52DE",
+  surface:  "#F6F9FB",   // faint cool glass panel (was solid grey)
+  border:   "#E6ECF0",   // hairline rule
+  borderMd: "#D4DEE5",
+  t1:       "#1C3D52",   // deep ink — headlines & high-contrast text
+  t2:       "#6E8597",   // muted slate — quiet supporting voice
+  t3:       "#94A7B5",   // light slate — captions / sub-labels
+  accent:   "#4A9EED",   // sky blue — payoff only (wordmark, CTA, active tab, links, live dot)
+  skyTint:  "#B8DAF7",   // light sky tint — ring-signature strokes (kept: RingMark reads this)
+  green:    "#2E9E6B",
+  amber:    "#C98A2E",
+  red:      "#D1533F",
+  teal:     "#3E8FC4",
+  purple:   "#7A6AB0",
 };
-const F  = "'DM Sans', -apple-system, sans-serif";
-const FM = "'DM Mono', 'SF Mono', monospace";
+const F  = "'IBM Plex Sans', -apple-system, sans-serif";
+const FM = "'IBM Plex Mono', 'SF Mono', monospace";
 
 // Raw Leads-tab icp values → canonical group used by the Scripts/Objections tabs + filter buttons.
 // The raw icp is kept on the lead so the card shows the specific sub-type; the group is for lookup/filtering.
@@ -143,7 +145,7 @@ function parseOwnerName(owner) {
 }
 
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
-const LINE_COLOR = { opener:C.accent, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
+const LINE_COLOR = { opener:C.t1, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
 
 const DEFAULT_PHASES = [
   { id: "opener",    label: "Opener",    color: "#EF4444", isDefault: true },
@@ -167,11 +169,11 @@ const OUTCOMES = {
   loom_sent:      { label:"Send Loom",      color:C.teal,    short:"Loom", ghl:"Loom Outreach",       discord:"#loom-queue",       needsEmail:true,  needsLoom:true     },
   callback:       { label:"Callback later", color:C.amber,   short:"CB",   ghl:"Follow-Up Scheduled", discord:"#follow-ups",       needsDateTime:true                  },
   followup_sent:  { label:"Send info",      color:C.purple,  short:"Info", ghl:"Nurture",             discord:null,                needsEmail:true                     },
-  answered:       { label:"Answered",       color:C.accent,  short:"Ans",  ghl:null,                  discord:null                                                    },
+  answered:       { label:"Answered",       color:C.t2,      short:"Ans",  ghl:null,                  discord:null                                                    },
   voicemail:      { label:"Left voicemail", color:C.amber,   short:"VM",   ghl:null,                  discord:null                                                    },
   gatekeeper:     { label:"Gatekeeper",     color:C.t2,      short:"GK",   ghl:null,                  discord:null,                needsGatekeeper:true                },
   robo_responder: { label:"Robo responder", color:C.teal,    short:"Robo", ghl:null,                  discord:null                                                    },
-  owner:          { label:"Owner",          color:C.accent,  short:"Own",  ghl:null,                  discord:null                                                    },
+  owner:          { label:"Owner",          color:C.t2,      short:"Own",  ghl:null,                  discord:null                                                    },
   number_error:   { label:"Number Error",   color:C.amber,   short:"Err",  ghl:null,                  discord:null                                                    },
   no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
@@ -198,6 +200,18 @@ const LEADERBOARD_EXCLUDE = new Set(["Javi"]);
 // Remember the last-selected caller so their saved scripts reload on reopen.
 const CALLER_LS_KEY = "harmonia-current-caller";
 const storedCaller = (() => { try { const v = localStorage.getItem(CALLER_LS_KEY) || ""; return CALLER_ROSTER.includes(v) ? v : ""; } catch { return ""; } })();
+// ── Login / auth ── server-checked password via the caller-auth webhook. A valid
+// session (this device, < TTL) skips the login screen. Passwords never live here.
+const AUTH_SESSION_KEY    = "harmonia-auth-session";
+const SESSION_TTL_MS      = 30 * 24 * 60 * 60 * 1000; // stay logged in 30 days per device
+const CALLER_AUTH_WEBHOOK = import.meta.env.VITE_CALLER_AUTH_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/caller-auth';
+const storedSession = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || "null");
+    if (s && s.caller && CALLER_ROSTER.includes(s.caller) && (Date.now() - (s.ts || 0) < SESSION_TTL_MS)) return s.caller;
+  } catch {}
+  return "";
+})();
 
 const pad  = (n) => String(n).padStart(2,"0");
 const fmt  = (s) => `${pad(Math.floor(s/60))}:${pad(s%60)}`;
@@ -310,6 +324,53 @@ function StarRow({ stars }) {
     </span>
   );
 }
+
+/* ─────────────────────────────────────────────
+   THE SIGNATURE — concentric rings, the logic of a voice travelling
+   outward from a single point. Thin etched strokes only (never filled),
+   optional 01–03 index marks and a belief phrase set at 45°, in the spirit
+   of a prototype drawing. Used tiny as the wordmark glyph and large + faint
+   as the watermark in the empty centre.
+───────────────────────────────────────────── */
+function RingMark({ size=320, stroke=C.skyTint, index=true, phrase="every call answered",
+                    dim=1, uid="sig", outer=true, dot=true }) {
+  const rings = [15, 28, 41];
+  const pid = `ringpath-${uid}`;
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" fill="none"
+      style={{ display:"block", opacity:dim, overflow:"visible" }} aria-hidden="true">
+      {outer && <circle cx="50" cy="50" r="48" stroke={stroke} strokeWidth="0.4" opacity="0.45"/>}
+      {rings.map((r,i)=>(
+        <circle key={r} cx="50" cy="50" r={r} stroke={stroke} strokeWidth="0.7" opacity={0.9 - i*0.14}/>
+      ))}
+      {dot && <circle cx="50" cy="50" r="1.5" fill={stroke} opacity="0.9"/>}
+      {index && rings.map((r,i)=>(
+        <text key={"ix"+r} x="50" y={50 - r - 1.4} textAnchor="middle"
+          fontFamily={FM} fontSize="3.3" letterSpacing="0.05em" fill={stroke} opacity="0.8">
+          {"0"+(i+1)}
+        </text>
+      ))}
+      {phrase && (
+        <>
+          <path id={pid} d="M50 9 A41 41 0 1 1 49.99 9"/>
+          <text fontFamily={FM} fontSize="3.2" letterSpacing="0.14em" fill={stroke} opacity="0.6">
+            <textPath href={"#"+pid} startOffset="12.5%">{phrase}</textPath>
+          </text>
+        </>
+      )}
+    </svg>
+  );
+}
+
+// Shared style for the signature toggle pills (active = quiet ink, never sky).
+const sigPillStyle = (active, disabled) => ({
+  padding:"4px 11px", borderRadius:100, fontSize:11, fontWeight:500, fontFamily:F,
+  border:`0.75px solid ${active?C.t1:C.border}`,
+  background: active?`${C.t1}0A`:"transparent",
+  color: active?C.t1:C.t2,
+  cursor: disabled?"default":"pointer", opacity: disabled?0.4:1, transition:"all 0.15s",
+  display:"inline-flex", alignItems:"center", justifyContent:"center",
+});
 
 /* ─────────────────────────────────────────────
    DATA PARSERS
@@ -488,8 +549,16 @@ export default function HarmoniaOS() {
   const [active,   setActive]   = useState(null);
   const [filter,   setFilter]   = useState("all");
   const [tab,      setTab]      = useState("intel");
+  // ── Brand signature (the etched rings in the empty centre) ──
+  const BELIEFS = ["every call answered","presence as a product","silence costs revenue","nothing left to add"];
+  const [sigOn,    setSigOn]    = useState(()=>{ try { return localStorage.getItem("harmonia-sig-on")!=="0"; } catch { return true; } });
+  const [sigIndex, setSigIndex] = useState(()=>{ try { return localStorage.getItem("harmonia-sig-index")!=="0"; } catch { return true; } });
+  const [sigPhrase,setSigPhrase]= useState(()=>{ try { return Math.max(0, BELIEFS.indexOf(localStorage.getItem("harmonia-sig-phrase"))); } catch { return 0; } });
+  useEffect(()=>{ try { localStorage.setItem("harmonia-sig-on", sigOn?"1":"0"); } catch {} }, [sigOn]);
+  useEffect(()=>{ try { localStorage.setItem("harmonia-sig-index", sigIndex?"1":"0"); } catch {} }, [sigIndex]);
+  useEffect(()=>{ try { localStorage.setItem("harmonia-sig-phrase", BELIEFS[sigPhrase]); } catch {} }, [sigPhrase]);
   const [variant,  setVariant]  = useState("1");
-  const [caller,   setCaller]   = useState(CALLER_PHONES[storedCaller] || "+16178006699");
+  const [caller,   setCaller]   = useState(CALLER_PHONES[storedSession] || "+16178006699");
   const [sessRun,  setSessRun]  = useState(false);
   const [sessSecs, setSessSecs] = useState(0);
   const [callRun,  setCallRun]  = useState(false);
@@ -498,7 +567,14 @@ export default function HarmoniaOS() {
   const [log,      setLog]      = useState([]);
   const [openObj,  setOpenObj]  = useState(null);
   const [flash,    setFlash]    = useState(null);
-  const [callerName,       setCallerName]       = useState(storedCaller);   // persisted in localStorage so the caller + their saved scripts reload on reopen
+  const [callerName,       setCallerName]       = useState(storedSession);   // set by login; settings hydrate keys off it
+  const [authed,           setAuthed]           = useState(!!storedSession); // logged in this device?
+  const [loginName,        setLoginName]        = useState(storedSession || "");
+  const [loginPw,          setLoginPw]          = useState("");
+  const [loginPw2,         setLoginPw2]         = useState("");
+  const [authStep,         setAuthStep]         = useState("login");  // "login" | "setup" (first-time password)
+  const [loginErr,         setLoginErr]         = useState("");
+  const [loginBusy,        setLoginBusy]        = useState(false);
   const [selectedScript,   setSelectedScript]   = useState("");   // Task 2 — resets per call
   const [customScript,     setCustomScript]     = useState("");   // Task 2 — custom script name
   const [objectionRaised,  setObjectionRaised]  = useState("");   // Task 3 — resets per call
@@ -750,6 +826,40 @@ export default function HarmoniaOS() {
     personalHydrated.current = true;
   }
 
+  // ── Login / auth handlers (server-checked password via caller-auth webhook) ──
+  function completeLogin(name) {
+    try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ caller: name, ts: Date.now() })); } catch {}
+    try { localStorage.setItem(CALLER_LS_KEY, name); } catch {}
+    setCallerName(name);
+    if (CALLER_PHONES[name]) setCaller(CALLER_PHONES[name]);
+    personalHydrated.current = false;
+    hydrateCaller(name, allCallerSettings);
+    setLoginPw(""); setLoginPw2(""); setAuthStep("login"); setLoginErr(""); setLoginBusy(false);
+    setAuthed(true);
+  }
+  async function submitLogin() {
+    if (!loginName || !loginPw) return;
+    const mode = authStep === "setup" ? "set" : "check";
+    if (mode === "set") {
+      if (loginPw.length < 4) { setLoginErr("Password must be at least 4 characters."); return; }
+      if (loginPw !== loginPw2) { setLoginErr("Passwords don't match."); return; }
+    }
+    setLoginErr(""); setLoginBusy(true);
+    try {
+      const res = await fetch(CALLER_AUTH_WEBHOOK, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caller_name: loginName, password: loginPw, mode }) });
+      const data = await res.json().catch(() => ({}));
+      if (data.status === "ok")          { completeLogin(loginName); return; }
+      if (data.status === "needs_setup") { setAuthStep("setup"); setLoginErr(""); setLoginBusy(false); return; }
+      if (data.status === "bad")         { setLoginErr("Incorrect password."); setLoginBusy(false); return; }
+      setLoginErr("Login failed — try again."); setLoginBusy(false);
+    } catch (e) { setLoginErr("Network error — check your connection."); setLoginBusy(false); }
+  }
+  function logout() {
+    try { localStorage.removeItem(AUTH_SESSION_KEY); } catch {}
+    setAuthed(false); setLoginPw(""); setLoginPw2(""); setAuthStep("login"); setLoginErr(""); setLoginName(callerName || "");
+  }
+
   const sessRef = useRef(); const callRef = useRef();
 
   /* ── FETCH ALL SHEET DATA ON MOUNT ── */
@@ -767,7 +877,7 @@ export default function HarmoniaOS() {
         // remembered caller (server is the source of truth; localStorage is the fallback).
         setAllCallerSettings(callerSettingsRaw);
         hydrateTeam(callerSettingsRaw);
-        if (storedCaller) hydrateCaller(storedCaller, callerSettingsRaw, true);
+        if (storedSession) hydrateCaller(storedSession, callerSettingsRaw, true);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
         setScripts(parseScripts(scriptsRaw));
@@ -885,6 +995,58 @@ export default function HarmoniaOS() {
   },[pitchUnlocked, callPhase, phaseOrder]);
 
   if (loading || loadError) return <LoadingScreen error={loadError} />;
+
+  // ── Login gate ── no valid session → show login (or first-time password setup) ──
+  if (!authed) {
+    const needsSetup = authStep === "setup";
+    const canSubmit = !loginBusy && loginName && loginPw && (!needsSetup || loginPw2);
+    const inputStyle = {width:"100%",boxSizing:"border-box",border:`0.75px solid ${C.border}`,borderRadius:7,
+      padding:"9px 10px",fontSize:13,background:C.bg,color:C.t1,outline:"none"};
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{width:"100%",maxWidth:340,border:`0.75px solid ${C.border}`,borderRadius:12,padding:"34px 26px 26px"}}>
+          {/* Open on pride — a single ring on glass-white, the wordmark, one belief line */}
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:24}}>
+            <RingMark size={116} stroke={C.skyTint} index={sigIndex} phrase={null} dim={0.95} uid="login" outer dot/>
+            <div style={{display:"flex",alignItems:"baseline",gap:8,marginTop:18}}>
+              <span style={{fontSize:15,fontWeight:600,letterSpacing:"0.18em",color:C.accent}}>HARMONIA</span>
+              <span style={{fontSize:11,color:C.t3}}>Cold caller</span>
+            </div>
+            <div style={{fontSize:10.5,color:C.t3,marginTop:7,fontFamily:FM,letterSpacing:"0.16em"}}>{BELIEFS[sigPhrase]}</div>
+            <div style={{fontSize:12,color:C.t2,marginTop:14,textAlign:"center"}}>
+              {needsSetup ? "First time here — create your password" : "Log in to your workspace"}
+            </div>
+          </div>
+          <label style={{fontSize:11,color:C.t3,display:"block",marginBottom:5}}>Caller</label>
+          <select value={loginName} disabled={needsSetup}
+            onChange={e=>{ setLoginName(e.target.value); setAuthStep("login"); setLoginPw(""); setLoginPw2(""); setLoginErr(""); }}
+            style={{...inputStyle, color:loginName?C.t1:C.t3, marginBottom:14, opacity:needsSetup?0.6:1}}>
+            <option value="">Select your name…</option>
+            {CALLER_ROSTER.map(n=><option key={n} value={n}>{n}</option>)}
+          </select>
+          <label style={{fontSize:11,color:C.t3,display:"block",marginBottom:5}}>{needsSetup?"New password":"Password"}</label>
+          <input type="password" value={loginPw} autoFocus
+            onChange={e=>setLoginPw(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") submitLogin(); }}
+            placeholder={needsSetup?"Choose a password (min 4 chars)":"Enter your password"}
+            style={{...inputStyle, marginBottom:needsSetup?12:14}} />
+          {needsSetup && (
+            <input type="password" value={loginPw2}
+              onChange={e=>setLoginPw2(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") submitLogin(); }}
+              placeholder="Confirm password" style={{...inputStyle, marginBottom:14}} />
+          )}
+          {loginErr && <div style={{fontSize:11,color:C.red,marginBottom:12}}>{loginErr}</div>}
+          <button onClick={submitLogin} disabled={!canSubmit}
+            style={{width:"100%",padding:"10px 0",borderRadius:7,border:"none",
+              background:canSubmit?C.t1:C.t3,color:C.bg,fontSize:13,fontWeight:600,cursor:canSubmit?"pointer":"default"}}>
+            {loginBusy ? "…" : needsSetup ? "Create password & log in" : "Log in"}
+          </button>
+          <div style={{fontSize:10,color:C.t3,marginTop:14,lineHeight:1.5}}>
+            {needsSetup ? "Remember this — you'll use it to log in on any device." : "Forgot it? Ask your admin to reset your password."}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // A lead is "retired" from the OS only on an explicit yes (demo booked) or
   // never-call (DNC) — logged this session (lead.status) or on any prior call in the
@@ -1240,65 +1402,63 @@ export default function HarmoniaOS() {
     <div style={{background:C.bg,height:"100vh",width:"100vw",display:"flex",flexDirection:"column",
       fontFamily:F,fontSize:13,color:C.t1,overflow:"hidden",margin:0,padding:0}}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
         ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${C.border};border-radius:2px}
         button,select{font-family:${F};cursor:pointer}
         @keyframes slideDown{from{transform:translateY(-8px);opacity:0}to{transform:translateY(0);opacity:1}}
         @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(29,29,31,0.3)}50%{box-shadow:0 0 0 8px rgba(29,29,31,0)}}
         @keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
+        @keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(74,158,237,0.45)}70%{box-shadow:0 0 0 6px rgba(74,158,237,0)}100%{box-shadow:0 0 0 0 rgba(74,158,237,0)}}
         a{color:${C.accent};text-decoration:none}a:hover{text-decoration:underline}
       `}</style>
 
       {flash&&<div style={{position:"fixed",top:18,left:"50%",transform:"translateX(-50%)",
         background:C.t1,color:C.bg,padding:"9px 22px",borderRadius:100,fontSize:13,fontWeight:500,
-        zIndex:9999,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",animation:"slideDown 0.2s ease",
+        zIndex:9999,boxShadow:"0 2px 14px rgba(28,61,82,0.10)",animation:"slideDown 0.2s ease",
         display:"flex",alignItems:"center",gap:12}}>
         {flash}
         {undoLast&&<button onClick={undoLastDisposition}
-          style={{background:"transparent",border:`1px solid ${C.bg}50`,color:C.bg,
+          style={{background:"transparent",border:`0.75px solid ${C.bg}50`,color:C.bg,
             padding:"2px 10px",borderRadius:100,fontSize:11,fontWeight:500,cursor:"pointer",
             marginLeft:4}}>Undo</button>}
       </div>}
 
       {/* ── HEADER ── */}
-      <div style={{borderBottom:`1px solid ${C.border}`,padding:"0 20px",display:"flex",
+      <div style={{borderBottom:`0.75px solid ${C.border}`,padding:"0 20px",display:"flex",
         alignItems:"center",gap:22,height:52,flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"baseline",gap:7}}>
-          <span style={{fontSize:14,fontWeight:500,letterSpacing:"-0.01em"}}>Harmonia</span>
-          <span style={{fontSize:11,color:C.t3}}>Cold Caller</span>
+        <div style={{display:"flex",alignItems:"center",gap:9}}>
+          <RingMark size={18} stroke={C.accent} index={false} phrase={null} outer={false} dim={0.95}/>
+          <span style={{display:"flex",alignItems:"baseline",gap:9}}>
+            <span style={{fontSize:15,fontWeight:600,letterSpacing:"0.14em",color:C.accent}}>HARMONIA</span>
+            <span style={{fontSize:11,color:C.t2}}>Cold caller</span>
+          </span>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
         <div style={{display:"flex",alignItems:"center",gap:7}}>
           <span style={{fontSize:11,color:C.t3}}>Caller</span>
-          <select value={callerName} onChange={e=>{
-              const sel=e.target.value;
-              setCallerName(sel);
-              try { localStorage.setItem(CALLER_LS_KEY, sel); } catch {}
-              if(CALLER_PHONES[sel]) setCaller(CALLER_PHONES[sel]);
-              // Load this caller's scripts + layout from the cloud (or defaults if brand-new).
-              personalHydrated.current = false;
-              hydrateCaller(sel, allCallerSettings);
-            }}
-            style={{border:`1px solid ${callerName?C.border:C.amber}`,borderRadius:6,padding:"3px 8px",
-              fontSize:12,background:C.bg,color:callerName?C.t1:C.t3,outline:"none"}}>
-            <option value="">Select caller...</option>
-            {CALLER_ROSTER.map(name=><option key={name} value={name}>{name}</option>)}
-          </select>
+          <span style={{fontSize:12,fontWeight:600,color:C.t1}}>{callerName}</span>
+          <button onClick={logout} title="Log out / switch caller"
+            style={{marginLeft:2,padding:"3px 9px",borderRadius:6,border:`0.75px solid ${C.border}`,
+              background:"transparent",color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer"}}>
+            Log out
+          </button>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:17,fontWeight:300,letterSpacing:"0.04em",fontFamily:FM,
+        <div style={{display:"flex",alignItems:"center",gap:9}}>
+          {sessRun&&<span title="Live session" style={{width:7,height:7,borderRadius:"50%",
+            background:C.accent,flexShrink:0,animation:"livePulse 2.2s ease-out infinite"}}/>}
+          <span style={{fontSize:17,fontWeight:400,letterSpacing:"0.04em",fontFamily:FM,
             color:sessRun?C.t1:C.t3,minWidth:68}}>{fmtH(sessSecs)}</span>
           <button onClick={sessRun?endSess:startSess}
             style={{padding:"4px 14px",borderRadius:6,
-              border:`1px solid ${sessRun?C.red:C.accent}`,background:"transparent",
+              border:`0.75px solid ${sessRun?C.red:C.accent}`,background:"transparent",
               color:sessRun?C.red:C.accent,fontSize:11,fontWeight:500}}>
             {sessRun?"End":"Start session"}
           </button>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
-        {[{l:"Dials",v:stats.dials,c:C.t1},{l:"Connect",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
+        {[{l:"Dials",v:stats.dials,c:C.t1},{l:"Connect",v:stats.dials>0?connectRate+"%":"—",c:C.t1},
           {l:"Demos",v:stats.demos,c:C.green},
           {l:"Looms",v:stats.looms,c:C.teal}
         ].map(({l,v,c})=>(
@@ -1315,25 +1475,25 @@ export default function HarmoniaOS() {
         {SHOW_LEADERBOARD && (
         <button onClick={()=>setMainView("leaderboard")}
           style={{padding:"4px 10px",borderRadius:6,
-            border:`1px solid ${C.border}`,background:"transparent",
+            border:`0.75px solid ${C.border}`,background:"transparent",
             color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",transition:"all 0.15s"}}>
           Leaderboard
         </button>
         )}
         <button onClick={()=>setShowStatsPanel(v=>!v)}
           style={{padding:"4px 10px",borderRadius:6,
-            border:`1px solid ${showStatsPanel?C.t1:C.border}`,
+            border:`0.75px solid ${showStatsPanel?C.t1:C.border}`,
             background:showStatsPanel?C.t1:"transparent",
             color:showStatsPanel?C.bg:C.t2,
             fontSize:10,fontWeight:500,transition:"all 0.15s"}}>
-          {showStatsPanel?"Hide Stats":"Stats & Log"}
+          {showStatsPanel?"Hide stats":"Stats & log"}
         </button>
         {callerName==="Javi"&&(
           <>
             <div style={{width:1,height:18,background:C.border}}/>
             <button onClick={()=>setShowAdminPanel(true)}
               style={{padding:"4px 10px",borderRadius:6,
-                border:`1px solid ${C.border}`,background:"transparent",
+                border:`0.75px solid ${C.border}`,background:"transparent",
                 color:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",
                 transition:"all 0.15s"}}>
               Admin
@@ -1347,13 +1507,13 @@ export default function HarmoniaOS() {
         <div style={{position:"fixed",inset:0,zIndex:8000,background:C.bg,
           display:"flex",flexDirection:"column"}}>
           {/* Leaderboard header */}
-          <div style={{borderBottom:`1px solid ${C.border}`,padding:"0 20px",display:"flex",
+          <div style={{borderBottom:`0.75px solid ${C.border}`,padding:"0 20px",display:"flex",
             alignItems:"center",gap:14,height:52,flexShrink:0}}>
             <span style={{fontSize:14,fontWeight:500,letterSpacing:"-0.01em"}}>Leaderboard</span>
             <span style={{fontSize:11,color:C.t3}}>All callers · from shared call history</span>
             <div style={{flex:1}}/>
             <button onClick={()=>setMainView("workspace")}
-              style={{padding:"4px 12px",borderRadius:6,border:`1px solid ${C.border}`,
+              style={{padding:"4px 12px",borderRadius:6,border:`0.75px solid ${C.border}`,
                 background:"transparent",color:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
               ← Back to caller
             </button>
@@ -1387,7 +1547,7 @@ export default function HarmoniaOS() {
                 <div style={{maxWidth:760,margin:"0 auto"}}>
                   {/* column headers */}
                   <div style={{display:"grid",gridTemplateColumns:COLS,padding:"0 16px 10px",
-                    borderBottom:`1px solid ${C.border}`}}>
+                    borderBottom:`0.75px solid ${C.border}`}}>
                     {["#","Caller","Dials","Booked"].map((h,i)=>(
                       <div key={h} style={{fontSize:10,color:C.t3,fontWeight:600,letterSpacing:"0.05em",
                         textTransform:"uppercase",textAlign:i<2?"left":"right"}}>{h}</div>
@@ -1395,7 +1555,7 @@ export default function HarmoniaOS() {
                   </div>
                   {rows.map((r,i)=>(
                     <div key={r.caller} style={{display:"grid",gridTemplateColumns:COLS,alignItems:"center",
-                      padding:"15px 16px",borderBottom:`1px solid ${C.border}`,
+                      padding:"15px 16px",borderBottom:`0.75px solid ${C.border}`,
                       background:i===0&&r.dials>0?`${C.green}08`:"transparent"}}>
                       <div style={{fontSize:13,fontWeight:600,color:i===0&&r.dials>0?C.green:C.t3}}>{i+1}</div>
                       <div style={{fontSize:14,fontWeight:500,color:C.t1}}>{r.caller}</div>
@@ -1419,14 +1579,14 @@ export default function HarmoniaOS() {
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
 
         {/* ── QUEUE ── */}
-        <div style={{width:244,borderRight:`1px solid ${C.border}`,
+        <div style={{width:244,borderRight:`0.75px solid ${C.border}`,
           display:"flex",flexDirection:"column",flexShrink:0}}>
-          <div style={{padding:"9px 10px 8px",borderBottom:`1px solid ${C.border}`,
+          <div style={{padding:"9px 10px 8px",borderBottom:`0.75px solid ${C.border}`,
             display:"flex",gap:4,flexWrap:"wrap"}}>
             {FILTER_GROUPS.filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
               <button key={f} onClick={()=>setFilter(f)}
                 style={{padding:"3px 10px",borderRadius:100,
-                  border:`1px solid ${filter===f?C.t1:C.border}`,
+                  border:`0.75px solid ${filter===f?C.t1:C.border}`,
                   background:filter===f?C.t1:"transparent",
                   color:filter===f?C.bg:C.t2,fontSize:10,fontWeight:500,transition:"all 0.12s"}}>
                 {f==="all"?"All":GROUP_LABEL[f]}
@@ -1449,7 +1609,7 @@ export default function HarmoniaOS() {
               return (
                 <div key={lead.id} onClick={()=>selectLead(lead)}
                   style={{padding:"9px 14px",cursor:isDone?"default":"pointer",
-                    opacity:isDone?0.38:1,borderBottom:`1px solid ${C.border}`,
+                    opacity:isDone?0.38:1,borderBottom:`0.75px solid ${C.border}`,
                     borderLeft:isActive?`2px solid ${C.t1}`:"2px solid transparent",
                     background:isActive?C.surface:"transparent",transition:"background 0.1s",
                     textAlign:"left"}}>
@@ -1487,7 +1647,7 @@ export default function HarmoniaOS() {
           {active ? (
             <>
               {/* Lead header */}
-              <div style={{padding:"13px 20px",borderBottom:`1px solid ${C.border}`,
+              <div style={{padding:"13px 20px",borderBottom:`0.75px solid ${C.border}`,
                 background:C.surface,display:"flex",alignItems:"flex-start",
                 gap:16,flexShrink:0}}>
                 <div style={{flex:1,minWidth:0}}>
@@ -1530,7 +1690,7 @@ export default function HarmoniaOS() {
                       </div>
                       <button onClick={()=>{setCallRun(false);setCallSecs(0);setDispoBarOpen(true);}}
                         style={{padding:"6px 14px",borderRadius:6,
-                          border:`1px solid ${C.red}`,background:"transparent",
+                          border:`0.75px solid ${C.red}`,background:"transparent",
                           color:C.red,fontSize:11,fontWeight:500,cursor:"pointer"}}>
                         End Call
                       </button>
@@ -1547,7 +1707,7 @@ export default function HarmoniaOS() {
                         <button onClick={()=>dial(active)}
                           disabled={!canDial}
                           style={{padding:"7px 22px",borderRadius:8,
-                            border:`1px solid ${canDial?C.t1:C.border}`,
+                            border:`0.75px solid ${canDial?C.t1:C.border}`,
                             background:canDial?C.t1:"transparent",
                             color:canDial?C.bg:C.t3,
                             fontSize:12,fontWeight:500,
@@ -1563,7 +1723,7 @@ export default function HarmoniaOS() {
                             <button onClick={()=>dial(active,phones[0].number)}
                               disabled={!canDial}
                               style={{padding:"7px 16px",borderRadius:"8px 0 0 8px",
-                                border:`1px solid ${canDial?C.t1:C.border}`,borderRight:"none",
+                                border:`0.75px solid ${canDial?C.t1:C.border}`,borderRight:"none",
                                 background:canDial?C.t1:"transparent",
                                 color:canDial?C.bg:C.t3,
                                 fontSize:12,fontWeight:500,
@@ -1574,7 +1734,7 @@ export default function HarmoniaOS() {
                             <button onClick={()=>{ if(canDial) setPhoneMenuOpen(v=>!v); }}
                               disabled={!canDial}
                               style={{padding:"7px 8px",borderRadius:"0 8px 8px 0",
-                                border:`1px solid ${canDial?C.t1:C.border}`,
+                                border:`0.75px solid ${canDial?C.t1:C.border}`,
                                 background:canDial?C.t1:"transparent",
                                 color:canDial?C.bg:C.t3,
                                 fontSize:10,fontWeight:500,
@@ -1585,15 +1745,15 @@ export default function HarmoniaOS() {
                           </div>
                           {phoneMenuOpen&&canDial&&(
                             <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
-                              background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
-                              boxShadow:"0 4px 12px rgba(0,0,0,0.12)",zIndex:50,minWidth:200,
+                              background:C.bg,border:`0.75px solid ${C.border}`,borderRadius:8,
+                              boxShadow:"0 2px 12px rgba(28,61,82,0.08)",zIndex:50,minWidth:200,
                               overflow:"hidden"}}>
                               {phones.map((p,i)=>(
                                 <button key={i} onClick={()=>dial(active,p.number)}
                                   style={{display:"block",width:"100%",textAlign:"left",
                                     padding:"9px 14px",border:"none",background:"transparent",
                                     cursor:"pointer",fontSize:12,color:C.t1,
-                                    borderBottom:i<phones.length-1?`1px solid ${C.border}`:"none"}}
+                                    borderBottom:i<phones.length-1?`0.75px solid ${C.border}`:"none"}}
                                   onMouseEnter={e=>e.currentTarget.style.background=C.surface}
                                   onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                                   <span style={{fontWeight:500}}>{p.label}</span>
@@ -1610,14 +1770,14 @@ export default function HarmoniaOS() {
                       <div style={{position:"relative",display:"inline-block"}}>
                         <button onClick={()=>setPhoneMenuOpen(v=>!v)}
                           style={{padding:"5px 12px",borderRadius:6,
-                            border:`1px solid ${C.border}`,background:"transparent",
+                            border:`0.75px solid ${C.border}`,background:"transparent",
                             color:C.t2,fontSize:11,cursor:"pointer"}}>
                           Try another #
                         </button>
                         {phoneMenuOpen&&(
                           <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
-                            background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,
-                            boxShadow:"0 4px 12px rgba(0,0,0,0.12)",zIndex:50,minWidth:200,
+                            background:C.bg,border:`0.75px solid ${C.border}`,borderRadius:8,
+                            boxShadow:"0 2px 12px rgba(28,61,82,0.08)",zIndex:50,minWidth:200,
                             overflow:"hidden"}}>
                             {phones.filter(p=>p.number!==lastDialedPhone).map((p,i,arr)=>(
                               <button key={i} onClick={()=>{
@@ -1628,7 +1788,7 @@ export default function HarmoniaOS() {
                                 style={{display:"block",width:"100%",textAlign:"left",
                                   padding:"9px 14px",border:"none",background:"transparent",
                                   cursor:"pointer",fontSize:12,color:C.t1,
-                                  borderBottom:i<arr.length-1?`1px solid ${C.border}`:"none"}}
+                                  borderBottom:i<arr.length-1?`0.75px solid ${C.border}`:"none"}}
                                 onMouseEnter={e=>e.currentTarget.style.background=C.surface}
                                 onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                                 <span style={{fontWeight:500}}>{p.label}</span>
@@ -1647,10 +1807,10 @@ export default function HarmoniaOS() {
               {/* Script selector — visible during call */}
               {(callRun||pendingOutcome)&&(
                 <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 20px",flexShrink:0,
-                  borderBottom:`1px solid ${C.border}`}}>
+                  borderBottom:`0.75px solid ${C.border}`}}>
                   <span style={{fontSize:11,color:C.t3}}>Script</span>
                   <select value={selectedScript} onChange={e=>{setSelectedScript(e.target.value);if(e.target.value!=="custom")setCustomScript("");}}
-                    style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
+                    style={{border:`0.75px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
                       fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
                     <option value="">Select script...</option>
                     {Object.entries(scripts[icpGroup(active?.icp)]||{})
@@ -1670,7 +1830,7 @@ export default function HarmoniaOS() {
                   {selectedScript==="custom"&&(
                     <input value={customScript} onChange={e=>setCustomScript(e.target.value)}
                       placeholder="Script name..."
-                      style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
+                      style={{border:`0.75px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
                         fontSize:12,background:C.bg,color:C.t1,outline:"none",width:140}}/>
                   )}
                 </div>
@@ -1680,7 +1840,7 @@ export default function HarmoniaOS() {
 
               {pendingOutcome&&!dispoBarOpen&&(
                 <div style={{padding:"12px 20px 14px",flexShrink:0,
-                  borderBottom:`1px solid ${C.border}`,background:C.surface,
+                  borderBottom:`0.75px solid ${C.border}`,background:C.surface,
                   animation:"slideDown 0.2s ease",overflowY:"auto",maxHeight:"50vh"}}>
 
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
@@ -1688,12 +1848,12 @@ export default function HarmoniaOS() {
                     <span style={{fontSize:13,fontWeight:500,color:pendingMeta?.color}}>{pendingMeta?.label}</span>
                     {pendingMeta?.ghl&&(
                       <span style={{fontSize:9,padding:"2px 8px",borderRadius:100,
-                        background:`${pendingMeta.color}12`,border:`1px solid ${pendingMeta.color}25`,
+                        background:`${pendingMeta.color}12`,border:`0.75px solid ${pendingMeta.color}25`,
                         color:pendingMeta.color}}>→ GHL: {pendingMeta.ghl}</span>
                     )}
                     {pendingMeta?.discord&&(
                       <span style={{fontSize:9,padding:"2px 8px",borderRadius:100,
-                        background:`${C.purple}12`,border:`1px solid ${C.purple}25`,
+                        background:`${C.purple}12`,border:`0.75px solid ${C.purple}25`,
                         color:C.purple}}>→ Discord {pendingMeta.discord}</span>
                     )}
                     <button onClick={()=>{setPendingOutcome(null);setCaptureEmail("");setCapturePhone("");setCaptureNotes("");}}
@@ -1707,7 +1867,7 @@ export default function HarmoniaOS() {
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>{pendingOutcome==="demo_booked"?"Prospect email (for Calendly invite)":pendingOutcome==="loom_sent"?"Prospect email (to send Loom)":"Prospect email (to send info)"} <span style={{color:C.red,fontSize:9}}>required</span></div>
                         <input type="email" value={captureEmail} onChange={e=>setCaptureEmail(e.target.value)}
                           placeholder="owner@business.com"
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                       </div>
                     )}
 
@@ -1716,16 +1876,16 @@ export default function HarmoniaOS() {
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Prospect mobile (if different from business line)</div>
                         <input type="tel" value={capturePhone} onChange={e=>setCapturePhone(e.target.value)}
                           placeholder="(610) 555-1234"
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                       </div>
                     )}
 
                     {pendingMeta?.needsBooking&&captureEmail.trim()&&(
-                      <div style={{background:C.bg,borderRadius:8,border:`1px solid ${C.green}30`,padding:"10px 14px"}}>
+                      <div style={{background:C.bg,borderRadius:8,border:`0.75px solid ${C.green}30`,padding:"10px 14px"}}>
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Book the demo now</div>
                         <button onClick={openCalendly}
                           style={{width:"100%",padding:"8px 0",borderRadius:6,
-                            border:`1px solid ${calendlyOpened?C.green:C.accent}`,
+                            border:`0.75px solid ${calendlyOpened?C.green:C.accent}`,
                             background:calendlyOpened?`${C.green}10`:"transparent",
                             color:calendlyOpened?C.green:C.accent,fontSize:12,fontWeight:500}}>
                           {calendlyOpened?"✓ Calendly opened — confirm booking":"Open Calendly →"}
@@ -1739,7 +1899,7 @@ export default function HarmoniaOS() {
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>What should the Loom show? (for Javi/Julian to record)</div>
                         <textarea value={loomContext} onChange={e=>setLoomContext(e.target.value)}
                           placeholder={`e.g. "Show how after-hours calls get answered for a ${active.icp} shop in ${active.city}"`}
-                          rows={2} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
+                          rows={2} style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
                         <div style={{fontSize:10,color:C.teal,marginTop:4}}>Pings Discord #loom-queue → Javi/Julian record → n8n auto-emails to prospect</div>
                       </div>
                     )}
@@ -1750,12 +1910,12 @@ export default function HarmoniaOS() {
                           <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback date <span style={{color:C.red,fontSize:9}}>required</span></div>
                           <input type="date" value={callbackDate} onChange={e=>setCallbackDate(e.target.value)}
                             min={new Date().toISOString().split("T")[0]}
-                            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                            style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                         </div>
                         <div>
                           <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback time <span style={{color:C.red,fontSize:9}}>required</span></div>
                           <input type="time" value={callbackTime} onChange={e=>setCallbackTime(e.target.value)}
-                            style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                            style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                         </div>
                         <div style={{gridColumn:"1/-1",fontSize:10,color:C.amber}}>Auto-sets GHL reminder + SMS to prospect 1hr before + Discord ping to caller</div>
                       </div>
@@ -1768,9 +1928,9 @@ export default function HarmoniaOS() {
                           {[{v:"website",l:"Website link"},{v:"info_packet",l:"Info packet"},{v:"case_study",l:"Case study"}].map(opt=>(
                             <button key={opt.v} onClick={()=>setSendType(opt.v)}
                               style={{padding:"4px 12px",borderRadius:100,
-                                border:`1px solid ${sendType===opt.v?C.accent:C.border}`,
-                                background:sendType===opt.v?`${C.accent}10`:"transparent",
-                                color:sendType===opt.v?C.accent:C.t2,fontSize:11,fontWeight:500}}>
+                                border:`0.75px solid ${sendType===opt.v?C.t1:C.border}`,
+                                background:sendType===opt.v?`${C.t1}08`:"transparent",
+                                color:sendType===opt.v?C.t1:C.t2,fontSize:11,fontWeight:500}}>
                               {opt.l}
                             </button>
                           ))}
@@ -1783,7 +1943,7 @@ export default function HarmoniaOS() {
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Gatekeeper name</div>
                         <input value={gatekeeperName} onChange={e=>setGatekeeperName(e.target.value)}
                           placeholder="e.g. Maria, front desk"
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                         <div style={{fontSize:10,color:C.t3,marginTop:4}}>Logged for next call — use their name to get past them</div>
                       </div>
                     )}
@@ -1795,9 +1955,9 @@ export default function HarmoniaOS() {
                           {["Owner","Gatekeeper","Manager","Unknown"].map(opt=>(
                             <button key={opt} onClick={()=>setSpokeWith(opt)}
                               style={{padding:"4px 12px",borderRadius:100,
-                                border:`1px solid ${spokeWith===opt?C.accent:C.border}`,
-                                background:spokeWith===opt?`${C.accent}10`:"transparent",
-                                color:spokeWith===opt?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                                border:`0.75px solid ${spokeWith===opt?C.t1:C.border}`,
+                                background:spokeWith===opt?`${C.t1}08`:"transparent",
+                                color:spokeWith===opt?C.t1:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
                               {opt}
                             </button>
                           ))}
@@ -1809,7 +1969,7 @@ export default function HarmoniaOS() {
                       <div>
                         <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Objection raised</div>
                         <select value={objectionRaised} onChange={e=>setObjectionRaised(e.target.value)}
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,background:C.bg,color:C.t1,outline:"none"}}>
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,background:C.bg,color:C.t1,outline:"none"}}>
                           <option value="">Select objection...</option>
                           {[...(OBJECTION_PRESETS[icpGroup(active.icp)]||[]),...(OBJECTION_PRESETS._global||[])].map(o=>(
                             <option key={o} value={o}>{o}</option>
@@ -1817,7 +1977,7 @@ export default function HarmoniaOS() {
                         </select>
                         <input value={customObjection} onChange={e=>setCustomObjection(e.target.value)}
                           placeholder="Or type a custom objection..."
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,background:C.bg,color:C.t1,outline:"none",marginTop:4}}/>
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,background:C.bg,color:C.t1,outline:"none",marginTop:4}}/>
                       </div>
                     )}
 
@@ -1825,7 +1985,7 @@ export default function HarmoniaOS() {
                       <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Notes</div>
                       <textarea value={captureNotes} onChange={e=>setCaptureNotes(e.target.value)}
                         placeholder="Anything relevant — context for next call, owner personality, timing..."
-                        rows={2} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
+                        rows={2} style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
                     </div>
 
                     <button onClick={confirmOutcome} disabled={!canSubmit()}
@@ -1843,7 +2003,7 @@ export default function HarmoniaOS() {
               )}
 
               {/* Tabs */}
-              <div style={{display:"flex",padding:"0 20px",borderBottom:`1px solid ${C.border}`,
+              <div style={{display:"flex",padding:"0 20px",borderBottom:`0.75px solid ${C.border}`,
                 gap:0,flexShrink:0,background:C.bg}}>
                 {[
                   {id:"intel",      label:"Intel"},
@@ -1855,7 +2015,7 @@ export default function HarmoniaOS() {
                 ].map(t=>(
                   <button key={t.id} onClick={()=>setTab(t.id)}
                     style={{padding:"10px 15px",border:"none",background:"transparent",
-                      borderBottom:tab===t.id?`1.5px solid ${C.t1}`:"1.5px solid transparent",
+                      borderBottom:tab===t.id?`1.5px solid ${C.accent}`:"1.5px solid transparent",
                       color:tab===t.id?C.t1:C.t3,fontSize:12,
                       fontWeight:tab===t.id?500:400,marginBottom:"-1px",
                       transition:"color 0.15s"}}>
@@ -1865,7 +2025,16 @@ export default function HarmoniaOS() {
               </div>
 
               {/* Tab content */}
-              <div style={{flex:1,overflowY:"auto",padding:20}}>
+              <div style={{flex:1,overflowY:"auto",padding:20,position:"relative"}}>
+                {/* Ambient signature — the rings etched faintly into the workspace dead space */}
+                {sigOn&&(
+                  <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+                    justifyContent:"center",pointerEvents:"none",zIndex:0,overflow:"hidden"}}>
+                    <RingMark size={520} stroke={C.skyTint} index={sigIndex} phrase={BELIEFS[sigPhrase]}
+                      dim={0.22} uid="ambient" outer dot/>
+                  </div>
+                )}
+                <div style={{position:"relative",zIndex:1}}>
 
                 {/* ── INTEL (two-column: dossier left, notes right) ── */}
                 {tab==="intel"&&(
@@ -1892,7 +2061,7 @@ export default function HarmoniaOS() {
                             {/* Owner — first + last parsed from the Leads `owner` column */}
                             {o.full&&(
                               <div style={{display:"flex",alignItems:"center",gap:10}}>
-                                <div style={{width:7,height:7,borderRadius:"50%",background:C.accent,flexShrink:0}}/>
+                                <div style={{width:7,height:7,borderRadius:"50%",background:C.t2,flexShrink:0}}/>
                                 <span style={lbl}>Owner</span>
                                 <span style={{fontSize:13,fontWeight:600,color:C.t1,whiteSpace:"nowrap"}}>
                                   {o.first}{o.last&&<span style={{fontWeight:400,color:C.t2}}> {o.last}</span>}
@@ -1921,7 +2090,7 @@ export default function HarmoniaOS() {
                           </div>
                           {(site||li)&&(
                             <div style={{display:"flex",alignItems:"center",gap:16,marginTop:13,
-                              paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+                              paddingTop:12,borderTop:`0.75px solid ${C.border}`}}>
                               {site&&(
                                 <a href={href(site)} target="_blank" rel="noreferrer" onClick={ev=>ev.stopPropagation()}
                                   style={{fontSize:12,color:C.accent,textDecoration:"none",whiteSpace:"nowrap",
@@ -1972,7 +2141,7 @@ export default function HarmoniaOS() {
                       )}
 
                       {flaggedReviews.length > 0 && (
-                        <div style={{borderRadius:12,border:`1px solid ${C.amber}30`,
+                        <div style={{borderRadius:12,border:`0.75px solid ${C.amber}30`,
                           padding:"14px 16px",background:"#FFFBF0"}}>
                           <div style={{fontSize:10,color:C.amber,marginBottom:10,fontWeight:500}}>
                             {flaggedReviews.length} pain signal{flaggedReviews.length>1?"s":""} in reviews
@@ -2018,23 +2187,23 @@ export default function HarmoniaOS() {
                             {/* Quick-glance summary */}
                             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
                               <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
-                                border:`1px solid ${C.border}`}}>
+                                border:`0.75px solid ${C.border}`}}>
                                 <div style={{fontSize:18,fontWeight:500,color:C.t1,fontFamily:FM}}>{totalCalls}</div>
                                 <div style={{fontSize:9,color:C.t3,marginTop:2}}>Total Calls</div>
                               </div>
                               <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
-                                border:`1px solid ${OUTCOMES[lastCall.outcome]?.color||C.border}`}}>
+                                border:`0.75px solid ${OUTCOMES[lastCall.outcome]?.color||C.border}`}}>
                                 <div style={{fontSize:12,fontWeight:600,color:OUTCOMES[lastCall.outcome]?.color||C.t1,lineHeight:1.3}}>
                                   {OUTCOMES[lastCall.outcome]?.label || lastCall.outcome || "—"}
                                 </div>
-                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last Result</div>
+                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last result</div>
                               </div>
                               <div style={{background:C.bg,borderRadius:8,padding:"8px 10px",textAlign:"center",
-                                border:`1px solid ${C.border}`}}>
-                                <div style={{fontSize:12,fontWeight:500,color:C.accent,lineHeight:1.3}}>
+                                border:`0.75px solid ${C.border}`}}>
+                                <div style={{fontSize:12,fontWeight:500,color:C.t1,lineHeight:1.3}}>
                                   {lastCall.caller || "—"}
                                 </div>
-                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last Caller</div>
+                                <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last caller</div>
                               </div>
                             </div>
 
@@ -2047,7 +2216,7 @@ export default function HarmoniaOS() {
                                   <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
                                     {callers.map(c=>(
                                       <span key={c} style={{fontSize:10,padding:"2px 8px",borderRadius:100,
-                                        background:C.accent+"15",color:C.accent,fontWeight:500}}>{c}</span>
+                                        background:C.t2+"14",color:C.t2,fontWeight:500}}>{c}</span>
                                     ))}
                                   </div>
                                 </div>
@@ -2055,14 +2224,14 @@ export default function HarmoniaOS() {
                             })()}
 
                             {/* Full call log — every call, every caller */}
-                            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+                            <div style={{borderTop:`0.75px solid ${C.border}`,paddingTop:10}}>
                               <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500}}>
                                 Every call (newest first)
                               </div>
                               <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:260,overflowY:"auto"}}>
                                 {hist.map((h,i) => (
                                   <div key={i} style={{background:C.bg,borderRadius:8,padding:"8px 10px",
-                                    border:`1px solid ${OUTCOMES[h.outcome]?.color||C.border}40`}}>
+                                    border:`0.75px solid ${OUTCOMES[h.outcome]?.color||C.border}40`}}>
                                     {/* Row 1: disposition + duration */}
                                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                                       <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -2079,13 +2248,13 @@ export default function HarmoniaOS() {
                                     {/* Row 2: caller, date, script */}
                                     <div style={{display:"flex",justifyContent:"space-between",marginTop:4,
                                       alignItems:"center",flexWrap:"wrap",gap:4}}>
-                                      <span style={{fontSize:11,color:C.accent,fontWeight:500}}>
+                                      <span style={{fontSize:11,color:C.t2,fontWeight:500}}>
                                         {h.caller || "Unknown caller"}
                                       </span>
                                       <div style={{display:"flex",gap:6,alignItems:"center"}}>
                                         {h.variant && (
                                           <span style={{fontSize:9,color:C.t3,background:C.surface,borderRadius:4,
-                                            padding:"1px 5px",border:`1px solid ${C.border}`}}>Script {h.variant}</span>
+                                            padding:"1px 5px",border:`0.75px solid ${C.border}`}}>Script {h.variant}</span>
                                         )}
                                         <span style={{fontSize:10,color:C.t3}}>
                                           {h.timestamp ? new Date(h.timestamp).toLocaleDateString("en-US",
@@ -2149,7 +2318,7 @@ export default function HarmoniaOS() {
                           }}
                           placeholder={'e.g. "Owner Jose said call back after 2pm," "Gatekeeper very protective — try different angle"'}
                           rows={5}
-                          style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",
+                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,padding:"10px 12px",
                             fontSize:13,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
                             lineHeight:1.65,fontFamily:F}}
                         />
@@ -2175,14 +2344,14 @@ export default function HarmoniaOS() {
                     <div style={{display:"flex",gap:6,marginBottom:12}}>
                       <button onClick={()=>setScriptShowHistory(v=>!v)}
                         style={{padding:"4px 12px",borderRadius:100,fontSize:10,fontWeight:500,
-                          border:`1px solid ${scriptShowHistory?C.t1:C.border}`,
+                          border:`0.75px solid ${scriptShowHistory?C.t1:C.border}`,
                           background:scriptShowHistory?C.t1:"transparent",
                           color:scriptShowHistory?C.bg:C.t2,cursor:"pointer",transition:"all 0.15s"}}>
                         {scriptShowHistory?"Hide":"Show"} Call History
                       </button>
                       <button onClick={()=>setScriptShowNotes(v=>!v)}
                         style={{padding:"4px 12px",borderRadius:100,fontSize:10,fontWeight:500,
-                          border:`1px solid ${scriptShowNotes?C.t1:C.border}`,
+                          border:`0.75px solid ${scriptShowNotes?C.t1:C.border}`,
                           background:scriptShowNotes?C.t1:"transparent",
                           color:scriptShowNotes?C.bg:C.t2,cursor:"pointer",transition:"all 0.15s"}}>
                         {scriptShowNotes?"Hide":"Show"} Notes
@@ -2211,8 +2380,8 @@ export default function HarmoniaOS() {
                                     </div>
                                   </div>
                                   <div>
-                                    <div style={{fontSize:9,color:C.t3}}>Last Caller</div>
-                                    <div style={{fontSize:11,color:C.accent,fontWeight:500}}>{lastCall.caller||"—"}</div>
+                                    <div style={{fontSize:9,color:C.t3}}>Last caller</div>
+                                    <div style={{fontSize:11,color:C.t1,fontWeight:500}}>{lastCall.caller||"—"}</div>
                                   </div>
                                   <div>
                                     <div style={{fontSize:9,color:C.t3}}>Last Date</div>
@@ -2228,7 +2397,7 @@ export default function HarmoniaOS() {
                                   )}
                                 </div>
                                 {hist.length > 1 && (
-                                  <div style={{borderTop:`1px solid ${C.border}`,paddingTop:6}}>
+                                  <div style={{borderTop:`0.75px solid ${C.border}`,paddingTop:6}}>
                                     {hist.slice(1,4).map((h,i)=>(
                                       <div key={i} style={{fontSize:10,color:C.t2,display:"flex",gap:6,marginBottom:3}}>
                                         <span style={{color:OUTCOMES[h.outcome]?.color||C.t2,fontWeight:500}}>
@@ -2280,7 +2449,7 @@ export default function HarmoniaOS() {
                               }}
                               placeholder="Shared notes..."
                               rows={3}
-                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 10px",
+                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,padding:"8px 10px",
                                 fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
                                 lineHeight:1.55,fontFamily:F}}
                             />
@@ -2370,7 +2539,7 @@ export default function HarmoniaOS() {
                               transition:"all 0.2s ease",position:"relative",opacity:collapsed?0.5:1}}>
                               {/* Phase header */}
                               <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
-                                borderBottom:`1px solid ${phaseColor}15`}}>
+                                borderBottom:`0.75px solid ${phaseColor}15`}}>
                                 <div style={{display:"flex",flexDirection:"column",gap:1,marginRight:2}}>
                                   <button disabled={idx===0} onClick={()=>movePhase(idx,idx-1)}
                                     style={{background:"none",border:"none",padding:0,fontSize:11,lineHeight:1,
@@ -2403,7 +2572,7 @@ export default function HarmoniaOS() {
                                   title={collapsed?"Turn on":"Turn off"}>
                                   <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",position:"absolute",top:2,
                                     left:collapsed?2:14,transition:"left 0.2s ease",
-                                    boxShadow:"0 1px 2px rgba(0,0,0,.2)"}} />
+                                    boxShadow:"none"}} />
                                 </div>
                                 {/* Bridge badge */}
                                 {!collapsed && isBridge && bridgeVariant?.badge && (
@@ -2418,7 +2587,7 @@ export default function HarmoniaOS() {
                                 {(!isCustomPhase || isBridge) && options.length > 0 && (
                                   <select value={selectedVar}
                                     onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
-                                    style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
+                                    style={{flex:1,border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
                                       fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
                                     {options.map(o => (
                                       <option key={o.id} value={o.id}>
@@ -2447,7 +2616,7 @@ export default function HarmoniaOS() {
                                       }).catch(()=>{});
                                     }
                                   }}
-                                    style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                                    style={{padding:"3px 10px",borderRadius:6,border:`0.75px solid ${C.border}`,
                                       background:C.bg,color:C.t3,fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>
                                     Reset to Original
                                   </button>
@@ -2566,7 +2735,7 @@ export default function HarmoniaOS() {
                                         const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
                                         const isGreen = obj.type === "green";
                                         return (
-                                          <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                          <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,
                                             padding:"12px 14px",transition:"all 0.2s ease"}}>
                                             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
                                               <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
@@ -2662,7 +2831,7 @@ export default function HarmoniaOS() {
                                               {(() => {
                                                 const s = BUBBLE_STYLES[activeNode.type] || BUBBLE_STYLES.yellow;
                                                 return (
-                                                  <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                                  <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,
                                                     padding:"12px 14px"}}>
                                                     <div style={{fontSize:9,fontWeight:600,color:s.text,textTransform:"uppercase",
                                                       letterSpacing:".06em",marginBottom:6}}>You say</div>
@@ -2688,11 +2857,11 @@ export default function HarmoniaOS() {
                                                             </div>
                                                             <input value={newBranchLabel} onChange={e=>setNewBranchLabel(e.target.value)}
                                                               placeholder="Branch label (what they say)"
-                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                                                                 padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
                                                                 background:"#fff",color:C.t1,outline:"none"}} />
                                                             <select value={newBranchType} onChange={e=>setNewBranchType(e.target.value)}
-                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                                                                 padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
                                                                 background:"#fff",color:C.t1,outline:"none"}}>
                                                               <option value="green">Green (positive)</option>
@@ -2702,7 +2871,7 @@ export default function HarmoniaOS() {
                                                             <textarea value={newBranchResponse} onChange={e=>setNewBranchResponse(e.target.value)}
                                                               placeholder="Response script (what you say back)"
                                                               rows={3}
-                                                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                                                                 padding:"6px 10px",fontSize:12,marginBottom:8,fontFamily:F,
                                                                 background:"#fff",color:C.t1,outline:"none",resize:"vertical"}} />
                                                             <div style={{display:"flex",gap:8}}>
@@ -2728,10 +2897,10 @@ export default function HarmoniaOS() {
                                                                 setAddBranchForm(null); setNewBranchLabel(""); setNewBranchType("green"); setNewBranchResponse("");
                                                               }}
                                                                 style={{padding:"5px 14px",borderRadius:6,border:"none",
-                                                                  background:C.accent,color:"#fff",fontSize:11,fontWeight:600,
+                                                                  background:C.t1,color:"#fff",fontSize:11,fontWeight:600,
                                                                   cursor:"pointer"}}>Save</button>
                                                               <button onClick={()=>{setAddBranchForm(null);setNewBranchLabel("");setNewBranchType("green");setNewBranchResponse("");}}
-                                                                style={{padding:"5px 14px",borderRadius:6,border:`1px solid ${C.border}`,
+                                                                style={{padding:"5px 14px",borderRadius:6,border:`0.75px solid ${C.border}`,
                                                                   background:"#fff",color:C.t2,fontSize:11,cursor:"pointer"}}>Cancel</button>
                                                             </div>
                                                           </div>
@@ -2760,7 +2929,7 @@ export default function HarmoniaOS() {
                                       <div style={{padding:"8px 16px 12px"}}>
                                         {/* Root question box */}
                                         {rootQuestion && (
-                                          <div style={{background:"#FEF3C7",border:"1px solid rgba(245,158,11,0.3)",
+                                          <div style={{background:"#FEF3C7",border:"0.75px solid rgba(245,158,11,0.3)",
                                             borderRadius:10,padding:"10px 14px",marginBottom:4}}>
                                             <div style={{fontSize:9,fontWeight:600,color:"#B45309",textTransform:"uppercase",
                                               letterSpacing:".06em",marginBottom:4}}>You just asked</div>
@@ -2812,7 +2981,7 @@ export default function HarmoniaOS() {
                                         const obj = closeBubbles[activeCloseBubble];
                                         const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
                                         return (
-                                          <div style={{background:s.bg,border:`1px solid ${s.border}`,borderRadius:10,
+                                          <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,
                                             padding:"12px 14px",transition:"all 0.2s ease"}}>
                                             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
                                               <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
@@ -2858,7 +3027,7 @@ export default function HarmoniaOS() {
                               transition:"all 0.2s ease",position:"relative",opacity:offerCollapsed?0.5:1}}>
                               {/* Header — matches phase headers exactly */}
                               <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",
-                                borderBottom:`1px solid ${offerColor}15`}}>
+                                borderBottom:`0.75px solid ${offerColor}15`}}>
                                 <span style={{fontSize:10,fontWeight:600,color:offerCollapsed?C.t3:offerColor,textTransform:"uppercase",
                                   letterSpacing:"0.05em",minWidth:72}}>Offers</span>
                                 {/* On/off toggle */}
@@ -2874,12 +3043,12 @@ export default function HarmoniaOS() {
                                   title={offerCollapsed?"Turn on":"Turn off"}>
                                   <div style={{width:12,height:12,borderRadius:"50%",background:"#fff",position:"absolute",top:2,
                                     left:offerCollapsed?2:14,transition:"left 0.2s ease",
-                                    boxShadow:"0 1px 2px rgba(0,0,0,.2)"}} />
+                                    boxShadow:"none"}} />
                                 </div>
                                 {/* Variant dropdown */}
                                 <select value={curOfferId}
                                   onChange={e=>setSelectedOfferId(e.target.value)}
-                                  style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
+                                  style={{flex:1,border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
                                     fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
                                   {offers.map(o=>(
                                     <option key={o.id} value={o.id}>{o.label}</option>
@@ -2898,7 +3067,7 @@ export default function HarmoniaOS() {
                                       setTimeout(() => setScriptSaveStatus(prev => ({...prev, offers: null})), 2000);
                                     }
                                   }}
-                                    style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                                    style={{padding:"3px 10px",borderRadius:6,border:`0.75px solid ${C.border}`,
                                       background:C.bg,color:C.t3,fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>
                                     Reset to Original
                                   </button>
@@ -2967,24 +3136,24 @@ export default function HarmoniaOS() {
                           );
                         })()}
 
-                        {/* Add Phase button + inline form */}
+                        {/* Add phase button + inline form */}
                         {showAddPhase ? (
                           <div style={{border:`1px dashed ${C.border}`,borderRadius:10,padding:12,marginTop:4}}>
-                            <div style={{fontSize:11,fontWeight:600,color:C.t2,marginBottom:8}}>Add New Phase</div>
+                            <div style={{fontSize:11,fontWeight:600,color:C.t2,marginBottom:8}}>Add new phase</div>
                             <input value={newPhaseName} onChange={e=>setNewPhaseName(e.target.value)}
                               placeholder="Phase name (e.g. Rebuttal, Follow Up)"
                               onKeyDown={e=>{if(e.key==="Enter")addPhase();if(e.key==="Escape"){setShowAddPhase(false);setNewPhaseName("");}}}
-                              style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",
+                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"6px 10px",
                                 fontSize:12,background:C.bg,color:C.t1,outline:"none",marginBottom:8,fontFamily:F}}
                               autoFocus />
                             <div style={{display:"flex",gap:8}}>
                               <button onClick={addPhase}
                                 style={{padding:"4px 14px",borderRadius:6,border:"none",
-                                  background:C.accent,color:"#fff",fontSize:11,cursor:"pointer",fontWeight:600}}>
+                                  background:C.t1,color:"#fff",fontSize:11,cursor:"pointer",fontWeight:600}}>
                                 Add
                               </button>
                               <button onClick={()=>{setShowAddPhase(false);setNewPhaseName("");}}
-                                style={{padding:"4px 14px",borderRadius:6,border:`1px solid ${C.border}`,
+                                style={{padding:"4px 14px",borderRadius:6,border:`0.75px solid ${C.border}`,
                                   background:C.bg,color:C.t3,fontSize:11,cursor:"pointer"}}>
                                 Cancel
                               </button>
@@ -2995,22 +3164,22 @@ export default function HarmoniaOS() {
                             style={{width:"100%",padding:"8px 0",borderRadius:8,border:`1px dashed ${C.border}`,
                               background:"transparent",color:C.t3,fontSize:11,cursor:"pointer",marginTop:4,
                               transition:"all 0.15s"}}
-                            onMouseEnter={e=>{e.target.style.borderColor=C.accent;e.target.style.color=C.accent}}
+                            onMouseEnter={e=>{e.target.style.borderColor=C.t1;e.target.style.color=C.t1}}
                             onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.t3}}>
-                            + Add Phase
+                            + Add phase
                           </button>
                         )}
                       </>
                     )}
 
-                    {/* ── Book a Demo (bottom of script tab) ── */}
-                    <div style={{marginTop:32,borderTop:`1px solid ${C.border}`,paddingTop:20}}>
-                      <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Book a Demo</div>
+                    {/* ── Book a demo (bottom of script tab) ── */}
+                    <div style={{marginTop:32,borderTop:`0.75px solid ${C.border}`,paddingTop:20}}>
+                      <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Book a demo</div>
                       <div style={{fontSize:11,color:C.t3,marginBottom:12}}>Schedule a call with the Harmonia team</div>
                       <iframe
                         src="https://cal.com/team/harmonia-solutions/cc-demo-booked?embed=true&theme=light"
                         style={{width:"100%",height:500,border:"none",borderRadius:12}}
-                        title="Book a Demo"
+                        title="Book a demo"
                       />
                     </div>
                   </div>
@@ -3033,7 +3202,7 @@ export default function HarmoniaOS() {
                           const customIdx = i - sheetCount;
                           return (
                           <div key={i} style={{borderRadius:12,overflow:"hidden",
-                            border:`1px solid ${openObj===i?C.borderMd:isCustom?C.accent+"30":C.border}`,
+                            border:`0.75px solid ${openObj===i?C.borderMd:isCustom?C.t2+"40":C.border}`,
                             transition:"border-color 0.15s"}}>
                             <div onClick={()=>setOpenObj(openObj===i?null:i)}
                               style={{padding:"12px 16px",display:"flex",alignItems:"center",
@@ -3062,7 +3231,7 @@ export default function HarmoniaOS() {
                             </div>
                             {openObj===i&&(
                               <div style={{padding:"0 16px 14px 33px",
-                                borderTop:`1px solid ${C.border}`}}>
+                                borderTop:`0.75px solid ${C.border}`}}>
                                 <div style={{fontSize:10,color:C.t3,margin:"10px 0 7px",
                                   textTransform:"uppercase",letterSpacing:"0.03em",fontWeight:500}}>
                                   Response
@@ -3088,12 +3257,12 @@ export default function HarmoniaOS() {
                         letterSpacing:"0.03em"}}>Add Objection</div>
                       <input value={newObjQ} onChange={e=>setNewObjQ(e.target.value)}
                         placeholder="What's the objection? e.g. 'We already have a booking system'"
-                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
                           fontSize:12,background:C.bg,color:C.t1,outline:"none",marginBottom:8}}/>
                       <textarea value={newObjA} onChange={e=>setNewObjA(e.target.value)}
                         placeholder="How to respond to this objection..."
                         rows={3}
-                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
                           fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
                           lineHeight:1.6}}/>
                       <button onClick={()=>{
@@ -3148,13 +3317,13 @@ export default function HarmoniaOS() {
                       },
                     ].map((vm,i)=>(
                       <div key={i} style={{borderRadius:12,overflow:"hidden",
-                        border:`1px solid ${C.border}`}}>
+                        border:`0.75px solid ${C.border}`}}>
                         <div style={{padding:"10px 16px",background:C.surface,
-                          borderBottom:`1px solid ${C.border}`,
+                          borderBottom:`0.75px solid ${C.border}`,
                           display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                           <span style={{fontSize:12,fontWeight:500,color:C.t1}}>{vm.title}</span>
                           <button onClick={()=>{navigator.clipboard.writeText(vm.body);setFlash("VM script copied");setTimeout(()=>setFlash(null),2000);}}
-                            style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+                            style={{padding:"3px 10px",borderRadius:6,border:`0.75px solid ${C.border}`,
                               background:C.bg,color:C.t2,fontSize:10,cursor:"pointer"}}>
                             Copy
                           </button>
@@ -3174,32 +3343,50 @@ export default function HarmoniaOS() {
                 {/* ── BOOKING ── */}
                 {tab==="booking"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                    <div style={{fontSize:14,fontWeight:600,color:C.t1}}>Book a Demo</div>
+                    <div style={{fontSize:14,fontWeight:600,color:C.t1}}>Book a demo</div>
                     <div style={{fontSize:12,color:C.t2}}>Schedule a call with the Harmonia Solutions team</div>
                     <iframe
                       src="https://cal.com/team/harmonia-solutions/cc-demo-booked?embed=true&theme=light"
                       style={{width:"100%",height:600,border:"none",borderRadius:12}}
-                      title="Book a Demo"
+                      title="Book a demo"
                     />
                   </div>
                 )}
 
+                </div>
               </div>
             </>
           ):(
-            <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
-              color:C.t3,fontSize:13}}>
-              {leads.length===0?"Add leads to your Google Sheet to get started":"Select a lead"}
+            <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",
+              justifyContent:"center",color:C.t3,fontSize:13,padding:"24px"}}>
+              {/* The signature — rings etched faintly into the empty centre */}
+              {sigOn && (
+                <RingMark size={340} stroke={C.skyTint} index={sigIndex}
+                  phrase={BELIEFS[sigPhrase]} dim={0.85} uid="center" outer dot/>
+              )}
+              <div style={{marginTop:sigOn?32:0,fontSize:13,color:C.t2,letterSpacing:"0.01em"}}>
+                {leads.length===0?"Add leads to your Google Sheet to get started":"Select a lead to begin"}
+              </div>
+              {/* Tweaks — toggle the rings, the index marks, swap the belief phrase */}
+              <div style={{marginTop:24,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",
+                justifyContent:"center"}}>
+                <button onClick={()=>setSigOn(v=>!v)} style={sigPillStyle(sigOn,false)}>Rings</button>
+                <button disabled={!sigOn} onClick={()=>setSigIndex(v=>!v)}
+                  style={sigPillStyle(sigOn&&sigIndex,!sigOn)} title="Index marks 01–03">01–03</button>
+                <button disabled={!sigOn} onClick={()=>setSigPhrase(p=>(p+1)%BELIEFS.length)}
+                  style={{...sigPillStyle(false,!sigOn),fontFamily:FM,letterSpacing:"0.02em"}}
+                  title="Swap belief phrase">{BELIEFS[sigPhrase]} ⟳</button>
+              </div>
             </div>
           )}
         </div>
 
         {/* ── RIGHT PANEL (toggleable) ── */}
         {showStatsPanel && (
-          <div style={{width:210,borderLeft:`1px solid ${C.border}`,
+          <div style={{width:210,borderLeft:`0.75px solid ${C.border}`,
             display:"flex",flexDirection:"column",flexShrink:0}}>
             <div style={{padding:"8px 10px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:10,color:C.t3,fontWeight:500}}>Session Stats</span>
+              <span style={{fontSize:10,color:C.t3,fontWeight:500}}>Session stats</span>
               <button onClick={()=>setShowStatsPanel(false)}
                 style={{border:"none",background:"transparent",color:C.t3,fontSize:14,
                   cursor:"pointer",padding:"0 2px",lineHeight:1}}>×</button>
@@ -3207,11 +3394,11 @@ export default function HarmoniaOS() {
             <div style={{padding:"8px 10px 0",display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
               {[
                 {l:"Dials",v:stats.dials,c:C.t1},
-                {l:"Answered",v:totalAns,c:C.accent},
+                {l:"Answered",v:totalAns,c:C.t1},
                 {l:"Demos",v:stats.demos,c:C.green},
                 {l:"Looms",v:stats.looms,c:C.teal},
                 {l:"Voicemail",v:stats.vm,c:C.amber},
-                {l:"Connect%",v:stats.dials>0?connectRate+"%":"—",c:C.accent},
+                {l:"Connect%",v:stats.dials>0?connectRate+"%":"—",c:C.t1},
                 {l:"Demo rate",v:totalAns>0?demoRate+"%":"—",c:C.green},
               ].map(({l,v,c})=>(
                 <div key={l} style={{background:C.surface,borderRadius:8,
@@ -3222,16 +3409,34 @@ export default function HarmoniaOS() {
               ))}
             </div>
 
-            <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",marginTop:10}}>
+            {/* Signature — toggle the rings, the index marks, swap the belief phrase */}
+            <div style={{padding:"14px 12px 12px",marginTop:10,borderTop:`0.75px solid ${C.border}`}}>
+              <div style={{fontSize:9,color:C.t3,fontWeight:600,letterSpacing:"0.06em",
+                textTransform:"uppercase",marginBottom:8}}>Signature</div>
+              <div style={{display:"flex",gap:6,marginBottom:6}}>
+                <button onClick={()=>setSigOn(v=>!v)} style={sigPillStyle(sigOn,false)}>Rings</button>
+                <button disabled={!sigOn} onClick={()=>setSigIndex(v=>!v)}
+                  style={sigPillStyle(sigOn&&sigIndex,!sigOn)} title="Index marks 01–03">01–03</button>
+              </div>
+              <button disabled={!sigOn} onClick={()=>setSigPhrase(p=>(p+1)%BELIEFS.length)}
+                title="Swap belief phrase"
+                style={{...sigPillStyle(false,!sigOn),width:"100%",fontFamily:FM,letterSpacing:"0.02em",
+                  justifyContent:"space-between"}}>
+                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{BELIEFS[sigPhrase]}</span>
+                <span style={{marginLeft:8,flexShrink:0}}>⟳</span>
+              </button>
+            </div>
+
+            <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
               <div style={{padding:"0 14px 8px",fontSize:10,color:C.t3,
-                borderBottom:`1px solid ${C.border}`}}>Session log</div>
+                borderBottom:`0.75px solid ${C.border}`}}>Session log</div>
               <div style={{flex:1,overflowY:"auto"}}>
                 {log.length===0?(
                   <div style={{padding:16,textAlign:"center",fontSize:11,color:C.t3}}>
                     No calls yet
                   </div>
                 ):log.map((e,i)=>(
-                  <div key={i} style={{padding:"7px 14px",borderBottom:`1px solid ${C.border}`,
+                  <div key={i} style={{padding:"7px 14px",borderBottom:`0.75px solid ${C.border}`,
                     display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:10,color:C.t3,minWidth:16,fontFamily:FM}}>{e.num}</span>
                     <div style={{flex:1,minWidth:0}}>
@@ -3243,7 +3448,7 @@ export default function HarmoniaOS() {
                         <span style={{fontFamily:FM}}>{fmt(e.dur)}</span>
                         <span>·</span>
                         <span>S:{e.script?.toUpperCase()}</span>
-                        {e.email&&<><span>·</span><span style={{color:C.accent}}>✉</span></>}
+                        {e.email&&<><span>·</span><span style={{color:C.t2}}>✉</span></>}
                       </div>
                     </div>
                     <div style={{fontSize:10,fontWeight:500,color:OUTCOMES[e.outcome]?.color}}>
@@ -3256,7 +3461,7 @@ export default function HarmoniaOS() {
             {/* Reset Call State safety button */}
             <button onClick={resetCallState}
               style={{margin:"6px 10px 8px",padding:"4px 0",borderRadius:6,
-                border:`1px solid ${C.border}`,background:"transparent",
+                border:`0.75px solid ${C.border}`,background:"transparent",
                 color:C.t3,fontSize:9,cursor:"pointer",opacity:0.5,transition:"opacity 0.15s"}}
               onMouseEnter={e=>e.currentTarget.style.opacity="1"}
               onMouseLeave={e=>e.currentTarget.style.opacity="0.5"}>
@@ -3266,13 +3471,13 @@ export default function HarmoniaOS() {
         )}
       </div>
 
-      {/* Persistent "Log Disposition" button */}
+      {/* Persistent "Log disposition" button */}
       {active&&!dispoBarOpen&&!callRun&&sessRun&&(
         <button onClick={openDispoBar}
           style={{position:"fixed",bottom:16,right:20,padding:"6px 16px",borderRadius:100,
-            border:`1px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,
-            cursor:"pointer",boxShadow:"0 2px 8px rgba(0,0,0,0.08)",zIndex:100}}>
-          Log Disposition
+            border:`0.75px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,
+            cursor:"pointer",boxShadow:"0 2px 10px rgba(28,61,82,0.07)",zIndex:100}}>
+          Log disposition
         </button>
       )}
 
@@ -3281,12 +3486,12 @@ export default function HarmoniaOS() {
         <div style={{position:"fixed",inset:0,zIndex:9000,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}
           onClick={e=>{if(e.target===e.currentTarget)setDispoBarOpen(false);}}>
           <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.3)"}}/>
-          <div style={{position:"relative",background:C.bg,borderTop:`1px solid ${C.border}`,
+          <div style={{position:"relative",background:C.bg,borderTop:`0.75px solid ${C.border}`,
             borderRadius:"16px 16px 0 0",padding:"20px 24px 24px",maxHeight:"70vh",overflowY:"auto",
-            animation:"slideUp 0.3s ease",boxShadow:"0 -4px 20px rgba(0,0,0,0.1)"}}>
+            animation:"slideUp 0.3s ease",boxShadow:"0 -2px 16px rgba(28,61,82,0.07)"}}>
 
             <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
-              <span style={{fontSize:14,fontWeight:500}}>Log Disposition</span>
+              <span style={{fontSize:14,fontWeight:500}}>Log disposition</span>
               {active&&<span style={{fontSize:12,color:C.t3,marginLeft:10}}>— {active.biz}</span>}
               <button onClick={()=>setDispoBarOpen(false)}
                 style={{marginLeft:"auto",border:"none",background:"transparent",fontSize:16,
@@ -3318,7 +3523,7 @@ export default function HarmoniaOS() {
             {/* Conditional fields */}
             {pendingOutcome&&(
               <div style={{display:"flex",flexDirection:"column",gap:10,
-                borderTop:`1px solid ${C.border}`,paddingTop:14}}>
+                borderTop:`0.75px solid ${C.border}`,paddingTop:14}}>
 
                 {OUTCOMES[pendingOutcome]?.needsEmail&&(
                   <div>
@@ -3327,7 +3532,7 @@ export default function HarmoniaOS() {
                     </div>
                     <input type="email" value={captureEmail} onChange={e=>setCaptureEmail(e.target.value)}
                       placeholder="owner@business.com"
-                      style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                      style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                         padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                   </div>
                 )}
@@ -3337,7 +3542,7 @@ export default function HarmoniaOS() {
                     <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Loom context</div>
                     <textarea value={loomContext} onChange={e=>setLoomContext(e.target.value)}
                       placeholder="What should the Loom cover for this prospect?"
-                      rows={2} style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                      rows={2} style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                         padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical"}}/>
                   </div>
                 )}
@@ -3348,13 +3553,13 @@ export default function HarmoniaOS() {
                       <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback date</div>
                       <input type="date" value={callbackDate} onChange={e=>setCallbackDate(e.target.value)}
                         min={new Date().toISOString().split("T")[0]}
-                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                           padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                     </div>
                     <div>
                       <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Callback time</div>
                       <input type="time" value={callbackTime} onChange={e=>setCallbackTime(e.target.value)}
-                        style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                           padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                     </div>
                   </div>
@@ -3367,9 +3572,9 @@ export default function HarmoniaOS() {
                       {[{v:"website",l:"Website link"},{v:"info_packet",l:"Info packet"},{v:"case_study",l:"Case study"}].map(opt=>(
                         <button key={opt.v} onClick={()=>setSendType(opt.v)}
                           style={{padding:"4px 12px",borderRadius:100,
-                            border:`1px solid ${sendType===opt.v?C.accent:C.border}`,
-                            background:sendType===opt.v?`${C.accent}10`:"transparent",
-                            color:sendType===opt.v?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                            border:`0.75px solid ${sendType===opt.v?C.t1:C.border}`,
+                            background:sendType===opt.v?`${C.t1}08`:"transparent",
+                            color:sendType===opt.v?C.t1:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
                           {opt.l}
                         </button>
                       ))}
@@ -3382,7 +3587,7 @@ export default function HarmoniaOS() {
                     <div style={{fontSize:10,color:C.t3,marginBottom:4}}>Gatekeeper name</div>
                     <input value={gatekeeperName} onChange={e=>setGatekeeperName(e.target.value)}
                       placeholder="e.g. Maria, front desk"
-                      style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,
+                      style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
                         padding:"6px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none"}}/>
                   </div>
                 )}
@@ -3394,9 +3599,9 @@ export default function HarmoniaOS() {
                       {["Owner","Gatekeeper","Manager","Unknown"].map(opt=>(
                         <button key={opt} onClick={()=>setSpokeWith(opt)}
                           style={{padding:"4px 12px",borderRadius:100,
-                            border:`1px solid ${spokeWith===opt?C.accent:C.border}`,
-                            background:spokeWith===opt?`${C.accent}10`:"transparent",
-                            color:spokeWith===opt?C.accent:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
+                            border:`0.75px solid ${spokeWith===opt?C.t1:C.border}`,
+                            background:spokeWith===opt?`${C.t1}08`:"transparent",
+                            color:spokeWith===opt?C.t1:C.t2,fontSize:11,fontWeight:500,cursor:"pointer"}}>
                           {opt}
                         </button>
                       ))}
@@ -3425,7 +3630,7 @@ export default function HarmoniaOS() {
           <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)"}}/>
           <div style={{position:"relative",background:C.bg,borderRadius:16,padding:"24px 28px",
             width:460,maxHeight:"80vh",overflowY:"auto",
-            boxShadow:"0 8px 40px rgba(0,0,0,0.18)",animation:"slideDown 0.2s ease"}}>
+            boxShadow:"0 6px 30px rgba(28,61,82,0.10)",animation:"slideDown 0.2s ease"}}>
             <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
               <span style={{fontSize:15,fontWeight:600}}>Admin Settings</span>
               <button onClick={()=>setShowAdminPanel(false)}
@@ -3434,7 +3639,7 @@ export default function HarmoniaOS() {
             </div>
 
             {/* ── Admin tab navigation ── */}
-            <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:`1px solid ${C.border}`,paddingBottom:8}}>
+            <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:`0.75px solid ${C.border}`,paddingBottom:8}}>
               {[{id:"icps",label:"ICPs"},{id:"scripts",label:"Scripts"}].map(t=>(
                 <button key={t.id} onClick={()=>setAdminTab(t.id)}
                   style={{padding:"5px 16px",borderRadius:8,border:"none",
@@ -3459,7 +3664,7 @@ export default function HarmoniaOS() {
                     return (
                       <div key={key} style={{display:"flex",alignItems:"center",gap:12,
                         padding:"12px 14px",borderRadius:10,
-                        border:`1px solid ${isOff?C.border:C.green+"40"}`,
+                        border:`0.75px solid ${isOff?C.border:C.green+"40"}`,
                         background:isOff?C.surface:`${C.green}06`}}>
                         <div style={{flex:1}}>
                           <div style={{fontSize:13,fontWeight:600,color:isOff?C.t3:C.t1}}>{label}</div>
@@ -3477,7 +3682,7 @@ export default function HarmoniaOS() {
                           if(!disabledIcps.has(key) && filter===key) setFilter("all");
                         }}
                           style={{padding:"5px 16px",borderRadius:100,fontSize:11,fontWeight:500,
-                            border:`1px solid ${isOff?C.border:C.green}`,
+                            border:`0.75px solid ${isOff?C.border:C.green}`,
                             background:isOff?"transparent":`${C.green}15`,
                             color:isOff?C.t3:C.green,cursor:"pointer",
                             transition:"all 0.15s",minWidth:76}}>
@@ -3505,7 +3710,7 @@ export default function HarmoniaOS() {
                     return (
                       <div key={varId} style={{display:"flex",alignItems:"center",gap:12,
                         padding:"10px 14px",borderRadius:10,
-                        border:`1px solid ${isDisabled?C.border:C.green+"40"}`,
+                        border:`0.75px solid ${isDisabled?C.border:C.green+"40"}`,
                         background:isDisabled?C.surface:`${C.green}06`}}>
                         <span style={{fontFamily:FM,fontSize:11,color:C.t3,minWidth:16}}>{varId}</span>
                         <div style={{flex:1}}>
@@ -3522,7 +3727,7 @@ export default function HarmoniaOS() {
                           });
                         }}
                           style={{padding:"4px 14px",borderRadius:100,fontSize:11,fontWeight:500,
-                            border:`1px solid ${isDisabled?C.border:C.green}`,
+                            border:`0.75px solid ${isDisabled?C.border:C.green}`,
                             background:isDisabled?"transparent":`${C.green}15`,
                             color:isDisabled?C.t3:C.green,cursor:"pointer",
                             transition:"all 0.15s",minWidth:72}}>
