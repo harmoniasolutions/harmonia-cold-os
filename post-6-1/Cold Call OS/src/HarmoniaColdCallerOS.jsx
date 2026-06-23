@@ -2789,20 +2789,19 @@ export default function HarmoniaOS() {
                                   </>
                                 );
 
-                                /* ── BRIDGE: bubbles gate the script ── */
+                                /* ── BRIDGE: script + reply chips (same shape as Close) ── */
                                 if (isBridge) {
-                                  const icpBubbles = bubbleData[icpGroup(active?.icp)] || { bridge: [], close: [] };
-                                  const activeBubbles = icpBubbles.bridge.length > 0 ? icpBubbles.bridge : bridgeBubbles;
-                                  if (activeBubbles.length === 0) {
-                                    // No bubble data in sheet — render plain textarea
+                                  const bridgeReplies = (bubbleData[icpGroup(active?.icp)] || {}).bridge || [];
+                                  if (bridgeReplies.length === 0) {
                                     return (<>{scriptTextarea}{resizeHandles}</>);
                                   }
                                   return (<>
-                                    <div style={{padding:"8px 16px 12px"}}>
+                                    {scriptTextarea}
+                                    <div style={{padding:"0 16px 12px"}}>
                                       <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
                                         letterSpacing:".06em",marginBottom:8}}>After opener, they say...</div>
                                       <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeBridgeBubble!==null?10:0}}>
-                                        {activeBubbles.map((obj,oi) => {
+                                        {bridgeReplies.map((obj,oi) => {
                                           const isActive = activeBridgeBubble === oi;
                                           const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
                                           return (
@@ -2817,38 +2816,21 @@ export default function HarmoniaOS() {
                                           );
                                         })}
                                       </div>
-                                      {activeBridgeBubble !== null && activeBubbles[activeBridgeBubble] && (() => {
-                                        const obj = activeBubbles[activeBridgeBubble];
+                                      {activeBridgeBubble !== null && bridgeReplies[activeBridgeBubble] && (() => {
+                                        const obj = bridgeReplies[activeBridgeBubble];
                                         const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
-                                        const isGreen = obj.type === "green";
                                         return (
-                                          <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,
-                                            padding:"12px 14px",transition:"all 0.2s ease"}}>
+                                          <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"12px 14px"}}>
                                             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
                                               <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
                                               <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",
                                                 letterSpacing:".04em"}}>{s.label}</span>
                                             </div>
-                                            {isGreen ? (
-                                              <>
-                                                <textarea
-                                                  value={displayText}
-                                                  onChange={scriptOnChange}
-                                                  style={{width:"100%",border:"none",padding:"4px 0",fontSize:13,
-                                                    color:s.text,lineHeight:1.75,background:"transparent",outline:"none",
-                                                    resize:"none",fontFamily:F}}
-                                                  placeholder="Bridge script..."
-                                                  data-phase-textarea={phase}
-                                                />
-                                                <div style={{fontSize:10,fontWeight:600,color:"#16a34a",marginTop:6,
-                                                  textTransform:"uppercase",letterSpacing:".04em"}}>
-                                                  Move to COST FRAME
-                                                </div>
-                                              </>
-                                            ) : (
-                                              <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
-                                                {fillPlaceholdersPlain(obj.response, placeholderCtx)}
-                                              </div>
+                                            <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                              {fillPlaceholdersPlain(obj.response, placeholderCtx)}
+                                            </div>
+                                            {obj.note && (
+                                              <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:6,fontStyle:"italic"}}>{obj.note}</div>
                                             )}
                                           </div>
                                         );
