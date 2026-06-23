@@ -481,6 +481,64 @@ function parseNewScriptTab(rows) {
   return { scripts, bubbles };
 }
 
+// ── A/B-format scripts sheet (richer layout) ──
+// Columns: Stage | Element | A/B | Tag | Script (say this) | Caller note
+//  • Element name uses a "Group: subpart" convention — rows sharing a prefix before ":" stitch
+//    into one multi-part frame (e.g. "Simple frame: help line" + "Simple frame: SARA line").
+//  • A/B: A = current line, B = the variant to test (shown on a toggle). Paired per (group, subpart).
+//  • A row is a reply/branch (shown as a colored chip) when its name starts "Reply:" OR its A/B cell
+//    is blank (the legend's "Blank A/B = single branch/reply line"). Everything else is a script line.
+// Returns per-phase { groups:[{name,tag,pieces:[{sub,a:{text,note},b}]}], replies:[{name,tag,a,b}] }.
+function isAbFormatRows(rows) {
+  if (!Array.isArray(rows)) return false;
+  const h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
+  const hdr = h >= 0 ? rows[h] : null;
+  if (!hdr) return false;
+  const c1 = (hdr[1] || '').toString().trim().toLowerCase();
+  const c2 = (hdr[2] || '').toString().trim().toLowerCase().replace(/\s/g, '');
+  return c1 === 'element' || c2 === 'a/b';
+}
+function parseAbScriptTab(rows) {
+  const phases = {
+    opener:    { groups: [], replies: [] },
+    bridge:    { groups: [], replies: [] },
+    discovery: { groups: [], replies: [] },
+    close:     { groups: [], replies: [] },
+  };
+  if (!Array.isArray(rows)) return phases;
+  const h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
+  for (let i = h + 1; i < rows.length; i++) {
+    const r = rows[i]; if (!Array.isArray(r)) continue;
+    const stage = (r[0] || '').toString().trim(); if (!stage) continue;
+    const phase = STAGE_TO_PHASE[stage.toLowerCase()]; if (!phase) continue;
+    const rawName = (r[1] || '').toString().trim();
+    const ab   = (r[2] || '').toString().trim().toUpperCase();
+    const tag  = (r[3] || '').toString().trim().toLowerCase();
+    const text = (r[4] || '').toString();
+    const note = (r[5] || '').toString();
+    const isReply = /^reply:/i.test(rawName) || ab === '';
+    if (isReply) {
+      const reps = phases[phase].replies;
+      if (ab === 'B' && reps.length && reps[reps.length - 1]._raw === rawName) {
+        reps[reps.length - 1].b = { text, note };
+      } else {
+        reps.push({ name: rawName.replace(/^reply:\s*/i, ''), tag: tag || 'yellow', a: { text, note }, b: null, _raw: rawName });
+      }
+      continue;
+    }
+    const groupName = rawName.includes(':') ? rawName.split(':')[0].trim() : rawName;
+    const sub       = rawName.includes(':') ? rawName.split(':').slice(1).join(':').trim() : '';
+    let g = phases[phase].groups.find(x => x.name === groupName);
+    if (!g) { g = { name: groupName, tag, pieces: [] }; phases[phase].groups.push(g); }
+    if (ab === 'B') {
+      const t = g.pieces.find(p => p.sub === sub && !p.b);
+      if (t) { t.b = { text, note }; continue; }
+    }
+    g.pieces.push({ sub, a: { text, note }, b: null });
+  }
+  return phases;
+}
+
 function parseObjections(rows) {
   const out = {};
   rows.forEach(r => {
@@ -722,6 +780,12 @@ export default function HarmoniaOS() {
   const [activeDiscoveryBubble, setActiveDiscoveryBubble] = useState(null); // index of expanded Cost Frame reply
   const [bubbleData, setBubbleData] = useState({}); // { [icp]: { bridge:[], close:[] } }
   const [branchData, setBranchData] = useState({}); // { [icp]: { [variant]: [flat branch nodes] } }
+  // A/B-format scripts (auto-detected from the sheet header). When scriptFormat==='ab' the phase
+  // body renders stacked frames + per-piece A/B toggles + reply chips instead of the legacy UI.
+  const [scriptFormat, setScriptFormat] = useState('legacy'); // 'legacy' | 'ab'
+  const [abData, setAbData] = useState({});      // { [icp]: { opener:{groups,replies}, ... } }
+  const [abChoice, setAbChoice] = useState({});  // { "phase:group:sub": 'A'|'B' } — which variant is shown
+  const [abReplyOpen, setAbReplyOpen] = useState({}); // { [phase]: replyIndex|null } — expanded reply chip
   const [activeBranches, setActiveBranches] = useState({}); // { depth: branch_id }
   const [addBranchForm, setAddBranchForm] = useState(null); // { parentId, depth } or null
   const [newBranchLabel, setNewBranchLabel] = useState("");
@@ -960,15 +1024,26 @@ export default function HarmoniaOS() {
         if (storedSession) hydrateCaller(storedSession, callerSettingsRaw, true);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
-        // Build scripts + reply bubbles from the scripts sheet's per-ICP tabs (keyed by icp group).
+        // Scripts come from the per-ICP tabs. Auto-detect each tab's format from its header so the
+        // old (Variant/Name + "-" replies) and new A/B (Element/A/B, multi-part frames) layouts both
+        // work — old keeps rendering as-is, A/B switches the phase body to frames + toggles + chips.
+        const tabs = [['salon', salonRaw], ['barbershop', barberRaw]];
+        const useAb = tabs.some(([, raw]) => isAbFormatRows(raw));
         const scriptsByIcp = {}; const bubbleByIcp = {};
-        [['salon', salonRaw], ['barbershop', barberRaw]].forEach(([icp, raw]) => {
-          const parsedTab = parseNewScriptTab(raw);
-          scriptsByIcp[icp] = parsedTab.scripts;
-          bubbleByIcp[icp]  = parsedTab.bubbles;
-        });
-        setScripts(scriptsByIcp);
-        setBubbleData(bubbleByIcp);
+        if (useAb) {
+          const abByIcp = {};
+          tabs.forEach(([icp, raw]) => { abByIcp[icp] = parseAbScriptTab(raw); });
+          setAbData(abByIcp);
+          setScriptFormat('ab');
+        } else {
+          tabs.forEach(([icp, raw]) => {
+            const parsedTab = parseNewScriptTab(raw);
+            scriptsByIcp[icp] = parsedTab.scripts;
+            bubbleByIcp[icp]  = parsedTab.bubbles;
+          });
+          setScripts(scriptsByIcp);
+          setBubbleData(bubbleByIcp);
+        }
         setBranchData({}); // discovery branch-tree model retired; Cost Frame is sequential steps now
         setObjections(parseObjections(objectionsRaw));
         const parsedOffers = parseOffers(offersRaw);
@@ -986,10 +1061,13 @@ export default function HarmoniaOS() {
         const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0) || parsedLeads[0];
         if (firstVisible) {
           setActive(firstVisible);
-          const recs = getRecommendedOpeners(firstVisible);
-          const avail = Object.keys(scriptsByIcp[icpGroup(firstVisible?.icp)] || {});
-          const pick = recs.find(r => avail.includes(r.openerId));
-          setVariant(pick ? pick.openerId : avail[0] || "1");
+          // Opener-variant pick is legacy-only (A/B mode lists frames, no single selected variant).
+          if (!useAb) {
+            const recs = getRecommendedOpeners(firstVisible);
+            const avail = Object.keys(scriptsByIcp[icpGroup(firstVisible?.icp)] || {});
+            const pick = recs.find(r => avail.includes(r.openerId));
+            setVariant(pick ? pick.openerId : avail[0] || "1");
+          }
         }
         setLoading(false);
       } catch (e) {
@@ -2598,7 +2676,9 @@ export default function HarmoniaOS() {
                           const hasBubblesHere = (phase === "bridge" && phaseBubbles.bridge.length > 0)
                                               || (phase === "close"  && phaseBubbles.close.length > 0);
                           const hasBranchesHere = phase === "discovery" && Object.keys(icpBranches).length > 0;
-                          if (!isCustomPhase && options.length === 0 && !hasBubblesHere && !hasBranchesHere) return null;
+                          const abPhase = scriptFormat === 'ab' ? ((abData[icpKey] || {})[phase] || { groups: [], replies: [] }) : null;
+                          const hasAbHere = !!abPhase && (abPhase.groups.length > 0 || abPhase.replies.length > 0);
+                          if (!isCustomPhase && options.length === 0 && !hasBubblesHere && !hasBranchesHere && !hasAbHere) return null;
 
                           // Clamp the selection to an option that actually exists in this phase, so a stale
                           // localStorage value (e.g. close=3 from before the variant-3 close row existed)
@@ -2671,7 +2751,7 @@ export default function HarmoniaOS() {
                                     padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>BRANCHING</span>
                                 )}
                                 {/* Cost Frame shows all its steps in sequence, so no variant picker there */}
-                                {(!isCustomPhase || isBridge) && !isDiscoveryPhase && options.length > 0 && (
+                                {scriptFormat !== 'ab' && (!isCustomPhase || isBridge) && !isDiscoveryPhase && options.length > 0 && (
                                   <select value={selectedVar}
                                     onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
                                     style={{flex:1,border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
@@ -2717,6 +2797,98 @@ export default function HarmoniaOS() {
                                 )}
                               </div>
                               {!collapsed && (() => {
+                                /* ── A/B format: stacked frames (multi-part, stitched) + per-piece A/B toggle + reply chips ── */
+                                if (scriptFormat === 'ab') {
+                                  const ab = abPhase || { groups: [], replies: [] };
+                                  const activeChip = abReplyOpen[phase];
+                                  return (
+                                    <div style={{padding:"8px 16px 12px"}}>
+                                      {ab.groups.map((g, gi) => {
+                                        const gs = BUBBLE_STYLES[g.tag];
+                                        const accent = gs ? gs.border : phaseColor;
+                                        const multi = g.pieces.length > 1;
+                                        return (
+                                          <div key={gi} style={{marginBottom:14,paddingLeft:10,borderLeft:`2px solid ${accent}`}}>
+                                            <div style={{fontSize:10,fontWeight:700,color:C.t2,marginBottom:6,textTransform:"uppercase",letterSpacing:".04em"}}>{g.name}</div>
+                                            {g.pieces.map((pc, pi) => {
+                                              const key = `${phase}:${g.name}:${pc.sub || pi}`;
+                                              const choice = (abChoice[key] === 'B' && pc.b) ? 'B' : 'A';
+                                              const shown = choice === 'B' ? pc.b : pc.a;
+                                              return (
+                                                <div key={pi} style={{marginBottom: multi ? 8 : 4}}>
+                                                  <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                                                    <div style={{flex:1,fontSize:13,color:C.t1,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                                      {multi && pc.sub && <span style={{fontSize:9,color:C.t3,display:"block",marginBottom:2,textTransform:"uppercase",letterSpacing:".04em"}}>{pc.sub}</span>}
+                                                      {fillPlaceholdersPlain(formatScriptLines(shown.text), placeholderCtx)}
+                                                    </div>
+                                                    {pc.b && (
+                                                      <div style={{display:"flex",gap:2,flexShrink:0,marginTop:1}}>
+                                                        {['A','B'].map(opt => {
+                                                          const on = choice === opt;
+                                                          return (
+                                                            <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[key]:opt}))}
+                                                              style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                                border:`1px solid ${on?accent:C.border}`,background:on?accent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
+                                                          );
+                                                        })}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                  {shown.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5}}>{shown.note}</div>}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        );
+                                      })}
+                                      {ab.replies.length > 0 && (
+                                        <div style={{marginTop:4}}>
+                                          <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>They respond...</div>
+                                          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeChip!=null?10:0}}>
+                                            {ab.replies.map((rep, ri) => {
+                                              const on = activeChip === ri;
+                                              const s = BUBBLE_STYLES[rep.tag] || BUBBLE_STYLES.yellow;
+                                              return (
+                                                <button key={ri} onClick={()=>setAbReplyOpen(prev=>({...prev,[phase]: on?null:ri}))}
+                                                  style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,cursor:"pointer",fontFamily:F,
+                                                    border:`1.5px solid ${on?s.border:"#e5e5e5"}`,background:on?s.bg:"#fff",color:on?s.text:"#555",minHeight:36}}>
+                                                  {rep.name}
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                          {activeChip != null && ab.replies[activeChip] && (() => {
+                                            const rep = ab.replies[activeChip];
+                                            const s = BUBBLE_STYLES[rep.tag] || BUBBLE_STYLES.yellow;
+                                            const key = `${phase}:reply:${activeChip}`;
+                                            const choice = (abChoice[key] === 'B' && rep.b) ? 'B' : 'A';
+                                            const shown = choice === 'B' ? rep.b : rep.a;
+                                            return (
+                                              <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"12px 14px"}}>
+                                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                                  <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
+                                                  <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",letterSpacing:".04em",flex:1}}>{s.label}</span>
+                                                  {rep.b && ['A','B'].map(opt => {
+                                                    const on = choice === opt;
+                                                    return (
+                                                      <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[key]:opt}))}
+                                                        style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                          border:`1px solid ${on?s.border:C.border}`,background:on?s.border:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
+                                                    );
+                                                  })}
+                                                </div>
+                                                <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                                  {fillPlaceholdersPlain(shown.text, placeholderCtx)}
+                                                </div>
+                                                {shown.note && <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:6,fontStyle:"italic"}}>{shown.note}</div>}
+                                              </div>
+                                            );
+                                          })()}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
                                 const isDiscovery = phase === "discovery";
                                 const isClose = phase === "close";
                                 const scriptOnChange = e => {
