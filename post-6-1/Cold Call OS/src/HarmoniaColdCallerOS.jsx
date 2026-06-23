@@ -2879,50 +2879,62 @@ export default function HarmoniaOS() {
                                     });
                                   };
                                   const grow = el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } };
-                                  const editable = (editKey, sheetText, color) => {
+                                  const editable = (editKey, sheetText, accent, color) => {
                                     const raw = (callerScripts[editKey] !== undefined && callerScripts[editKey] !== null) ? callerScripts[editKey] : sheetText;
                                     const shown = fillPlaceholdersPlain(formatScriptLines(raw), placeholderCtx);
                                     return (
                                       <textarea value={shown} ref={grow} onInput={e=>grow(e.target)} onChange={e=>saveEdit(editKey, e.target.value)}
                                         rows={1} spellCheck={false}
-                                        style={{width:"100%",boxSizing:"border-box",border:"none",borderLeft:`2px solid ${frameAccent}`,
+                                        style={{width:"100%",boxSizing:"border-box",border:"none",borderLeft:`2px solid ${accent || frameAccent}`,
                                           padding:"1px 0 1px 10px",fontSize:13,color:color||C.t1,lineHeight:1.7,background:"transparent",
                                           outline:"none",resize:"none",overflow:"hidden",fontFamily:F}} />
                                     );
                                   };
+                                  // Cost Frame is a sequence — show all its parts together. Other stages show one at a time via the dropdown.
+                                  const showAll = phase === 'discovery';
+                                  const list = showAll ? frames : (frame ? [frame] : []);
                                   return (
                                     <div style={{padding:"8px 16px 12px"}}>
-                                      {/* one frame shown at a time — dropdown switches when a stage has more than one */}
-                                      {frames.length > 1 && (
+                                      {!showAll && frames.length > 1 && (
                                         <select value={selName} onChange={e=>setPhaseSelections(prev=>({...prev,[phase]:e.target.value}))}
                                           style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"5px 8px",
                                             fontSize:11,background:C.bg,color:C.t1,outline:"none",marginBottom:10,fontFamily:F}}>
                                           {frames.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
                                         </select>
                                       )}
-                                      {frame && frame.pieces.map((pc, pi) => {
-                                        const ck = `${phase}:${frame.name}:${pc.sub || pi}`;
-                                        const choice = (abChoice[ck] === 'B' && pc.b) ? 'B' : 'A';
-                                        const variant = choice === 'B' ? pc.b : pc.a;
-                                        const editKey = `ab:${phase}:${frame.name}:${pc.sub || pi}:${choice}`;
-                                        const subLabel = (pc.sub && pc.sub !== frame.name) ? pc.sub : ''; // hide if it just repeats the frame name
+                                      {list.map((fr, fi) => {
+                                        const frAccent = BUBBLE_STYLES[fr.tag] ? BUBBLE_STYLES[fr.tag].border : phaseColor;
                                         return (
-                                          <div key={pi} style={{marginBottom:8}}>
-                                            {(subLabel || pc.b) && (
-                                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                                                <span style={{flex:1,fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>{subLabel}</span>
-                                                {pc.b && ['A','B'].map(opt => {
-                                                  const on = choice === opt;
-                                                  return (
-                                                    <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[ck]:opt}))}
-                                                      style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
-                                                        border:`1px solid ${on?frameAccent:C.border}`,background:on?frameAccent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
-                                                  );
-                                                })}
-                                              </div>
+                                          <div key={fr.key || fr.name || fi} style={{marginBottom: showAll ? 12 : 0}}>
+                                            {showAll && (
+                                              <div style={{fontSize:10,fontWeight:700,color:C.t2,marginBottom:5,textTransform:"uppercase",letterSpacing:".04em"}}>{fr.name}</div>
                                             )}
-                                            {editable(editKey, variant.text)}
-                                            {variant.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5,paddingLeft:10}}>{variant.note}</div>}
+                                            {fr.pieces.map((pc, pi) => {
+                                              const ck = `${phase}:${fr.name}:${pc.sub || pi}`;
+                                              const choice = (abChoice[ck] === 'B' && pc.b) ? 'B' : 'A';
+                                              const variant = choice === 'B' ? pc.b : pc.a;
+                                              const editKey = `ab:${phase}:${fr.name}:${pc.sub || pi}:${choice}`;
+                                              const subLabel = (pc.sub && pc.sub !== fr.name) ? pc.sub : ''; // hide if it just repeats the frame name
+                                              return (
+                                                <div key={pi} style={{marginBottom:8}}>
+                                                  {(subLabel || pc.b) && (
+                                                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                                                      <span style={{flex:1,fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>{subLabel}</span>
+                                                      {pc.b && ['A','B'].map(opt => {
+                                                        const on = choice === opt;
+                                                        return (
+                                                          <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[ck]:opt}))}
+                                                            style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                              border:`1px solid ${on?frAccent:C.border}`,background:on?frAccent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
+                                                        );
+                                                      })}
+                                                    </div>
+                                                  )}
+                                                  {editable(editKey, variant.text, frAccent)}
+                                                  {variant.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5,paddingLeft:10}}>{variant.note}</div>}
+                                                </div>
+                                              );
+                                            })}
                                           </div>
                                         );
                                       })}
