@@ -15,6 +15,14 @@ const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || 'https://infoharmonia.ap
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
+// ── Scripts now come from a SEPARATE sheet with one tab per ICP (Salon, Barbershop, …) ──
+// New per-ICP-tab format: Stage | Variant | Name | Tag | Script (say this) | Caller note, with
+// a title/legend preamble above the header row. Read via the Sheets API key, so this sheet must
+// be shared "Anyone with the link → Viewer" like the main one. Leads/Objections/Offers still
+// live on the main SHEET_ID — only the scripts feed moved here.
+const SCRIPTS_SHEET_ID = import.meta.env.VITE_SCRIPTS_SHEET_ID || '1FZ9tiUMwiNIwg6GIPwiEu1popGNaVYksKnzC5XY2FQc';
+const SCRIPT_ICP_TABS  = { salon: 'Salon', barbershop: 'Barbershop' };
+
 // ── Cross-device caller settings (a SEPARATE spreadsheet, not Harmonia Leads OS) ──
 // Holds one row per caller (scripts + layout) + reserved rows for team-shared
 // objections (__OBJECTIONS__) and admin toggles (__ADMIN__). Read via the Sheets API
@@ -41,6 +49,23 @@ async function fetchSheet(tab) {
   return rows.map(row =>
     Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""]))
   );
+}
+
+// Read one ICP tab from the scripts sheet as RAW rows (values arrays). The tab carries a
+// title + legend preamble above the header, so we hand back raw rows and let parseNewScriptTab
+// locate the `Stage` header. Degrades to [] (with a loud console error) so a missing/unshared
+// tab shows "No scripts found" rather than white-screening the whole app.
+async function fetchScriptTabRaw(tab) {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SCRIPTS_SHEET_ID}/values/${encodeURIComponent(tab)}?key=${API_KEY}`;
+    const res = await fetch(url);
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      console.error(`[Harmonia] scripts tab "${tab}" read failed: HTTP ${res.status} — ${json?.error?.message || res.statusText}. Is the scripts sheet shared "Anyone with the link → Viewer"?`);
+      return [];
+    }
+    return json?.values || [];
+  } catch (e) { console.error(`[Harmonia] scripts tab "${tab}" read error`, e); return []; }
 }
 
 // Read the separate Caller Settings spreadsheet. Degrades to [] on any failure
@@ -422,6 +447,40 @@ function parseScripts(rows) {
   return out;
 }
 
+// Parse one ICP tab from the new scripts sheet (Stage | Variant | Name | Tag | Script | Caller note)
+// into the OS's existing shapes. Stage → phase (Cost Frame → internal id `discovery`). Numbered
+// variants are stage lines that feed the per-phase variant dropdown; Variant "-" rows are colored
+// replies (bridge/close/discovery bubbles). The old discovery branch-tree model is retired — Cost
+// Frame is now sequential numbered steps + flat replies. Returns { scripts, bubbles }.
+const STAGE_TO_PHASE = { opener: 'opener', bridge: 'bridge', 'cost frame': 'discovery', close: 'close' };
+const REPLY_VARIANT  = new Set(['', '-', '–', '—']); // hyphen / en-dash / em-dash all mean "a reply, not a stage line"
+function parseNewScriptTab(rows) {
+  const scripts = {};                                  // variant -> { name, tag, lines:[] }
+  const bubbles = { bridge: [], close: [], discovery: [] };
+  if (!Array.isArray(rows)) return { scripts, bubbles };
+  // Skip the title/legend preamble: data starts after the row whose first cell is "Stage".
+  let h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
+  for (let i = h + 1; i < rows.length; i++) {          // h = -1 when no header → starts at 0
+    const r = rows[i]; if (!Array.isArray(r)) continue;
+    const stage   = (r[0] || '').toString().trim();
+    const variant = (r[1] || '').toString().trim();
+    const name    = (r[2] || '').toString().trim();
+    const tag     = (r[3] || '').toString().trim().toLowerCase();
+    const text    = (r[4] || '').toString();
+    const note    = (r[5] || '').toString();
+    if (!stage) continue;
+    const phase = STAGE_TO_PHASE[stage.toLowerCase()];
+    if (!phase) continue;
+    if (REPLY_VARIANT.has(variant)) {
+      if (bubbles[phase]) bubbles[phase].push({ label: name, type: tag || 'yellow', response: text, note, showScript: tag === 'green' });
+    } else {
+      if (!scripts[variant]) scripts[variant] = { name, tag, lines: [] };
+      scripts[variant].lines.push({ type: phase, text, name, tag, note });
+    }
+  }
+  return { scripts, bubbles };
+}
+
 function parseObjections(rows) {
   const out = {};
   rows.forEach(r => {
@@ -660,6 +719,7 @@ export default function HarmoniaOS() {
   });
   const [activeBridgeBubble, setActiveBridgeBubble] = useState(null); // index of expanded bubble
   const [activeCloseBubble, setActiveCloseBubble] = useState(null);  // index of expanded close bubble
+  const [activeDiscoveryBubble, setActiveDiscoveryBubble] = useState(null); // index of expanded Cost Frame reply
   const [bubbleData, setBubbleData] = useState({}); // { [icp]: { bridge:[], close:[] } }
   const [branchData, setBranchData] = useState({}); // { [icp]: { [variant]: [flat branch nodes] } }
   const [activeBranches, setActiveBranches] = useState({}); // { depth: branch_id }
@@ -885,12 +945,13 @@ export default function HarmoniaOS() {
   useEffect(() => {
     async function load() {
       try {
-        const [leadsRaw, scriptsRaw, objectionsRaw, offersRaw, callerSettingsRaw] = await Promise.all([
+        const [leadsRaw, objectionsRaw, offersRaw, callerSettingsRaw, salonRaw, barberRaw] = await Promise.all([
           fetchSheet("Leads"),
-          fetchSheet("Scripts"),
           fetchSheet("Objections"),
           fetchSheet("Offers").catch(() => []),
           fetchSettingsSheet(),
+          fetchScriptTabRaw(SCRIPT_ICP_TABS.salon),       // scripts now live on the per-ICP scripts sheet
+          fetchScriptTabRaw(SCRIPT_ICP_TABS.barbershop),
         ]);
         // Cross-device settings: stash rows, hydrate team-shared now, and this device's
         // remembered caller (server is the source of truth; localStorage is the fallback).
@@ -899,7 +960,16 @@ export default function HarmoniaOS() {
         if (storedSession) hydrateCaller(storedSession, callerSettingsRaw, true);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
-        setScripts(parseScripts(scriptsRaw));
+        // Build scripts + reply bubbles from the scripts sheet's per-ICP tabs (keyed by icp group).
+        const scriptsByIcp = {}; const bubbleByIcp = {};
+        [['salon', salonRaw], ['barbershop', barberRaw]].forEach(([icp, raw]) => {
+          const parsedTab = parseNewScriptTab(raw);
+          scriptsByIcp[icp] = parsedTab.scripts;
+          bubbleByIcp[icp]  = parsedTab.bubbles;
+        });
+        setScripts(scriptsByIcp);
+        setBubbleData(bubbleByIcp);
+        setBranchData({}); // discovery branch-tree model retired; Cost Frame is sequential steps now
         setObjections(parseObjections(objectionsRaw));
         const parsedOffers = parseOffers(offersRaw);
         setOffers(parsedOffers);
@@ -912,19 +982,12 @@ export default function HarmoniaOS() {
             status: clean(r["Status"] || r.status || ""),
           })));
         }).catch(() => setBookedDemos([]));
-        // Parse bubbles and branches from Scripts tab
-        const parsed = parseBubblesAndBranches(scriptsRaw);
-        console.log('[Harmonia] parsed bubbles by icp:',
-          Object.fromEntries(Object.entries(parsed.bubbles).map(([k, v]) =>
-            [k, { bridge: v.bridge.length, close: v.close.length }])));
-        if (Object.keys(parsed.bubbles).length > 0) setBubbleData(parsed.bubbles);
-        if (Object.keys(parsed.branches).length > 0) setBranchData(parsed.branches);
         // Land on the first visible (hair salon / barbershop) lead, not a hidden vertical.
         const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0) || parsedLeads[0];
         if (firstVisible) {
           setActive(firstVisible);
           const recs = getRecommendedOpeners(firstVisible);
-          const avail = Object.keys(parseScripts(scriptsRaw)[icpGroup(firstVisible?.icp)] || {});
+          const avail = Object.keys(scriptsByIcp[icpGroup(firstVisible?.icp)] || {});
           const pick = recs.find(r => avail.includes(r.openerId));
           setVariant(pick ? pick.openerId : avail[0] || "1");
         }
@@ -2607,7 +2670,8 @@ export default function HarmoniaOS() {
                                   <span style={{fontSize:8,fontWeight:600,color:"#B45309",background:"#FEF3C7",
                                     padding:"2px 6px",borderRadius:4,letterSpacing:".04em"}}>BRANCHING</span>
                                 )}
-                                {(!isCustomPhase || isBridge) && options.length > 0 && (
+                                {/* Cost Frame shows all its steps in sequence, so no variant picker there */}
+                                {(!isCustomPhase || isBridge) && !isDiscoveryPhase && options.length > 0 && (
                                   <select value={selectedVar}
                                     onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
                                     style={{flex:1,border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
@@ -2794,181 +2858,86 @@ export default function HarmoniaOS() {
                                   </>);
                                 }
 
-                                /* ── DISCOVERY: branching tree ── */
+                                /* ── COST FRAME: sequential steps + reply chips ── */
                                 if (isDiscovery) {
-                                  const variantBranches = (branchData[icpGroup(active?.icp)] || {})[selectedVar] || [];
-                                  if (variantBranches.length > 0) {
-                                    const tree = buildBranchTree(variantBranches);
-                                    const rootNode = tree.find(n => n.depth === 0);
-                                    const rootQuestion = rootNode?.rootQuestion || "";
-                                    const depth1 = rootNode ? rootNode.children : tree.filter(n => n.depth === 1);
-
-                                    const renderBranchLevel = (nodes, depth) => {
-                                      if (!nodes || nodes.length === 0) return null;
-                                      const activeId = activeBranches[depth];
-                                      const activeNode = nodes.find(n => n.branchId === activeId);
-                                      return (
-                                        <div>
-                                          {/* Connector line */}
-                                          <div style={{display:"flex",justifyContent:"center",padding:"4px 0"}}>
-                                            <div style={{width:2,height:20,background:activeNode?
-                                              (BUBBLE_STYLES[activeNode.type]||BUBBLE_STYLES.yellow).border:C.border}} />
+                                  const icpK = icpGroup(active?.icp);
+                                  const steps = Object.entries(scripts[icpK] || {})
+                                    .map(([v, sc]) => {
+                                      const l = (sc.lines || []).find(x => x.type === "discovery");
+                                      return l ? { variant: v, name: l.name, tag: l.tag, text: l.text, note: l.note } : null;
+                                    })
+                                    .filter(Boolean)
+                                    .sort((a, b) => (parseInt(a.variant) || 0) - (parseInt(b.variant) || 0));
+                                  const replies = (bubbleData[icpK] || {}).discovery || [];
+                                  if (steps.length === 0 && replies.length === 0) {
+                                    return (<>{scriptTextarea}{resizeHandles}</>);
+                                  }
+                                  return (<>
+                                    <div style={{padding:"8px 16px 12px"}}>
+                                      {/* Sequential steps — say all in order */}
+                                      {steps.map((st, si) => (
+                                        <div key={st.variant} style={{marginBottom:12,paddingBottom:12,
+                                          borderBottom: si < steps.length - 1 ? `0.75px solid ${C.border}` : "none"}}>
+                                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                                            <span style={{width:18,height:18,borderRadius:"50%",background:phaseColor+"22",
+                                              color:phaseColor,fontSize:10,fontWeight:700,display:"flex",alignItems:"center",
+                                              justifyContent:"center",flexShrink:0}}>{si + 1}</span>
+                                            <span style={{fontSize:11,fontWeight:600,color:C.t2}}>{st.name}</span>
+                                            {st.tag === "recommended" && (
+                                              <span style={{fontSize:9,color:phaseColor}}>{"★"}</span>
+                                            )}
                                           </div>
-                                          {/* Label */}
+                                          <div style={{fontSize:13,color:C.t1,lineHeight:1.75,whiteSpace:"pre-line"}}>
+                                            {fillPlaceholdersPlain(formatScriptLines(st.text), placeholderCtx)}
+                                          </div>
+                                          {st.note && (
+                                            <div style={{fontSize:10,color:C.t3,marginTop:6,fontStyle:"italic",lineHeight:1.5}}>
+                                              {st.note}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                      {/* Reply chips — what they say back */}
+                                      {replies.length > 0 && (
+                                        <div style={{marginTop:4}}>
                                           <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
-                                            letterSpacing:".06em",textAlign:"center",marginBottom:8}}>
-                                            What do they say?
-                                          </div>
-                                          {/* Branch cards */}
-                                          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:8}}>
-                                            {nodes.map(node => {
-                                              const isActive = activeId === node.branchId;
-                                              const s = BUBBLE_STYLES[node.type] || BUBBLE_STYLES.yellow;
+                                            letterSpacing:".06em",marginBottom:8}}>They respond...</div>
+                                          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeDiscoveryBubble!==null?10:0}}>
+                                            {replies.map((obj, oi) => {
+                                              const isActive = activeDiscoveryBubble === oi;
+                                              const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
                                               return (
-                                                <button key={node.branchId} onClick={() => {
-                                                  setActiveBranches(prev => {
-                                                    const next = {};
-                                                    Object.keys(prev).forEach(d => { if (parseInt(d) < depth) next[d] = prev[d]; });
-                                                    if (!isActive) next[depth] = node.branchId;
-                                                    return next;
-                                                  });
-                                                }}
-                                                  style={{padding:"10px 16px",borderRadius:10,fontSize:12,fontWeight:500,
+                                                <button key={oi} onClick={()=>setActiveDiscoveryBubble(isActive?null:oi)}
+                                                  style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,
                                                     cursor:"pointer",transition:"all 0.15s",fontFamily:F,
                                                     border:`1.5px solid ${isActive?s.border:"#e5e5e5"}`,
-                                                    background:isActive?s.bg:"#fff",color:isActive?s.text:"#555",
-                                                    minWidth:100,textAlign:"left",minHeight:44}}>
-                                                  {node.label}
+                                                    background:isActive?s.bg:"#fff",color:isActive?s.text:"#555",minHeight:36}}>
+                                                  {obj.label}
                                                 </button>
                                               );
                                             })}
                                           </div>
-                                          {/* Active branch response */}
-                                          {activeNode && (
-                                            <div>
-                                              {/* Colored connector */}
-                                              <div style={{display:"flex",justifyContent:"center",padding:"0 0 4px"}}>
-                                                <div style={{width:2,height:16,
-                                                  background:(BUBBLE_STYLES[activeNode.type]||BUBBLE_STYLES.yellow).border}} />
+                                          {activeDiscoveryBubble !== null && replies[activeDiscoveryBubble] && (() => {
+                                            const obj = replies[activeDiscoveryBubble];
+                                            const s = BUBBLE_STYLES[obj.type] || BUBBLE_STYLES.yellow;
+                                            return (
+                                              <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"12px 14px"}}>
+                                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                                  <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
+                                                  <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",letterSpacing:".04em"}}>{s.label}</span>
+                                                </div>
+                                                <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
+                                                  {fillPlaceholdersPlain(obj.response, placeholderCtx)}
+                                                </div>
+                                                {obj.note && (
+                                                  <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:6,fontStyle:"italic"}}>{obj.note}</div>
+                                                )}
                                               </div>
-                                              {(() => {
-                                                const s = BUBBLE_STYLES[activeNode.type] || BUBBLE_STYLES.yellow;
-                                                return (
-                                                  <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,
-                                                    padding:"12px 14px"}}>
-                                                    <div style={{fontSize:9,fontWeight:600,color:s.text,textTransform:"uppercase",
-                                                      letterSpacing:".06em",marginBottom:6}}>You say</div>
-                                                    <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line",
-                                                      fontStyle:"italic"}}>
-                                                      {fillPlaceholdersPlain(activeNode.response, placeholderCtx)}
-                                                    </div>
-                                                    {/* Terminal: show next phase */}
-                                                    {activeNode.children.length === 0 && activeNode.nextPhase && (
-                                                      <div style={{fontSize:10,fontWeight:600,color:"#16a34a",marginTop:8,
-                                                        textTransform:"uppercase",letterSpacing:".04em"}}>
-                                                        Move to {activeNode.nextPhase.toUpperCase()}
-                                                      </div>
-                                                    )}
-                                                    {/* Admin: add branch on terminal nodes */}
-                                                    {activeNode.children.length === 0 && callerName === "Javi" && (
-                                                      <div style={{marginTop:10}}>
-                                                        {addBranchForm && addBranchForm.parentId === activeNode.branchId ? (
-                                                          <div style={{border:`1px dashed ${C.border}`,borderRadius:8,padding:10,
-                                                            background:"#fff"}}>
-                                                            <div style={{fontSize:10,fontWeight:600,color:C.t2,marginBottom:8}}>
-                                                              After you say this, they might say...
-                                                            </div>
-                                                            <input value={newBranchLabel} onChange={e=>setNewBranchLabel(e.target.value)}
-                                                              placeholder="Branch label (what they say)"
-                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
-                                                                padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
-                                                                background:"#fff",color:C.t1,outline:"none"}} />
-                                                            <select value={newBranchType} onChange={e=>setNewBranchType(e.target.value)}
-                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
-                                                                padding:"6px 10px",fontSize:12,marginBottom:6,fontFamily:F,
-                                                                background:"#fff",color:C.t1,outline:"none"}}>
-                                                              <option value="green">Green (positive)</option>
-                                                              <option value="yellow">Yellow (neutral)</option>
-                                                              <option value="red">Red (negative)</option>
-                                                            </select>
-                                                            <textarea value={newBranchResponse} onChange={e=>setNewBranchResponse(e.target.value)}
-                                                              placeholder="Response script (what you say back)"
-                                                              rows={3}
-                                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,
-                                                                padding:"6px 10px",fontSize:12,marginBottom:8,fontFamily:F,
-                                                                background:"#fff",color:C.t1,outline:"none",resize:"vertical"}} />
-                                                            <div style={{display:"flex",gap:8}}>
-                                                              <button onClick={async () => {
-                                                                if (!newBranchLabel.trim() || !newBranchResponse.trim()) return;
-                                                                const newId = `${addBranchForm.parentId}-${Date.now()}`;
-                                                                try {
-                                                                  await fetch(WEBHOOK_URL, {
-                                                                    method:'POST',headers:{'Content-Type':'application/json'},
-                                                                    body:JSON.stringify({
-                                                                      type:'add_branch', phase:'discovery',
-                                                                      variant_id: selectedVar,
-                                                                      branch_id: newId, parent_branch_id: addBranchForm.parentId,
-                                                                      depth: addBranchForm.depth, branch_label: newBranchLabel.trim(),
-                                                                      branch_type: newBranchType, branch_response: newBranchResponse.trim(),
-                                                                      next_phase: 'PITCH',
-                                                                    })
-                                                                  });
-                                                                  const fresh = await fetchSheet("Scripts").catch(()=>[]);
-                                                                  const reParsed = parseBubblesAndBranches(fresh);
-                                                                  if (Object.keys(reParsed.branches).length > 0) setBranchData(reParsed.branches);
-                                                                } catch(err) { console.error("Failed to add branch:", err); }
-                                                                setAddBranchForm(null); setNewBranchLabel(""); setNewBranchType("green"); setNewBranchResponse("");
-                                                              }}
-                                                                style={{padding:"5px 14px",borderRadius:6,border:"none",
-                                                                  background:C.t1,color:"#fff",fontSize:11,fontWeight:600,
-                                                                  cursor:"pointer"}}>Save</button>
-                                                              <button onClick={()=>{setAddBranchForm(null);setNewBranchLabel("");setNewBranchType("green");setNewBranchResponse("");}}
-                                                                style={{padding:"5px 14px",borderRadius:6,border:`0.75px solid ${C.border}`,
-                                                                  background:"#fff",color:C.t2,fontSize:11,cursor:"pointer"}}>Cancel</button>
-                                                            </div>
-                                                          </div>
-                                                        ) : (
-                                                          <button onClick={()=>setAddBranchForm({parentId:activeNode.branchId,depth:depth+1})}
-                                                            style={{padding:"5px 12px",borderRadius:6,border:`1px dashed ${C.border}`,
-                                                              background:"transparent",color:C.t3,fontSize:10,cursor:"pointer",
-                                                              fontFamily:F}}>
-                                                            + Add branch below
-                                                          </button>
-                                                        )}
-                                                      </div>
-                                                    )}
-                                                    {/* Recursive children */}
-                                                    {activeNode.children.length > 0 && renderBranchLevel(activeNode.children, depth + 1)}
-                                                  </div>
-                                                );
-                                              })()}
-                                            </div>
-                                          )}
+                                            );
+                                          })()}
                                         </div>
-                                      );
-                                    };
-
-                                    return (<>
-                                      <div style={{padding:"8px 16px 12px"}}>
-                                        {/* Root question box */}
-                                        {rootQuestion && (
-                                          <div style={{background:"#FEF3C7",border:"0.75px solid rgba(245,158,11,0.3)",
-                                            borderRadius:10,padding:"10px 14px",marginBottom:4}}>
-                                            <div style={{fontSize:9,fontWeight:600,color:"#B45309",textTransform:"uppercase",
-                                              letterSpacing:".06em",marginBottom:4}}>You just asked</div>
-                                            <div style={{fontSize:13,color:"#92400E",lineHeight:1.6}}>
-                                              {fillPlaceholdersPlain(rootQuestion, placeholderCtx)}
-                                            </div>
-                                          </div>
-                                        )}
-                                        {renderBranchLevel(depth1, 1)}
-                                      </div>
-                                      {resizeHandles}
-                                    </>);
-                                  }
-                                  // Fallback: no branch data, show plain textarea
-                                  return (<>
-                                    {scriptTextarea}
+                                      )}
+                                    </div>
                                     {resizeHandles}
                                   </>);
                                 }
