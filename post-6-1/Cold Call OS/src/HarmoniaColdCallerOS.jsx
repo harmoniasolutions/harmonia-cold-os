@@ -452,14 +452,44 @@ function parseScripts(rows) {
 // variants are stage lines that feed the per-phase variant dropdown; Variant "-" rows are colored
 // replies (bridge/close/discovery bubbles). The old discovery branch-tree model is retired — Cost
 // Frame is now sequential numbered steps + flat replies. Returns { scripts, bubbles }.
+// The OS always keeps the fixed Opener → Bridge → Cost Frame → Close formula. Map a Stage cell to
+// one of those 4 phases by NAME match (tolerant of spelling/spacing), so a row lands in the right
+// stage no matter how it's written or where it sits on the sheet.
 const STAGE_TO_PHASE = { opener: 'opener', bridge: 'bridge', 'cost frame': 'discovery', close: 'close' };
+function stageToPhase(stage) {
+  const s = (stage || '').toString().trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes('open'))   return 'opener';
+  if (s.includes('bridge')) return 'bridge';
+  if (s.includes('cost') || s.includes('discov')) return 'discovery';
+  if (s.includes('close'))  return 'close';
+  return STAGE_TO_PHASE[s] || null;
+}
+// Header row = the first row containing a cell exactly "stage" (anywhere in the row).
+function findHeaderRow(rows) {
+  return Array.isArray(rows) ? rows.findIndex(r => Array.isArray(r) && r.some(c => (c || '').toString().trim().toLowerCase() === 'stage')) : -1;
+}
+// Resolve each logical column by its HEADER NAME so the columns may sit in any order/position on the
+// sheet; fall back to the conventional index when a header isn't found.
+function resolveCols(headerRow) {
+  const H = (headerRow || []).map(c => (c || '').toString().trim().toLowerCase());
+  const find = (pred, dflt) => { const i = H.findIndex(pred); return i >= 0 ? i : dflt; };
+  return {
+    stage:  find(h => h === 'stage', 0),
+    name:   find(h => h === 'element' || h === 'name', 1),
+    ab:     find(h => h.replace(/\s/g, '') === 'a/b' || h === 'ab', 2),
+    tag:    find(h => h === 'tag', 3),
+    script: find(h => h.startsWith('script') || h === 'say this', 4),
+    note:   find(h => h.includes('note'), 5),
+  };
+}
 const REPLY_VARIANT  = new Set(['', '-', '–', '—']); // hyphen / en-dash / em-dash all mean "a reply, not a stage line"
 function parseNewScriptTab(rows) {
   const scripts = {};                                  // variant -> { name, tag, lines:[] }
   const bubbles = { bridge: [], close: [], discovery: [] };
   if (!Array.isArray(rows)) return { scripts, bubbles };
-  // Skip the title/legend preamble: data starts after the row whose first cell is "Stage".
-  let h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
+  // Skip the title/legend preamble: data starts after the header row.
+  const h = findHeaderRow(rows);
   for (let i = h + 1; i < rows.length; i++) {          // h = -1 when no header → starts at 0
     const r = rows[i]; if (!Array.isArray(r)) continue;
     const stage   = (r[0] || '').toString().trim();
@@ -469,7 +499,7 @@ function parseNewScriptTab(rows) {
     const text    = (r[4] || '').toString();
     const note    = (r[5] || '').toString();
     if (!stage) continue;
-    const phase = STAGE_TO_PHASE[stage.toLowerCase()];
+    const phase = stageToPhase(stage);
     if (!phase) continue;
     if (REPLY_VARIANT.has(variant)) {
       if (bubbles[phase]) bubbles[phase].push({ label: name, type: tag || 'yellow', response: text, note, showScript: tag === 'green' });
@@ -490,13 +520,10 @@ function parseNewScriptTab(rows) {
 //    is blank (the legend's "Blank A/B = single branch/reply line"). Everything else is a script line.
 // Returns per-phase { groups:[{name,tag,pieces:[{sub,a:{text,note},b}]}], replies:[{name,tag,a,b}] }.
 function isAbFormatRows(rows) {
-  if (!Array.isArray(rows)) return false;
-  const h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
-  const hdr = h >= 0 ? rows[h] : null;
-  if (!hdr) return false;
-  const c1 = (hdr[1] || '').toString().trim().toLowerCase();
-  const c2 = (hdr[2] || '').toString().trim().toLowerCase().replace(/\s/g, '');
-  return c1 === 'element' || c2 === 'a/b';
+  const h = findHeaderRow(rows);
+  if (h < 0) return false;
+  const H = rows[h].map(c => (c || '').toString().trim().toLowerCase());
+  return H.some(x => x === 'element' || x.replace(/\s/g, '') === 'a/b');
 }
 function parseAbScriptTab(rows) {
   const phases = {
@@ -506,35 +533,33 @@ function parseAbScriptTab(rows) {
     close:     { groups: [], replies: [] },
   };
   if (!Array.isArray(rows)) return phases;
-  const h = rows.findIndex(r => (r?.[0] || '').toString().trim().toLowerCase() === 'stage');
+  const h = findHeaderRow(rows);
+  const col = resolveCols(h >= 0 ? rows[h] : null);     // columns matched by header name, any position
   for (let i = h + 1; i < rows.length; i++) {
     const r = rows[i]; if (!Array.isArray(r)) continue;
-    const stage = (r[0] || '').toString().trim(); if (!stage) continue;
-    const phase = STAGE_TO_PHASE[stage.toLowerCase()]; if (!phase) continue;
-    const rawName = (r[1] || '').toString().trim();
-    const ab   = (r[2] || '').toString().trim().toUpperCase();
-    const tag  = (r[3] || '').toString().trim().toLowerCase();
-    const text = (r[4] || '').toString();
-    const note = (r[5] || '').toString();
+    const stage = (r[col.stage] || '').toString().trim(); if (!stage) continue;
+    const phase = stageToPhase(stage); if (!phase) continue;   // slot into the fixed 4-stage formula
+    const rawName = (r[col.name] || '').toString().trim();
+    const ab   = (r[col.ab]   || '').toString().trim().toUpperCase();
+    const tag  = (r[col.tag]  || '').toString().trim().toLowerCase();
+    const text = (r[col.script] || '').toString();
+    const note = (r[col.note]   || '').toString();
     const isReply = /^reply:/i.test(rawName) || ab === '';
     if (isReply) {
       const reps = phases[phase].replies;
-      if (ab === 'B' && reps.length && reps[reps.length - 1]._raw === rawName) {
-        reps[reps.length - 1].b = { text, note };
-      } else {
-        reps.push({ name: rawName.replace(/^reply:\s*/i, ''), tag: tag || 'yellow', a: { text, note }, b: null, _raw: rawName });
-      }
+      // Attach a B variant to its A (matched by name) wherever it appears — not just if adjacent.
+      const target = ab === 'B' ? reps.find(x => x._raw === rawName && !x.b) : null;
+      if (target) { target.b = { text, note }; }
+      else { reps.push({ name: rawName.replace(/^reply:\s*/i, ''), tag: tag || 'yellow', a: { text, note }, b: null, _raw: rawName }); }
       continue;
     }
     const groupName = rawName.includes(':') ? rawName.split(':')[0].trim() : rawName;
     const sub       = rawName.includes(':') ? rawName.split(':').slice(1).join(':').trim() : '';
     let g = phases[phase].groups.find(x => x.name === groupName);
     if (!g) { g = { name: groupName, tag, pieces: [] }; phases[phase].groups.push(g); }
-    if (ab === 'B') {
-      const t = g.pieces.find(p => p.sub === sub && !p.b);
-      if (t) { t.b = { text, note }; continue; }
-    }
-    g.pieces.push({ sub, a: { text, note }, b: null });
+    const target = ab === 'B' ? g.pieces.find(p => p.sub === sub && !p.b) : null;
+    if (target) { target.b = { text, note }; }
+    else { g.pieces.push({ sub, a: { text, note }, b: null }); }
   }
   return phases;
 }
