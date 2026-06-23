@@ -1245,6 +1245,10 @@ export default function HarmoniaOS() {
   const curScript    = curScripts[variant]  || curScripts[Object.keys(curScripts)[0]];
   const curObjs      = [...(objections[icpGroup(active?.icp)] || []), ...(customObjections[active?.icp] || [])];
   const variants     = Object.keys(curScripts);
+  // Whether THIS vertical has any script data — legacy variants, or A/B frames/replies on any phase.
+  // Gates the "No scripts found" message so A/B mode (which leaves `scripts` empty) still renders.
+  const curAbPhases  = scriptFormat === 'ab' ? (abData[icpGroup(active?.icp)] || {}) : null;
+  const hasAnyScripts = variants.length > 0 || (!!curAbPhases && Object.values(curAbPhases).some(p => ((p.groups?.length || 0) + (p.replies?.length || 0)) > 0));
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
@@ -2635,7 +2639,7 @@ export default function HarmoniaOS() {
                       </div>
                     )}
 
-                    {variants.length === 0 ? (
+                    {!hasAnyScripts ? (
                       <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
                         No scripts found for this vertical.<br/>
                         Add rows to the Scripts tab in your Google Sheet.
