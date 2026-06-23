@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
 const C = {
-  bg:"#FFFFFF", surface:"#F5F5F7", border:"#E5E5EA",
-  t1:"#1D1D1F", t2:"#6E6E73", t3:"#AEAEB2",
-  accent:"#0071E3", green:"#34C759", red:"#FF3B30",
+  bg:"#FFFFFF", surface:"#F6F9FB", border:"#E6ECF0",
+  t1:"#1C3D52", t2:"#6E8597", t3:"#94A7B5",
+  accent:"#4A9EED", green:"#2E9E6B", red:"#D1533F",
 };
-const F = "-apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif";
+const F = "'IBM Plex Sans', -apple-system, 'Helvetica Neue', sans-serif";
 
 function useAnimatedNumber(target, duration = 350) {
   const [display, setDisplay] = useState(target);

@@ -147,20 +147,23 @@ function parseOwnerName(owner) {
 const SCORE_DOT  = { A:C.green, B:C.amber, C:C.red };
 const LINE_COLOR = { opener:C.t1, bridge:C.purple, discovery:C.teal, pitch:C.amber, close:C.green };
 
+// Pitch retired from the live layout (see RETIRED_PHASES). Discovery keeps the id "discovery"
+// (used as branchData key / n8n payload) but shows the caller-facing label "Cost Frame".
 const DEFAULT_PHASES = [
-  { id: "opener",    label: "Opener",    color: "#EF4444", isDefault: true },
-  { id: "bridge",    label: "Bridge",    color: "#a855f7", isDefault: true },
-  { id: "discovery", label: "Discovery", color: "#F59E0B", isDefault: true },
-  { id: "pitch",     label: "Pitch",     color: "#3B82F6", isDefault: true },
-  { id: "close",     label: "Close",     color: "#10B981", isDefault: true },
+  { id: "opener",    label: "Opener",     color: "#EF4444", isDefault: true },
+  { id: "bridge",    label: "Bridge",     color: "#a855f7", isDefault: true },
+  { id: "discovery", label: "Cost Frame", color: "#F59E0B", isDefault: true },
+  { id: "close",     label: "Close",      color: "#10B981", isDefault: true },
 ];
+// Phase ids dropped from the layout — filtered out of any persisted phase order on load.
+const RETIRED_PHASES = new Set(["pitch"]);
 const COLOR_PALETTE = ["#EF4444","#F59E0B","#3B82F6","#10B981","#8B5CF6","#EC4899","#14B8A6","#F97316","#6366F1","#84CC16"];
 
 // ── Bridge phase data ──
 // BUBBLE_STYLES — rendering config only, not content data
 const BUBBLE_STYLES = {
   green:  { bg:"#f0fdf4", border:"#86efac", text:"#166534", dot:"#22c55e", label:"They're open — deliver this" },
-  yellow: { bg:"#fefce8", border:"#fde047", text:"#854d0e", dot:"#eab308", label:"Pivot — redirect to Discovery" },
+  yellow: { bg:"#fefce8", border:"#fde047", text:"#854d0e", dot:"#eab308", label:"Pivot — redirect to Cost Frame" },
   red:    { bg:"#fef2f2", border:"#fca5a5", text:"#991b1b", dot:"#ef4444", label:"Handle — reframe and redirect" },
 };
 
@@ -444,12 +447,23 @@ function parseOffers(rows) {
 // type values:
 //   bridge_bubble  — tag: green_show (reveals script), green, yellow, red
 //   close_bubble   — tag: green, yellow, red
-//   discovery      — tag: ROOT → root question node (name=variant label, text=root question)
+//   discovery      — root question node (name=variant label, text=root question). tag is just a
+//                    human label (ROOT/Recommended/Alternative/Secondary), NOT a structural marker.
 //   discovery_branch — tag: green/yellow/red → branch node (name=label, text=response)
 // Returns { bubbles: { [icp]: { bridge:[], close:[] } }, branches: { [icp]: { [variant]: [...] } } }
+//
+// Grouping rules (kept tolerant so a messy sheet still renders in harmony):
+//  • Any `discovery` row opens a variant root — we do NOT require tag==='ROOT'. The sheet tags its
+//    roots Recommended/Alternative/Secondary, so the old literal check left every variant but the
+//    first one rootless → blank trees.
+//  • A variant key (icp+variant) is LAST-WINS: a later root row supersedes an earlier one sharing the
+//    same number, so a newer discovery script cleanly replaces a legacy one instead of merging into it.
+//  • A `discovery_branch` attaches to the current root for its icp (the root row above it in sheet
+//    order), not to its own variant number — legacy rows numbered branches independently of the root.
 function parseBubblesAndBranches(rows) {
   const bubbles = {};  // keyed by icp
   const branches = {}; // keyed by icp then variant
+  const curRootVid = {}; // icp -> variant id of the most recently seen discovery root
   rows.forEach(r => {
     const t = (r.type || '').toLowerCase().trim();
     const tag = (r.tag || '').trim();
@@ -463,20 +477,22 @@ function parseBubblesAndBranches(rows) {
       bubbles[icp].bridge.push({ label: r.name || '', type: color, response: r.text || '', showScript: isShowScript });
     } else if (t === 'close_bubble') {
       bubbles[icp].close.push({ label: r.name || '', type: tag.toLowerCase() || 'yellow', response: r.text || '' });
-    } else if (t === 'discovery' && tag.toUpperCase() === 'ROOT') {
+    } else if (t === 'discovery') {
       const vid = r.variant || '1';
-      if (!branches[icp][vid]) branches[icp][vid] = [];
-      branches[icp][vid].push({
+      // Last-wins: start a fresh tree for this variant, discarding any earlier root/children.
+      branches[icp][vid] = [{
         branchId: 'ROOT', parentId: null, depth: 0, rootQuestion: r.text || '',
         label: '', type: '', response: '', nextPhase: '', variantLabel: r.name || `Variant ${vid}`,
-      });
+      }];
+      curRootVid[icp] = vid;
     } else if (t === 'discovery_branch') {
-      const vid = r.variant || '1';
-      if (!branches[icp][vid]) branches[icp][vid] = [];
+      const vid = curRootVid[icp];
+      const lst = vid != null ? branches[icp][vid] : null;
+      if (!lst) return; // branch with no preceding root for this icp — skip rather than orphan
       const color = tag.toLowerCase() || 'yellow';
-      const existingChildren = branches[icp][vid].filter(n => n.parentId === 'ROOT' && n.depth === 1).length;
+      const existingChildren = lst.filter(n => n.parentId === 'ROOT' && n.depth === 1).length;
       const branchId = `${vid}${String.fromCharCode(65 + existingChildren)}`;
-      branches[icp][vid].push({
+      lst.push({
         branchId, parentId: 'ROOT', depth: 1, rootQuestion: '', label: r.name || '',
         type: color, response: r.text || '', nextPhase: 'PITCH', variantLabel: '',
       });
@@ -621,10 +637,20 @@ export default function HarmoniaOS() {
   // Phase order — reorderable, removable, addable
   const [phaseOrder, setPhaseOrder] = useState(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem("harmonia-phase-order"));
+      let stored = JSON.parse(localStorage.getItem("harmonia-phase-order"));
       if (Array.isArray(stored) && stored.length > 0) {
-        // Migrate: re-inject any missing default phases in their natural position
         let changed = false;
+        // Drop retired phases (e.g. pitch) that may linger in a persisted layout.
+        const kept = stored.filter(p => !RETIRED_PHASES.has(p.id));
+        if (kept.length !== stored.length) { stored = kept; changed = true; }
+        // Reconcile default phases' label/color by id so renames (Discovery→Cost Frame) land on
+        // devices that already persisted the old label. Custom phases keep their own labels.
+        stored = stored.map(p => {
+          const dp = DEFAULT_PHASES.find(d => d.id === p.id);
+          if (dp && (p.label !== dp.label || p.color !== dp.color)) { changed = true; return { ...p, label: dp.label, color: dp.color }; }
+          return p;
+        });
+        // Migrate: re-inject any missing default phases in their natural position
         DEFAULT_PHASES.forEach((dp, di) => {
           if (!stored.find(p => p.id === dp.id)) {
             // Insert after the previous default phase, or at position di
@@ -2488,7 +2514,11 @@ export default function HarmoniaOS() {
                               if (phase === "opener" && !ACTIVE_OPENERS.includes(varId)) return;
                               if (REMOVED_VARIANTS.has(varId)) return;
                               if (disabledScripts.has(varId)) return;
-                              const line = script.lines.find(l => l.type === phase);
+                              // Last matching row wins — keeps the dropdown label in sync with the
+                              // discovery tree's root (parseBubblesAndBranches is also last-wins), so a
+                              // newer script supersedes an older one sharing the same variant number.
+                              const phaseLines = script.lines.filter(l => l.type === phase);
+                              const line = phaseLines[phaseLines.length - 1];
                               // Sheet is master: only include variants that actually have a row for this phase
                               // (so close dropdown shows just "Two-Choice Time Close" / "NEPQ Soft Close" — not
                               // every variant falling back to its opener name). Opener phase always shows all
@@ -2755,7 +2785,7 @@ export default function HarmoniaOS() {
                                                 />
                                                 <div style={{fontSize:10,fontWeight:600,color:"#16a34a",marginTop:6,
                                                   textTransform:"uppercase",letterSpacing:".04em"}}>
-                                                  Move to DISCOVERY
+                                                  Move to COST FRAME
                                                 </div>
                                               </>
                                             ) : (
@@ -3008,8 +3038,8 @@ export default function HarmoniaOS() {
                             </div>
                           );
                         })}
-                        {/* ── OFFERS — single phase block with dropdown selector ── */}
-                        {offers.length > 0 && (()=>{
+                        {/* ── OFFERS — retired from the live view (data still loads; panel hidden) ── */}
+                        {false && offers.length > 0 && (()=>{
                           const offerColor = "#F97316";
                           const curOfferId = selectedOfferId || offers[0]?.id || "";
                           const curOffer = offers.find(o=>o.id===curOfferId) || offers[0];
