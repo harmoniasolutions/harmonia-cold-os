@@ -528,10 +528,10 @@ function isAbFormatRows(rows) {
 }
 function parseAbScriptTab(rows) {
   const phases = {
-    opener:    { groups: [], replies: [] },
-    bridge:    { groups: [], replies: [] },
-    discovery: { groups: [], replies: [] },
-    close:     { groups: [], replies: [] },
+    opener:    { groups: [], replies: [], sections: [] },
+    bridge:    { groups: [], replies: [], sections: [] },
+    discovery: { groups: [], replies: [], sections: [] },
+    close:     { groups: [], replies: [], sections: [] },
   };
   if (!Array.isArray(rows)) return phases;
   const h = findHeaderRow(rows);
@@ -550,6 +550,15 @@ function parseAbScriptTab(rows) {
     if (target) target.b = { text, note };
     else g.pieces.push({ sub, _pname: pname, a: { text, note }, b: null });
   };
+  // Cost Frame sections: group by Name (the section: Volume / Value / The math / The inversion); the
+  // Variant value picks a variant WITHIN that section (its own dropdown). Optional A/B per variant.
+  const addSectionVariant = (phase, secName, id, tag, ab, text, note) => {
+    let sec = phases[phase].sections.find(s => s.name === secName);
+    if (!sec) { sec = { name: secName, tag, variants: [] }; phases[phase].sections.push(sec); }
+    let vr = sec.variants.find(x => x.id === id);
+    if (!vr) { vr = { id, a: null, b: null }; sec.variants.push(vr); }
+    if (ab === 'B') vr.b = { text, note }; else vr.a = { text, note };
+  };
   for (let i = h + 1; i < rows.length; i++) {
     const r = rows[i]; if (!Array.isArray(r)) continue;
     const stage = (r[col.stage] || '').toString().trim(); if (!stage) continue;
@@ -565,6 +574,9 @@ function parseAbScriptTab(rows) {
       if (!v) continue;
       if (v.toLowerCase() === 'bubble' || REPLY_VARIANT.has(v)) {
         addReply(phase, rawName, tag, ab, text, note);
+      } else if (phase === 'discovery') {
+        // Cost Frame: Name = the section, Variant = which variant of that section (its own dropdown).
+        addSectionVariant(phase, rawName, v, tag, ab, text, note);
       } else {
         addPiece(phase, v, rawName || `Variant ${v}`, rawName, rawName, tag, ab, text, note);
       }
@@ -2892,7 +2904,9 @@ export default function HarmoniaOS() {
                                   };
                                   // Cost Frame is a sequence — show all its parts together. Other stages show one at a time via the dropdown.
                                   const showAll = phase === 'discovery';
-                                  const list = showAll ? frames : (frame ? [frame] : []);
+                                  const sections = ab.sections || [];
+                                  const useSections = showAll && sections.length > 0; // Cost Frame: each section has its own variant dropdown
+                                  const list = useSections ? [] : (showAll ? frames : (frame ? [frame] : []));
                                   return (
                                     <div style={{padding:"8px 16px 12px"}}>
                                       {!showAll && frames.length > 1 && (
@@ -2902,6 +2916,40 @@ export default function HarmoniaOS() {
                                           {frames.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
                                         </select>
                                       )}
+                                      {useSections && sections.map((sec, si) => {
+                                        const secAccent = BUBBLE_STYLES[sec.tag] ? BUBBLE_STYLES[sec.tag].border : phaseColor;
+                                        const selKey = `${phase}:${sec.name}`;
+                                        const selId = sec.variants.find(v => v.id === phaseSelections[selKey]) ? phaseSelections[selKey] : sec.variants[0]?.id;
+                                        const vr = sec.variants.find(v => v.id === selId) || sec.variants[0] || { a: null, b: null };
+                                        const ck = `${phase}:${sec.name}:ab`;
+                                        const choice = (abChoice[ck] === 'B' && vr.b) ? 'B' : 'A';
+                                        const shown = (choice === 'B' ? vr.b : vr.a) || vr.a || vr.b || { text: '', note: '' };
+                                        const editKey = `ab:${phase}:${sec.name}:${selId}:${choice}`;
+                                        return (
+                                          <div key={sec.name || si} style={{marginBottom:12}}>
+                                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                                              <span style={{fontSize:10,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".04em"}}>{sec.name}</span>
+                                              {sec.variants.length > 1 && (
+                                                <select value={selId} onChange={e=>setPhaseSelections(prev=>({...prev,[selKey]:e.target.value}))}
+                                                  style={{border:`0.75px solid ${C.border}`,borderRadius:5,padding:"2px 6px",fontSize:10,background:C.bg,color:C.t1,outline:"none",fontFamily:F}}>
+                                                  {sec.variants.map(v => <option key={v.id} value={v.id}>{v.id}</option>)}
+                                                </select>
+                                              )}
+                                              <span style={{flex:1}} />
+                                              {vr.b && ['A','B'].map(opt => {
+                                                const on = choice === opt;
+                                                return (
+                                                  <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[ck]:opt}))}
+                                                    style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                      border:`1px solid ${on?secAccent:C.border}`,background:on?secAccent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
+                                                );
+                                              })}
+                                            </div>
+                                            {editable(editKey, shown.text, secAccent)}
+                                            {shown.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5,paddingLeft:10}}>{shown.note}</div>}
+                                          </div>
+                                        );
+                                      })}
                                       {list.map((fr, fi) => {
                                         const frAccent = BUBBLE_STYLES[fr.tag] ? BUBBLE_STYLES[fr.tag].border : phaseColor;
                                         return (
