@@ -2813,52 +2813,79 @@ export default function HarmoniaOS() {
                                 )}
                               </div>
                               {!collapsed && (() => {
-                                /* ── A/B format: stacked frames (multi-part, stitched) + per-piece A/B toggle + reply chips ── */
+                                /* ── A/B format: ONE selected frame per stage + per-piece A/B toggle + editable text + reply chips ── */
                                 if (scriptFormat === 'ab') {
                                   const ab = abPhase || { groups: [], replies: [] };
+                                  const frames = ab.groups;
+                                  const selName = frames.find(f => f.name === phaseSelections[phase]) ? phaseSelections[phase] : (frames[0]?.name || '');
+                                  const frame = frames.find(f => f.name === selName) || frames[0] || null;
                                   const activeChip = abReplyOpen[phase];
+                                  const frameAccent = frame && BUBBLE_STYLES[frame.tag] ? BUBBLE_STYLES[frame.tag].border : phaseColor;
+                                  // Per-caller edit: store raw (re-tokenized) text under the editKey. Persists to localStorage
+                                  // now and to the caller-settings sheet via the settings autosave (keyed off callerScripts).
+                                  const saveEdit = (editKey, displayVal) => {
+                                    let edited = displayVal;
+                                    const ctx = placeholderCtx;
+                                    if (ctx.owner)  edited = edited.split(ctx.owner).join("{owner}");
+                                    if (ctx.caller) edited = edited.split(ctx.caller).join("{caller}");
+                                    if (ctx.biz)    edited = edited.split(ctx.biz).join("{biz}");
+                                    if (ctx.city)   edited = edited.split(ctx.city).join("{city}");
+                                    const rawVal = unformatScriptLines(edited);
+                                    setCallerScripts(prev => {
+                                      const next = { ...prev, [editKey]: rawVal };
+                                      try { localStorage.setItem(`harmonia-scripts-${callerName}`, JSON.stringify(next)); } catch {}
+                                      return next;
+                                    });
+                                  };
+                                  const grow = el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } };
+                                  const editable = (editKey, sheetText, color) => {
+                                    const raw = (callerScripts[editKey] !== undefined && callerScripts[editKey] !== null) ? callerScripts[editKey] : sheetText;
+                                    const shown = fillPlaceholdersPlain(formatScriptLines(raw), placeholderCtx);
+                                    return (
+                                      <textarea value={shown} ref={grow} onInput={e=>grow(e.target)} onChange={e=>saveEdit(editKey, e.target.value)}
+                                        rows={1} spellCheck={false}
+                                        style={{width:"100%",boxSizing:"border-box",border:"none",borderLeft:`2px solid ${frameAccent}`,
+                                          padding:"1px 0 1px 10px",fontSize:13,color:color||C.t1,lineHeight:1.7,background:"transparent",
+                                          outline:"none",resize:"none",overflow:"hidden",fontFamily:F}} />
+                                    );
+                                  };
                                   return (
                                     <div style={{padding:"8px 16px 12px"}}>
-                                      {ab.groups.map((g, gi) => {
-                                        const gs = BUBBLE_STYLES[g.tag];
-                                        const accent = gs ? gs.border : phaseColor;
-                                        const multi = g.pieces.length > 1;
+                                      {/* one frame shown at a time — dropdown switches when a stage has more than one */}
+                                      {frames.length > 1 && (
+                                        <select value={selName} onChange={e=>setPhaseSelections(prev=>({...prev,[phase]:e.target.value}))}
+                                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"5px 8px",
+                                            fontSize:11,background:C.bg,color:C.t1,outline:"none",marginBottom:10,fontFamily:F}}>
+                                          {frames.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                                        </select>
+                                      )}
+                                      {frame && frame.pieces.map((pc, pi) => {
+                                        const ck = `${phase}:${frame.name}:${pc.sub || pi}`;
+                                        const choice = (abChoice[ck] === 'B' && pc.b) ? 'B' : 'A';
+                                        const variant = choice === 'B' ? pc.b : pc.a;
+                                        const editKey = `ab:${phase}:${frame.name}:${pc.sub || pi}:${choice}`;
                                         return (
-                                          <div key={gi} style={{marginBottom:14,paddingLeft:10,borderLeft:`2px solid ${accent}`}}>
-                                            <div style={{fontSize:10,fontWeight:700,color:C.t2,marginBottom:6,textTransform:"uppercase",letterSpacing:".04em"}}>{g.name}</div>
-                                            {g.pieces.map((pc, pi) => {
-                                              const key = `${phase}:${g.name}:${pc.sub || pi}`;
-                                              const choice = (abChoice[key] === 'B' && pc.b) ? 'B' : 'A';
-                                              const shown = choice === 'B' ? pc.b : pc.a;
-                                              return (
-                                                <div key={pi} style={{marginBottom: multi ? 8 : 4}}>
-                                                  <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
-                                                    <div style={{flex:1,fontSize:13,color:C.t1,lineHeight:1.7,whiteSpace:"pre-line"}}>
-                                                      {multi && pc.sub && <span style={{fontSize:9,color:C.t3,display:"block",marginBottom:2,textTransform:"uppercase",letterSpacing:".04em"}}>{pc.sub}</span>}
-                                                      {fillPlaceholdersPlain(formatScriptLines(shown.text), placeholderCtx)}
-                                                    </div>
-                                                    {pc.b && (
-                                                      <div style={{display:"flex",gap:2,flexShrink:0,marginTop:1}}>
-                                                        {['A','B'].map(opt => {
-                                                          const on = choice === opt;
-                                                          return (
-                                                            <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[key]:opt}))}
-                                                              style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
-                                                                border:`1px solid ${on?accent:C.border}`,background:on?accent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
-                                                          );
-                                                        })}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                  {shown.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5}}>{shown.note}</div>}
-                                                </div>
-                                              );
-                                            })}
+                                          <div key={pi} style={{marginBottom:8}}>
+                                            {(pc.sub || pc.b) && (
+                                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                                                <span style={{flex:1,fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>{pc.sub}</span>
+                                                {pc.b && ['A','B'].map(opt => {
+                                                  const on = choice === opt;
+                                                  return (
+                                                    <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[ck]:opt}))}
+                                                      style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                        border:`1px solid ${on?frameAccent:C.border}`,background:on?frameAccent:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                            {editable(editKey, variant.text)}
+                                            {variant.note && <div style={{fontSize:10,color:C.t3,marginTop:3,fontStyle:"italic",lineHeight:1.5,paddingLeft:10}}>{variant.note}</div>}
                                           </div>
                                         );
                                       })}
                                       {ab.replies.length > 0 && (
-                                        <div style={{marginTop:4}}>
+                                        <div style={{marginTop:8}}>
                                           <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>They respond...</div>
                                           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:activeChip!=null?10:0}}>
                                             {ab.replies.map((rep, ri) => {
@@ -2876,27 +2903,26 @@ export default function HarmoniaOS() {
                                           {activeChip != null && ab.replies[activeChip] && (() => {
                                             const rep = ab.replies[activeChip];
                                             const s = BUBBLE_STYLES[rep.tag] || BUBBLE_STYLES.yellow;
-                                            const key = `${phase}:reply:${activeChip}`;
-                                            const choice = (abChoice[key] === 'B' && rep.b) ? 'B' : 'A';
-                                            const shown = choice === 'B' ? rep.b : rep.a;
+                                            const ck = `${phase}:reply:${activeChip}`;
+                                            const choice = (abChoice[ck] === 'B' && rep.b) ? 'B' : 'A';
+                                            const variant = choice === 'B' ? rep.b : rep.a;
+                                            const editKey = `ab:${phase}:reply:${activeChip}:${choice}`;
                                             return (
-                                              <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"12px 14px"}}>
-                                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                              <div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"10px 12px"}}>
+                                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
                                                   <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
                                                   <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",letterSpacing:".04em",flex:1}}>{s.label}</span>
                                                   {rep.b && ['A','B'].map(opt => {
                                                     const on = choice === opt;
                                                     return (
-                                                      <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[key]:opt}))}
+                                                      <button key={opt} onClick={()=>setAbChoice(prev=>({...prev,[ck]:opt}))}
                                                         style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
                                                           border:`1px solid ${on?s.border:C.border}`,background:on?s.border:"#fff",color:on?"#fff":C.t3}}>{opt}</button>
                                                     );
                                                   })}
                                                 </div>
-                                                <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>
-                                                  {fillPlaceholdersPlain(shown.text, placeholderCtx)}
-                                                </div>
-                                                {shown.note && <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:6,fontStyle:"italic"}}>{shown.note}</div>}
+                                                {editable(editKey, variant.text, s.text)}
+                                                {variant.note && <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:4,fontStyle:"italic",paddingLeft:10}}>{variant.note}</div>}
                                               </div>
                                             );
                                           })()}
