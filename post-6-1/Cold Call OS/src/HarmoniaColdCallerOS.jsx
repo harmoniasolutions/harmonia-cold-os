@@ -1163,7 +1163,7 @@ export default function HarmoniaOS() {
     const inputStyle = {width:"100%",boxSizing:"border-box",border:`0.75px solid ${C.border}`,borderRadius:7,
       padding:"9px 10px",fontSize:13,background:C.bg,color:C.t1,outline:"none"};
     return (
-      <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:20,gap:24,flexWrap:"wrap"}}>
         <div style={{width:"100%",maxWidth:340,border:`0.75px solid ${C.border}`,borderRadius:12,padding:"34px 26px 26px"}}>
           {/* Open on pride — a single ring on glass-white, the wordmark, one belief line */}
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:24}}>
@@ -1204,6 +1204,18 @@ export default function HarmoniaOS() {
             {needsSetup ? "Remember this — you'll use it to log in on any device." : "Forgot it? Ask your admin to reset your password."}
           </div>
         </div>
+        {/* First-time helper — sits beside the card on wide screens, wraps below on narrow ones */}
+        <aside style={{width:"100%",maxWidth:248,fontFamily:F}}>
+          <div style={{fontSize:11,fontWeight:600,color:C.t1,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:9}}>
+            First time logging in?
+          </div>
+          <div style={{fontSize:12.5,color:C.t2,lineHeight:1.65,marginBottom:11}}>
+            You don't have a password yet — <span style={{color:C.t1,fontWeight:600}}>whatever you set the first time becomes your own</span>, and you'll use it on every device.
+          </div>
+          <div style={{fontSize:12,color:C.t3,lineHeight:1.6}}>
+            Keep it simple — a few numbers (like <span style={{fontFamily:FM,color:C.t2}}>1234</span>) or a few letters you'll remember.
+          </div>
+        </aside>
       </div>
     );
   }
