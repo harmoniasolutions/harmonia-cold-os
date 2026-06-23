@@ -475,12 +475,13 @@ function resolveCols(headerRow) {
   const H = (headerRow || []).map(c => (c || '').toString().trim().toLowerCase());
   const find = (pred, dflt) => { const i = H.findIndex(pred); return i >= 0 ? i : dflt; };
   return {
-    stage:  find(h => h === 'stage', 0),
-    name:   find(h => h === 'element' || h === 'name', 1),
-    ab:     find(h => h.replace(/\s/g, '') === 'a/b' || h === 'ab', 2),
-    tag:    find(h => h === 'tag', 3),
-    script: find(h => h.startsWith('script') || h === 'say this', 4),
-    note:   find(h => h.includes('note'), 5),
+    stage:   find(h => h === 'stage', 0),
+    variant: find(h => h === 'variant' || h === 'type', -1), // -1 = no explicit Variant column
+    name:    find(h => h === 'element' || h === 'name', 1),
+    ab:      find(h => h.replace(/\s/g, '') === 'a/b' || h === 'ab', -1), // -1 = no A/B column
+    tag:     find(h => h === 'tag', 3),
+    script:  find(h => h.startsWith('script') || h === 'say this', 4),
+    note:    find(h => h.includes('note'), 5),
   };
 }
 const REPLY_VARIANT  = new Set(['', '-', '–', '—']); // hyphen / en-dash / em-dash all mean "a reply, not a stage line"
@@ -523,7 +524,7 @@ function isAbFormatRows(rows) {
   const h = findHeaderRow(rows);
   if (h < 0) return false;
   const H = rows[h].map(c => (c || '').toString().trim().toLowerCase());
-  return H.some(x => x === 'element' || x.replace(/\s/g, '') === 'a/b');
+  return H.some(x => x === 'element' || x.replace(/\s/g, '') === 'a/b' || x === 'variant');
 }
 function parseAbScriptTab(rows) {
   const phases = {
@@ -535,31 +536,46 @@ function parseAbScriptTab(rows) {
   if (!Array.isArray(rows)) return phases;
   const h = findHeaderRow(rows);
   const col = resolveCols(h >= 0 ? rows[h] : null);     // columns matched by header name, any position
+  const useVariant = col.variant >= 0;                  // explicit Variant column drives the new rule
+  const addReply = (phase, title, tag, ab, text, note) => {
+    const reps = phases[phase].replies;
+    const target = ab === 'B' ? reps.find(x => x._raw === title && !x.b) : null;       // B pairs to its A by title
+    if (target) target.b = { text, note };
+    else reps.push({ name: title.replace(/^reply:\s*/i, ''), tag: tag || 'yellow', a: { text, note }, b: null, _raw: title });
+  };
+  const addPiece = (phase, key, frameName, pname, sub, tag, ab, text, note) => {
+    let g = phases[phase].groups.find(x => x.key === key);
+    if (!g) { g = { key, name: frameName, tag, pieces: [] }; phases[phase].groups.push(g); }
+    const target = ab === 'B' ? g.pieces.find(p => p._pname === pname && !p.b) : null;  // B pairs to its A by name
+    if (target) target.b = { text, note };
+    else g.pieces.push({ sub, _pname: pname, a: { text, note }, b: null });
+  };
   for (let i = h + 1; i < rows.length; i++) {
     const r = rows[i]; if (!Array.isArray(r)) continue;
     const stage = (r[col.stage] || '').toString().trim(); if (!stage) continue;
     const phase = stageToPhase(stage); if (!phase) continue;   // slot into the fixed 4-stage formula
     const rawName = (r[col.name] || '').toString().trim();
-    const ab   = (r[col.ab]   || '').toString().trim().toUpperCase();
+    const ab   = col.ab >= 0 ? (r[col.ab] || '').toString().trim().toUpperCase() : '';
     const tag  = (r[col.tag]  || '').toString().trim().toLowerCase();
     const text = (r[col.script] || '').toString();
     const note = (r[col.note]   || '').toString();
-    const isReply = /^reply:/i.test(rawName) || ab === '';
-    if (isReply) {
-      const reps = phases[phase].replies;
-      // Attach a B variant to its A (matched by name) wherever it appears — not just if adjacent.
-      const target = ab === 'B' ? reps.find(x => x._raw === rawName && !x.b) : null;
-      if (target) { target.b = { text, note }; }
-      else { reps.push({ name: rawName.replace(/^reply:\s*/i, ''), tag: tag || 'yellow', a: { text, note }, b: null, _raw: rawName }); }
-      continue;
+    if (useVariant) {
+      // NEW RULE: Variant cell = a number → a dropdown variant (Name labels it); = "Bubble" → a reply chip (Name titles it).
+      const v = (r[col.variant] || '').toString().trim();
+      if (!v) continue;
+      if (v.toLowerCase() === 'bubble' || REPLY_VARIANT.has(v)) {
+        addReply(phase, rawName, tag, ab, text, note);
+      } else {
+        addPiece(phase, v, rawName || `Variant ${v}`, rawName, rawName, tag, ab, text, note);
+      }
+    } else {
+      // Element/A·B sheet: reply when name starts "Reply:" or A/B blank; frames grouped by "Group: subpart" prefix.
+      const isReply = /^reply:/i.test(rawName) || ab === '';
+      if (isReply) { addReply(phase, rawName, tag, ab, text, note); continue; }
+      const groupName = rawName.includes(':') ? rawName.split(':')[0].trim() : rawName;
+      const sub       = rawName.includes(':') ? rawName.split(':').slice(1).join(':').trim() : '';
+      addPiece(phase, groupName, groupName, sub, sub, tag, ab, text, note);
     }
-    const groupName = rawName.includes(':') ? rawName.split(':')[0].trim() : rawName;
-    const sub       = rawName.includes(':') ? rawName.split(':').slice(1).join(':').trim() : '';
-    let g = phases[phase].groups.find(x => x.name === groupName);
-    if (!g) { g = { name: groupName, tag, pieces: [] }; phases[phase].groups.push(g); }
-    const target = ab === 'B' ? g.pieces.find(p => p.sub === sub && !p.b) : null;
-    if (target) { target.b = { text, note }; }
-    else { g.pieces.push({ sub, a: { text, note }, b: null }); }
   }
   return phases;
 }
@@ -2889,11 +2905,12 @@ export default function HarmoniaOS() {
                                         const choice = (abChoice[ck] === 'B' && pc.b) ? 'B' : 'A';
                                         const variant = choice === 'B' ? pc.b : pc.a;
                                         const editKey = `ab:${phase}:${frame.name}:${pc.sub || pi}:${choice}`;
+                                        const subLabel = (pc.sub && pc.sub !== frame.name) ? pc.sub : ''; // hide if it just repeats the frame name
                                         return (
                                           <div key={pi} style={{marginBottom:8}}>
-                                            {(pc.sub || pc.b) && (
+                                            {(subLabel || pc.b) && (
                                               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                                                <span style={{flex:1,fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>{pc.sub}</span>
+                                                <span style={{flex:1,fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>{subLabel}</span>
                                                 {pc.b && ['A','B'].map(opt => {
                                                   const on = choice === opt;
                                                   return (
