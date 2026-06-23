@@ -637,31 +637,15 @@ export default function HarmoniaOS() {
   // Phase order — reorderable, removable, addable
   const [phaseOrder, setPhaseOrder] = useState(() => {
     try {
-      let stored = JSON.parse(localStorage.getItem("harmonia-phase-order"));
+      const stored = JSON.parse(localStorage.getItem("harmonia-phase-order"));
       if (Array.isArray(stored) && stored.length > 0) {
-        let changed = false;
-        // Drop retired phases (e.g. pitch) that may linger in a persisted layout.
-        const kept = stored.filter(p => !RETIRED_PHASES.has(p.id));
-        if (kept.length !== stored.length) { stored = kept; changed = true; }
-        // Reconcile default phases' label/color by id so renames (Discovery→Cost Frame) land on
-        // devices that already persisted the old label. Custom phases keep their own labels.
-        stored = stored.map(p => {
-          const dp = DEFAULT_PHASES.find(d => d.id === p.id);
-          if (dp && (p.label !== dp.label || p.color !== dp.color)) { changed = true; return { ...p, label: dp.label, color: dp.color }; }
-          return p;
-        });
-        // Migrate: re-inject any missing default phases in their natural position
-        DEFAULT_PHASES.forEach((dp, di) => {
-          if (!stored.find(p => p.id === dp.id)) {
-            // Insert after the previous default phase, or at position di
-            const prevDefault = DEFAULT_PHASES[di - 1];
-            const insertAfter = prevDefault ? stored.findIndex(p => p.id === prevDefault.id) : -1;
-            stored.splice(insertAfter >= 0 ? insertAfter + 1 : Math.min(di, stored.length), 0, dp);
-            changed = true;
-          }
-        });
-        if (changed) try { localStorage.setItem("harmonia-phase-order", JSON.stringify(stored)); } catch {}
-        return stored;
+        // reconcilePhases (hoisted) drops retired phases, relabels defaults (Discovery→Cost Frame),
+        // and re-injects any missing defaults — same normalization the server-hydration path uses.
+        const next = reconcilePhases(stored);
+        if (JSON.stringify(next) !== JSON.stringify(stored)) {
+          try { localStorage.setItem("harmonia-phase-order", JSON.stringify(next)); } catch {}
+        }
+        return next;
       }
     } catch {}
     return DEFAULT_PHASES;
@@ -783,9 +767,18 @@ export default function HarmoniaOS() {
   }
 
   // ── Cross-device caller settings: parse / reconcile / hydrate ──
+  // Single source of truth for normalizing a stored/hydrated phase layout (localStorage OR the
+  // per-caller settings sheet) against the current DEFAULT_PHASES. Drops retired phases (pitch),
+  // relabels/recolors default phases by id (so renames like Discovery→Cost Frame land on layouts
+  // that cached the old label server-side), then re-injects any missing defaults in place.
   function reconcilePhases(stored) {
     if (!Array.isArray(stored) || stored.length === 0) return DEFAULT_PHASES;
-    const next = [...stored];
+    let next = stored
+      .filter(p => !RETIRED_PHASES.has(p.id))
+      .map(p => {
+        const dp = DEFAULT_PHASES.find(d => d.id === p.id);
+        return dp ? { ...p, label: dp.label, color: dp.color } : p;
+      });
     DEFAULT_PHASES.forEach((dp, di) => {
       if (!next.find(p => p.id === dp.id)) {
         const prevDefault = DEFAULT_PHASES[di - 1];
