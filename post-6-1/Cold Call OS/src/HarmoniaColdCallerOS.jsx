@@ -219,8 +219,8 @@ const OUTCOME_ROWS = [
 ];
 
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
-const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel", "Nick", "Blake", "RJ"];
-const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986", Nick:"+18563943453", Blake:"+12019574476", RJ:"+17573776621" };
+const CALLER_ROSTER = ["Javi", "Julian", "Owen", "Joel", "Nick", "Blake", "RJ", "Reese"];
+const CALLER_PHONES = { Javi:"+16102153863", Julian:"+16092771636", Owen:"+16094120214", Joel:"+16096743986", Nick:"+18563943453", Blake:"+12019574476", RJ:"+17573776621", Reese:"+12026417341" };
 // Leaderboard temporarily hidden (per request) — flip to true to restore the button + view.
 const SHOW_LEADERBOARD = false;
 // Callers excluded from the leaderboard ranking (e.g. admins/owners who aren't cold-calling).
