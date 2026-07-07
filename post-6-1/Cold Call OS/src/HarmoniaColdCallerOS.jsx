@@ -734,6 +734,8 @@ export default function HarmoniaOS() {
 
   const [active,   setActive]   = useState(null);
   const [filter,   setFilter]   = useState("all");
+  const [phoneFilter,   setPhoneFilter]   = useState("all"); // all | mobile | corporate
+  const [emailedFilter, setEmailedFilter] = useState("all"); // all | emailed | not
   const [tab,      setTab]      = useState("intel");
   // ── Brand signature (the etched rings in the empty centre) ──
   const BELIEFS = ["every call answered","presence as a product","silence costs revenue","nothing left to add"];
@@ -1286,9 +1288,12 @@ export default function HarmoniaOS() {
     return "queued";
   }
 
-  // Only surface leads that have a MOBILE number — corporate-only or no-number leads are hidden.
-  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && (l.mobile_phone || "").trim() !== "");
-  const filtered     = activeLeads.filter(l => filter==="all" || icpGroup(l.icp)===filter);
+  // Surface leads that have a MOBILE or a CORPORATE number — only no-number leads are hidden.
+  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && ((l.mobile_phone || "").trim() !== "" || (l.corporate_phone || "").trim() !== ""));
+  const filtered     = activeLeads.filter(l =>
+       (filter==="all" || icpGroup(l.icp)===filter)
+    && (phoneFilter==="all"   || (phoneFilter==="mobile" ? (l.mobile_phone||"").trim()!=="" : (l.corporate_phone||"").trim()!==""))
+    && (emailedFilter==="all" || (emailedFilter==="emailed" ? leadEmailed(l).sent : !leadEmailed(l).sent)));
   const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
   const totalAns     = stats.answered + stats.demos;
   const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
@@ -1822,6 +1827,33 @@ export default function HarmoniaOS() {
               </button>
             ))}
           </div>
+          <div style={{padding:"2px 10px 8px",borderBottom:`0.75px solid ${C.border}`,
+            display:"flex",flexDirection:"column",gap:5}}>
+            <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              <span style={{fontSize:9,color:C.t3,width:32,flexShrink:0}}>Phone</span>
+              {[["all","All"],["mobile","Mobile"],["corporate","Corp"]].map(([v,lbl])=>(
+                <button key={v} onClick={()=>setPhoneFilter(v)}
+                  style={{padding:"2px 8px",borderRadius:100,
+                    border:`0.75px solid ${phoneFilter===v?C.t1:C.border}`,
+                    background:phoneFilter===v?C.t1:"transparent",
+                    color:phoneFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              <span style={{fontSize:9,color:C.t3,width:32,flexShrink:0}}>Email</span>
+              {[["all","All"],["not","New"],["emailed","Emailed"]].map(([v,lbl])=>(
+                <button key={v} onClick={()=>setEmailedFilter(v)}
+                  style={{padding:"2px 8px",borderRadius:100,
+                    border:`0.75px solid ${emailedFilter===v?C.t1:C.border}`,
+                    background:emailedFilter===v?C.t1:"transparent",
+                    color:emailedFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
           <div style={{padding:"7px 14px 5px",display:"flex",justifyContent:"space-between"}}>
             <span style={{fontSize:11,color:C.t3}}>{queueLeft} remaining</span>
             <span style={{fontSize:11,color:C.t3}}>{filtered.length} total</span>
@@ -1829,7 +1861,9 @@ export default function HarmoniaOS() {
           <div style={{flex:1,overflowY:"auto"}}>
             {filtered.length === 0 && (
               <div style={{padding:20,textAlign:"center",fontSize:11,color:C.t3}}>
-                No leads in sheet yet.<br/>Add rows to the Leads tab.
+                {activeLeads.length === 0
+                  ? <>No leads in sheet yet.<br/>Add rows to the Leads tab.</>
+                  : <>No leads match these filters.</>}
               </div>
             )}
             {filtered.map(lead=>{
