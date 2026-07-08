@@ -32,6 +32,7 @@ const CALLER_SETTINGS_TAB      = 'Settings';
 const CALLER_SETTINGS_WEBHOOK  = import.meta.env.VITE_CALLER_SETTINGS_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/caller-settings-save';
 const OBJECTIONS_KEY = '__OBJECTIONS__';
 const ADMIN_KEY      = '__ADMIN__';
+const OFFER_KEY      = '__OFFER__';   // team-shared Offer canvas — Javi (admin) edits, everyone reads
 
 async function fetchSheet(tab) {
   const res = await fetch(`${BASE}/${tab}?key=${API_KEY}`);
@@ -913,6 +914,12 @@ export default function HarmoniaOS() {
   const objectionsSaveTimer = useRef(null);
   const adminSaveTimer      = useRef(null);
 
+  // Team-shared "The Offer" canvas — Javi (admin) edits, everyone else views what he saved
+  const [offerCanvas, setOfferCanvas] = useState("");
+  const offerHydrated  = useRef(false);
+  const offerSaveTimer = useRef(null);
+  const [offerSaveStatus, setOfferSaveStatus] = useState(null); // null|'saving'|'saved'
+
   // Clean broken formula values (#ERROR!, #NAME?, #REF!) and strip leading = from formula cells
   function clean(v) {
     if (!v || typeof v !== "string") return v || "";
@@ -1009,8 +1016,11 @@ export default function HarmoniaOS() {
       if (Array.isArray(adm.disabledScripts)) setDisabledScripts(new Set(adm.disabledScripts.filter(id => id!=="7" && id!=="8")));
       if (Array.isArray(adm.disabledIcps))    setDisabledIcps(new Set(adm.disabledIcps));
     }
+    const off = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OFFER_KEY)), readLocal("harmonia-team-offer"));
+    if (off && typeof off.text === "string") setOfferCanvas(off.text);
     objectionsHydrated.current = true;
     adminHydrated.current = true;
+    offerHydrated.current = true;
   }
 
   // Hydrate one caller's personal scripts + layout. isInitial preserves this device's
@@ -1217,6 +1227,20 @@ export default function HarmoniaOS() {
     if (adminSaveTimer.current) clearTimeout(adminSaveTimer.current);
     adminSaveTimer.current = setTimeout(() => postSettings(ADMIN_KEY, blob), 800);
   }, [disabledScripts, disabledIcps]);
+
+  // Persist the Offer canvas — ONLY Javi (the admin) writes it; other callers are view-only.
+  useEffect(() => {
+    if (!offerHydrated.current || callerName !== "Javi") return;
+    const blob = { version:1, updated_at:new Date().toISOString(), text: offerCanvas };
+    try { localStorage.setItem("harmonia-team-offer", JSON.stringify(blob)); } catch {}
+    if (offerSaveTimer.current) clearTimeout(offerSaveTimer.current);
+    setOfferSaveStatus("saving");
+    offerSaveTimer.current = setTimeout(() => {
+      postSettings(OFFER_KEY, blob);
+      setOfferSaveStatus("saved");
+      setTimeout(() => setOfferSaveStatus(null), 2000);
+    }, 800);
+  }, [offerCanvas, callerName]);
 
   const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
@@ -2348,6 +2372,7 @@ export default function HarmoniaOS() {
                 {[
                   {id:"intel",      label:"Intel"},
                   {id:"script",     label:"Script"},
+                  {id:"offer",      label:"The Offer"},
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
                   {id:"roi",        label:"ROI Calc"},
@@ -3845,6 +3870,50 @@ export default function HarmoniaOS() {
                     />
                   </div>
                 )}
+
+                {/* ── THE OFFER ── team-shared blank canvas; Javi edits, everyone else views ── */}
+                {tab==="offer"&&(()=>{
+                  const isOfferAdmin = callerName === "Javi";
+                  return (
+                    <div style={{maxWidth:820,position:"relative",zIndex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                        <span style={{fontSize:14,fontWeight:600,color:C.t1}}>The Offer</span>
+                        <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:100,
+                          color:isOfferAdmin?C.accent:C.t2,
+                          background:(isOfferAdmin?C.accent:C.t3)+"15"}}>
+                          {isOfferAdmin?"You can edit this — everyone sees it":"View only — managed by Javi"}
+                        </span>
+                        {isOfferAdmin&&offerSaveStatus&&(
+                          <span style={{fontSize:10,fontWeight:500,marginLeft:"auto",
+                            color:offerSaveStatus==="saved"?C.green:C.t3}}>
+                            {offerSaveStatus==="saved"?"Saved for the team":"Saving…"}
+                          </span>
+                        )}
+                      </div>
+                      {isOfferAdmin ? (
+                        <textarea
+                          value={offerCanvas}
+                          onChange={e=>setOfferCanvas(e.target.value)}
+                          placeholder="Type the current offer here. Whatever you write is saved and shown to every caller…"
+                          style={{width:"100%",minHeight:440,border:`0.75px solid ${C.border}`,borderRadius:12,
+                            padding:"16px 18px",fontSize:14,color:C.t1,lineHeight:1.75,background:C.bg,
+                            outline:"none",resize:"vertical",fontFamily:F}}
+                        />
+                      ) : offerCanvas.trim() ? (
+                        <div style={{border:`0.75px solid ${C.border}`,borderRadius:12,padding:"16px 18px",
+                          background:C.surface,fontSize:14,lineHeight:1.75,color:C.t1,whiteSpace:"pre-wrap",
+                          wordBreak:"break-word",minHeight:200}}>
+                          {offerCanvas}
+                        </div>
+                      ) : (
+                        <div style={{border:`1px dashed ${C.border}`,borderRadius:12,padding:"40px 18px",
+                          textAlign:"center",fontSize:12,color:C.t3}}>
+                          No offer posted yet. Javi will add it here.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 </div>
               </div>
