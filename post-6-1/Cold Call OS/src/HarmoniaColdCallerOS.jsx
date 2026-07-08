@@ -136,8 +136,8 @@ const ICP_LABEL  = {
 // Openers benched for this week's test — DISPLAY filter only (rows stay in the Scripts sheet as the
 // iteration bank). Edit this one line to change which openers are live. Applies to the opener list only;
 // downstream phases (bridge/discovery/pitch/close) and objections are unaffected.
-// 1=Email Pretense  2=Honest Cold Call  3=Missed Call Flip  4=Beta Test  5=Blunt Founder
-// 6=Review Call-Out  7=Competitor Ghost  8=Competitor Scarcity
+// Current Scripts-sheet openers: 1=Email Pretense  2=Honest Cold Call  3=Busy Chair Pattern
+// (variants 4-8 are legacy/retired — no longer rows in the sheet).
 const ACTIVE_OPENERS = ["1", "2"];
 
 // "Emailed?" status shown in Intel — fed from the Leads tab `emailed` column.
@@ -905,6 +905,18 @@ export default function HarmoniaOS() {
     try { localStorage.setItem("harmonia-blank-font-family", css); } catch {}
     return css;
   });
+  // Blank-canvas height (px) — user drags the resize handle; persists across the Variables/Values
+  // toggle and reloads so the size sticks in both views.
+  const [blankCanvasHeight, setBlankCanvasHeight] = useState(() => {
+    try { return Number(localStorage.getItem("harmonia-blank-canvas-height")) || 300; } catch { return 300; }
+  });
+  const saveCanvasHeight = (el) => {
+    if (!el) return;
+    const h = Math.round(el.getBoundingClientRect().height);
+    if (!h || h === blankCanvasHeight) return;
+    setBlankCanvasHeight(h);
+    try { localStorage.setItem("harmonia-blank-canvas-height", String(h)); } catch {}
+  };
   const blankRef = useRef(null);
 
   // Lead ownership — a caller claims a lead as "mine" (auto on demo booked, or manual)
@@ -2981,9 +2993,10 @@ export default function HarmoniaOS() {
                               </div>
                             </div>
                             {blankShowValues ? (
-                              <div style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
+                              <div onMouseUp={e=>saveCanvasHeight(e.currentTarget)}
+                                style={{width:"100%",height:blankCanvasHeight,minHeight:160,border:`0.75px solid ${C.border}`,borderRadius:10,
                                 padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.surface,
-                                whiteSpace:"pre-wrap",fontFamily:blankFontFamily}}>
+                                whiteSpace:"pre-wrap",fontFamily:blankFontFamily,resize:"vertical",overflow:"auto"}}>
                                 {blankRaw.trim()
                                   ? fillPlaceholders(formatScriptLines(blankRaw), ctx)
                                   : <span style={{color:C.t3}}>Nothing written yet — switch to Variables to write your script.</span>}
@@ -2993,10 +3006,11 @@ export default function HarmoniaOS() {
                                 ref={blankRef}
                                 value={blankRaw}
                                 onChange={e=>updateBlank(e.target.value)}
+                                onMouseUp={e=>saveCanvasHeight(e.currentTarget)}
                                 onDragOver={e=>e.preventDefault()}
                                 onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");if(t)insertToken(t);}}
                                 placeholder={"Start typing your script here…\n\ne.g. Hi {owner}, is this the owner of {biz}? I'm {caller} — I help salons in {city} stop missing new-client calls."}
-                                style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
+                                style={{width:"100%",height:blankCanvasHeight,minHeight:160,border:`0.75px solid ${C.border}`,borderRadius:10,
                                   padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.bg,
                                   outline:"none",resize:"vertical",fontFamily:blankFontFamily}}
                               />
