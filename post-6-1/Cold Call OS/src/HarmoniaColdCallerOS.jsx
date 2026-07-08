@@ -864,6 +864,14 @@ export default function HarmoniaOS() {
   const [blankScripts, setBlankScripts] = useState(() => { // { [callerName]: rawText }
     try { return JSON.parse(localStorage.getItem("harmonia-blank-scripts") || "{}"); } catch { return {}; }
   });
+  // Saved script "standards" — named versions the caller can keep and reload. { [callerName]: [{id,name,text,savedAt}] }
+  const [blankVersions, setBlankVersions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-blank-versions") || "{}"); } catch { return {}; }
+  });
+  const saveBlankVersions = (next) => {
+    setBlankVersions(next);
+    try { localStorage.setItem("harmonia-blank-versions", JSON.stringify(next)); } catch {}
+  };
   // Blank-canvas font size (px) — per-device, applies to both the editor and the live preview
   const [blankFontSize, setBlankFontSize] = useState(() => {
     try { return Number(localStorage.getItem("harmonia-blank-font-size")) || 14; } catch { return 14; }
@@ -2942,6 +2950,26 @@ export default function HarmoniaOS() {
                         updateBlank(nextVal);
                         requestAnimationFrame(()=>{ if(ta){ ta.focus(); const p=start+token.length; ta.setSelectionRange(p,p); } });
                       };
+                      // Saved "standards" for this caller — keep the token source (blankRaw), not the filled text.
+                      const versions = blankVersions[key] || [];
+                      const saveAsVersion = () => {
+                        if (!blankRaw.trim()) return;
+                        const name = (window.prompt("Name this standard (e.g. \"Salon v3\", \"Best opener\"):", "") || "").trim();
+                        if (!name) return;
+                        const entry = { id: `${Date.now()}`, name, text: blankRaw, savedAt: new Date().toISOString() };
+                        // Overwrite a same-named standard rather than duplicating it.
+                        const nextList = [entry, ...versions.filter(v => v.name.toLowerCase() !== name.toLowerCase())];
+                        saveBlankVersions({ ...blankVersions, [key]: nextList });
+                      };
+                      const loadVersion = (v) => {
+                        if (!v) return;
+                        if (blankRaw.trim() && blankRaw !== v.text &&
+                            !window.confirm(`Replace the current script with "${v.name}"? Your current text isn't saved as a standard.`)) return;
+                        updateBlank(v.text);
+                      };
+                      const deleteVersion = (id) => {
+                        saveBlankVersions({ ...blankVersions, [key]: versions.filter(v => v.id !== id) });
+                      };
                       return (
                         <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
                           <div style={{flex:1,minWidth:0}}>
@@ -3017,6 +3045,33 @@ export default function HarmoniaOS() {
                                       display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>+</button>
                                 </div>
                               </div>
+                            </div>
+                            {/* Saved standards — save the current script as a named version, click a chip to reload it */}
+                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+                              <button onClick={saveAsVersion} disabled={!blankRaw.trim()}
+                                title="Save the current script as a reusable standard"
+                                style={{padding:"4px 11px",borderRadius:100,fontSize:10,fontWeight:600,fontFamily:F,
+                                  border:`0.75px solid ${blankRaw.trim()?C.accent:C.border}`,
+                                  background:"transparent",color:blankRaw.trim()?C.accent:C.t3,
+                                  cursor:blankRaw.trim()?"pointer":"default",transition:"all 0.15s"}}>
+                                ＋ Save as standard
+                              </button>
+                              {versions.length>0 && (
+                                <>
+                                  <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>Saved</span>
+                                  {versions.map(v=>(
+                                    <span key={v.id} style={{display:"inline-flex",alignItems:"center",
+                                      border:`0.75px solid ${C.borderMd}`,borderRadius:100,overflow:"hidden",background:C.bg}}>
+                                      <button onClick={()=>loadVersion(v)} title={`Load "${v.name}"`}
+                                        style={{border:"none",background:"transparent",color:C.t1,cursor:"pointer",
+                                          fontSize:11,fontWeight:500,fontFamily:F,padding:"4px 4px 4px 11px"}}>{v.name}</button>
+                                      <button onClick={()=>deleteVersion(v.id)} title="Delete this standard"
+                                        style={{border:"none",background:"transparent",color:C.t3,cursor:"pointer",
+                                          fontSize:13,lineHeight:1,fontFamily:F,padding:"4px 9px 4px 5px"}}>×</button>
+                                    </span>
+                                  ))}
+                                </>
+                              )}
                             </div>
                             {blankShowValues ? (
                               <div style={{width:"100%",height:blankCanvasHeight,border:`0.75px solid ${C.border}`,borderRadius:10,
