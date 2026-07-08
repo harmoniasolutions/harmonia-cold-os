@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { OBJECTION_PRESETS } from './config/sheetMapping';
 import MissedCallCalculator from './MissedCallCalculator';
 
@@ -856,6 +856,23 @@ export default function HarmoniaOS() {
   const [scriptSaveStatus, setScriptSaveStatus] = useState({}); // { phase: 'saved'|'saving'|'reset'|null }
   const saveTimerRefs = useRef({});
 
+  // Script tab mode — "phases" (the mixer) or "blank" (free-text canvas + draggable variables)
+  const [scriptMode, setScriptMode] = useState(() => {
+    try { return localStorage.getItem("harmonia-script-mode") || "phases"; } catch { return "phases"; }
+  });
+  const [blankScripts, setBlankScripts] = useState(() => { // { [callerName]: rawText }
+    try { return JSON.parse(localStorage.getItem("harmonia-blank-scripts") || "{}"); } catch { return {}; }
+  });
+  const blankRef = useRef(null);
+
+  // Lead ownership — a caller claims a lead as "mine" (auto on demo booked, or manual)
+  const [claimedLeads, setClaimedLeads] = useState(() => { // { [leadId]: callerName }
+    try { return JSON.parse(localStorage.getItem("harmonia-claimed-leads") || "{}"); } catch { return {}; }
+  });
+  // Preserve the queue's scroll position across the end-call auto-advance
+  const queueScrollRef    = useRef(null);
+  const preserveScrollRef = useRef(null);
+
   // Shared Lead Notes
   const [leadNotesData, setLeadNotesData] = useState({}); // { leadId: { text, edited_by, edited_at } }
   const [notesSaveStatus, setNotesSaveStatus] = useState(null);
@@ -1151,6 +1168,14 @@ export default function HarmoniaOS() {
     return () => clearInterval(interval);
   }, []);
 
+  // After the end-call auto-advance, restore the queue scroll so the caller keeps their place
+  useLayoutEffect(() => {
+    if (preserveScrollRef.current != null && queueScrollRef.current) {
+      queueScrollRef.current.scrollTop = preserveScrollRef.current;
+      preserveScrollRef.current = null;
+    }
+  });
+
   // Reset branch tree when discovery variant changes
   useEffect(() => {
     setActiveBranches({});
@@ -1422,6 +1447,9 @@ export default function HarmoniaOS() {
   }
 
   function openDispoBar() {
+    // The call is ended on the phone, not in the app — opening the dispo bar freezes the
+    // live-call timer (keeping the elapsed seconds so the duration is still captured).
+    if (callRun) setCallRun(false);
     if (closeEmailStatus==="success" && closeEmail.trim()) {
       setCaptureEmail(closeEmail.trim());
       setPendingOutcome("demo_booked");
@@ -1507,6 +1535,9 @@ export default function HarmoniaOS() {
       spoke_with: spokeWith || l.spoke_with || "",
     }:l));
 
+    // Demo booked = they said yes → auto-claim the lead for this caller
+    if (outcome==="demo_booked" && callerName) claimFor(active.id, callerName);
+
     // Append to shared call history immediately (optimistic update)
     setCallHistory(prev => {
       const lid = active.id;
@@ -1574,7 +1605,12 @@ export default function HarmoniaOS() {
 
     resetCaptureFields();
     setDispoBarOpen(false);
-    const next=filtered.find(l=>l.id!==active.id&&leadStatusEffective(l)==="queued");
+    // Advance to the next queued lead *below* the current one (only wrap to the top if none remain
+    // below), and keep the queue scrolled where the caller left off.
+    preserveScrollRef.current = queueScrollRef.current ? queueScrollRef.current.scrollTop : null;
+    const curIdx = filtered.findIndex(l=>l.id===active.id);
+    const next = filtered.slice(curIdx+1).find(l=>leadStatusEffective(l)==="queued")
+              || filtered.find(l=>l.id!==active.id&&leadStatusEffective(l)==="queued");
     if(next){selectLead(next);setTab("intel");}
     // Sheets write handled by n8n webhook above
   }
@@ -1596,6 +1632,34 @@ export default function HarmoniaOS() {
   function resetCallState() {
     setCallRun(false);setCallSecs(0);
     resetCaptureFields();
+  }
+
+  // ── Lead ownership ──
+  function persistClaims(next) {
+    try { localStorage.setItem("harmonia-claimed-leads", JSON.stringify(next)); } catch {}
+  }
+  function claimFor(leadId, name) {
+    if (!leadId || !name) return;
+    setClaimedLeads(prev => {
+      if (prev[leadId] === name) return prev;
+      const next = {...prev, [leadId]: name};
+      persistClaims(next);
+      fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'lead_claim',lead_id:leadId,caller_name:name,claimed:true})}).catch(()=>{});
+      return next;
+    });
+  }
+  function toggleClaim(leadId) {
+    if (!callerName) { window.alert("Select your caller name at the top first — then you can claim leads as yours."); return; }
+    setClaimedLeads(prev => {
+      const next = {...prev};
+      const claimed = next[leadId] !== callerName;
+      if (claimed) next[leadId] = callerName; else delete next[leadId];
+      persistClaims(next);
+      fetch(WEBHOOK_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'lead_claim',lead_id:leadId,caller_name:claimed?callerName:null,claimed})}).catch(()=>{});
+      return next;
+    });
   }
 
   function openCalendly() {
@@ -1858,7 +1922,7 @@ export default function HarmoniaOS() {
             <span style={{fontSize:11,color:C.t3}}>{queueLeft} remaining</span>
             <span style={{fontSize:11,color:C.t3}}>{filtered.length} total</span>
           </div>
-          <div style={{flex:1,overflowY:"auto"}}>
+          <div ref={queueScrollRef} style={{flex:1,overflowY:"auto"}}>
             {filtered.length === 0 && (
               <div style={{padding:20,textAlign:"center",fontSize:11,color:C.t3}}>
                 {activeLeads.length === 0
@@ -1888,6 +1952,14 @@ export default function HarmoniaOS() {
                       {ICP_LABEL[lead.icp]||lead.icp} · {lead.city}
                       {lead.competitor&&<span style={{color:C.t3}}> · vs. {lead.competitor}</span>}
                     </div>
+                    {claimedLeads[lead.id]&&(
+                      <div style={{marginTop:3,display:"inline-flex",alignItems:"center",gap:3,
+                        fontSize:9,fontWeight:600,borderRadius:4,padding:"1px 6px",
+                        color:claimedLeads[lead.id]===callerName?C.accent:C.purple,
+                        background:(claimedLeads[lead.id]===callerName?C.accent:C.purple)+"15"}}>
+                        ★ {claimedLeads[lead.id]===callerName?"Mine":claimedLeads[lead.id]}
+                      </div>
+                    )}
                     {/* Retired leads (demo booked / DNC) show a label; merely-called leads stay
                         visually identical to fresh ones — "called" is surfaced in the main panel,
                         not the sidebar. */}
@@ -1929,6 +2001,16 @@ export default function HarmoniaOS() {
                         </a>
                       </>
                     ):null}
+                    {(()=>{ const owner=claimedLeads[active.id]; const mine=owner===callerName; return (
+                      <button onClick={()=>toggleClaim(active.id)}
+                        title={owner?(mine?"Claimed by you — click to release":`Claimed by ${owner} — click to take over`):"Claim this lead as yours"}
+                        style={{marginLeft:2,padding:"2px 10px",borderRadius:100,fontSize:10,fontWeight:600,cursor:"pointer",
+                          border:`0.75px solid ${owner?(mine?C.accent:C.purple):C.border}`,
+                          background:owner?((mine?C.accent:C.purple)+"12"):"transparent",
+                          color:owner?(mine?C.accent:C.purple):C.t3,transition:"all 0.15s"}}>
+                        {owner?(mine?"★ Mine":`★ ${owner}`):"☆ Claim"}
+                      </button>
+                    ); })()}
                   </div>
                   <div style={{fontSize:18,fontWeight:500,letterSpacing:"-0.01em",marginBottom:3,
                     whiteSpace:"normal",wordBreak:"break-word"}}>
@@ -1951,12 +2033,6 @@ export default function HarmoniaOS() {
                         </div>
                         <div style={{fontSize:10,color:C.green,marginTop:1}}>live call</div>
                       </div>
-                      <button onClick={()=>{setCallRun(false);setCallSecs(0);setDispoBarOpen(true);}}
-                        style={{padding:"6px 14px",borderRadius:6,
-                          border:`0.75px solid ${C.red}`,background:"transparent",
-                          color:C.red,fontSize:11,fontWeight:500,cursor:"pointer"}}>
-                        End Call
-                      </button>
                     </>
                   )}
                   {(()=>{
@@ -2604,7 +2680,17 @@ export default function HarmoniaOS() {
                 {tab==="script"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:0}}>
                     {/* Toggle buttons for Call History & Notes */}
-                    <div style={{display:"flex",gap:6,marginBottom:12}}>
+                    <div style={{display:"flex",gap:6,marginBottom:12,alignItems:"center"}}>
+                      <div style={{display:"flex",border:`0.75px solid ${C.border}`,borderRadius:100,overflow:"hidden",marginRight:2}}>
+                        {[{id:"phases",l:"Phases"},{id:"blank",l:"Blank Canvas"}].map(m=>(
+                          <button key={m.id} onClick={()=>{setScriptMode(m.id);try{localStorage.setItem("harmonia-script-mode",m.id);}catch{}}}
+                            style={{padding:"4px 12px",border:"none",fontSize:10,fontWeight:500,cursor:"pointer",
+                              background:scriptMode===m.id?C.t1:"transparent",
+                              color:scriptMode===m.id?C.bg:C.t2,transition:"all 0.15s"}}>
+                            {m.l}
+                          </button>
+                        ))}
+                      </div>
                       <button onClick={()=>setScriptShowHistory(v=>!v)}
                         style={{padding:"4px 12px",borderRadius:100,fontSize:10,fontWeight:500,
                           border:`0.75px solid ${scriptShowHistory?C.t1:C.border}`,
@@ -2726,7 +2812,89 @@ export default function HarmoniaOS() {
                       </div>
                     )}
 
-                    {!hasAnyScripts ? (
+                    {scriptMode==="blank" ? (()=>{
+                      const key = callerName || "_default";
+                      const blankRaw = blankScripts[key] || "";
+                      const ctx = buildPlaceholderContext(active, callerName);
+                      const VARS = [
+                        {token:"{biz}",    label:"Salon name",   val:ctx.biz},
+                        {token:"{owner}",  label:"Owner name",   val:ctx.owner},
+                        {token:"{city}",   label:"City",         val:ctx.city},
+                        {token:"{caller}", label:"Your name",    val:ctx.caller},
+                        {token:"{leak}",   label:"Revenue leak", val:ctx.leak},
+                        {token:"{chairs}", label:"Chairs",       val:ctx.chairs==="your"?"":ctx.chairs},
+                      ];
+                      const updateBlank = (val) => setBlankScripts(prev => {
+                        const next = {...prev, [key]: val};
+                        try { localStorage.setItem("harmonia-blank-scripts", JSON.stringify(next)); } catch {}
+                        return next;
+                      });
+                      const insertToken = (token) => {
+                        const ta = blankRef.current;
+                        let start = blankRaw.length, end = blankRaw.length;
+                        if (ta && document.activeElement === ta) { start = ta.selectionStart; end = ta.selectionEnd; }
+                        const nextVal = blankRaw.slice(0,start) + token + blankRaw.slice(end);
+                        updateBlank(nextVal);
+                        requestAnimationFrame(()=>{ if(ta){ ta.focus(); const p=start+token.length; ta.setSelectionRange(p,p); } });
+                      };
+                      return (
+                        <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:10,color:C.t3,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>
+                              Write your script — drag variables in from the right
+                            </div>
+                            <textarea
+                              ref={blankRef}
+                              value={blankRaw}
+                              onChange={e=>updateBlank(e.target.value)}
+                              onDragOver={e=>e.preventDefault()}
+                              onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");if(t)insertToken(t);}}
+                              placeholder={"Start typing your script here…\n\ne.g. Hi {owner}, is this the owner of {biz}? I'm {caller} — I help salons in {city} stop missing new-client calls."}
+                              style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
+                                padding:"14px 16px",fontSize:14,color:C.t1,lineHeight:1.7,background:C.bg,
+                                outline:"none",resize:"vertical",fontFamily:F}}
+                            />
+                            {blankRaw.trim() && (
+                              <div style={{marginTop:12}}>
+                                <div style={{fontSize:10,color:C.t3,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>
+                                  Live preview — what to read
+                                </div>
+                                <div style={{border:`0.75px solid ${C.border}`,borderRadius:10,padding:"14px 16px",
+                                  background:C.surface,fontSize:14,lineHeight:1.7,color:C.t1,whiteSpace:"pre-wrap"}}>
+                                  {fillPlaceholders(formatScriptLines(blankRaw), ctx)}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{width:200,flexShrink:0,border:`0.75px solid ${C.border}`,borderRadius:10,
+                            padding:"12px",background:C.surface,position:"sticky",top:0}}>
+                            <div style={{fontSize:10,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                              letterSpacing:".05em",marginBottom:4}}>Dynamic Variables</div>
+                            <div style={{fontSize:10,color:C.t3,marginBottom:10,lineHeight:1.4}}>
+                              Drag onto your script, or click to insert at the cursor
+                            </div>
+                            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                              {VARS.map(v=>(
+                                <div key={v.token} draggable
+                                  onDragStart={e=>e.dataTransfer.setData("text/plain",v.token)}
+                                  onClick={()=>insertToken(v.token)}
+                                  title={v.val?`This lead: ${v.val}`:"No value for this lead yet"}
+                                  style={{display:"flex",flexDirection:"column",gap:2,cursor:"grab",
+                                    border:`0.75px solid ${C.borderMd}`,borderRadius:8,padding:"7px 10px",
+                                    background:C.bg,transition:"border-color 0.12s"}}
+                                  onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;}}
+                                  onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderMd;}}>
+                                  <span style={{fontSize:12,fontWeight:500,color:C.t1}}>{v.label}</span>
+                                  <span style={{fontSize:10,color:C.accent,fontFamily:FM}}>{v.token}</span>
+                                  {v.val?<span style={{fontSize:10,color:C.t2,whiteSpace:"nowrap",overflow:"hidden",
+                                    textOverflow:"ellipsis"}}>= {v.val}</span>:null}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })() : !hasAnyScripts ? (
                       <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
                         No scripts found for this vertical.<br/>
                         Add rows to the Scripts tab in your Google Sheet.
@@ -3795,13 +3963,15 @@ export default function HarmoniaOS() {
         )}
       </div>
 
-      {/* Persistent "Log disposition" button */}
-      {active&&!dispoBarOpen&&!callRun&&sessRun&&(
+      {/* Persistent "Log disposition" button — also available mid-call, since the call is ended
+          on the phone (no in-app End Call button). Opening it freezes the live-call timer. */}
+      {active&&!dispoBarOpen&&sessRun&&(
         <button onClick={openDispoBar}
           style={{position:"fixed",bottom:16,right:20,padding:"6px 16px",borderRadius:100,
-            border:`0.75px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,
+            border:`0.75px solid ${callRun?C.red:C.border}`,background:C.bg,
+            color:callRun?C.red:C.t2,fontSize:11,fontWeight:500,
             cursor:"pointer",boxShadow:"0 2px 10px rgba(28,61,82,0.07)",zIndex:100}}>
-          Log disposition
+          {callRun?"End & log call":"Log disposition"}
         </button>
       )}
 
