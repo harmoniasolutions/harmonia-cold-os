@@ -864,6 +864,47 @@ export default function HarmoniaOS() {
   const [blankScripts, setBlankScripts] = useState(() => { // { [callerName]: rawText }
     try { return JSON.parse(localStorage.getItem("harmonia-blank-scripts") || "{}"); } catch { return {}; }
   });
+  // Blank-canvas font size (px) — per-device, applies to both the editor and the live preview
+  const [blankFontSize, setBlankFontSize] = useState(() => {
+    try { return Number(localStorage.getItem("harmonia-blank-font-size")) || 14; } catch { return 14; }
+  });
+  const changeBlankFontSize = (delta) => setBlankFontSize(prev => {
+    const next = Math.min(28, Math.max(11, prev + delta));
+    try { localStorage.setItem("harmonia-blank-font-size", String(next)); } catch {}
+    return next;
+  });
+  // Blank-canvas display: false = pseudocode (editable, shows {tokens}), true = filled values (read-only)
+  const [blankShowValues, setBlankShowValues] = useState(() => {
+    try { return localStorage.getItem("harmonia-blank-show-values") === "1"; } catch { return false; }
+  });
+  const toggleBlankShowValues = () => setBlankShowValues(prev => {
+    const next = !prev;
+    try { localStorage.setItem("harmonia-blank-show-values", next ? "1" : "0"); } catch {}
+    return next;
+  });
+  // Blank-canvas font color (per-device)
+  const [blankFontColor, setBlankFontColor] = useState(() => {
+    try { return localStorage.getItem("harmonia-blank-font-color") || C.t1; } catch { return C.t1; }
+  });
+  const changeBlankFontColor = (val) => setBlankFontColor(() => {
+    try { localStorage.setItem("harmonia-blank-font-color", val); } catch {}
+    return val;
+  });
+  // Blank-canvas font family (per-device)
+  const BLANK_FONTS = [
+    { id:"sans",   label:"Sans",       css:F },
+    { id:"mono",   label:"Mono",       css:FM },
+    { id:"serif",  label:"Serif",      css:"'Iowan Old Style', Georgia, 'Times New Roman', serif" },
+    { id:"rounded",label:"Rounded",    css:"'SF Pro Rounded', ui-rounded, 'Nunito', system-ui, sans-serif" },
+    { id:"system", label:"System",     css:"system-ui, -apple-system, sans-serif" },
+  ];
+  const [blankFontFamily, setBlankFontFamily] = useState(() => {
+    try { return localStorage.getItem("harmonia-blank-font-family") || F; } catch { return F; }
+  });
+  const changeBlankFontFamily = (css) => setBlankFontFamily(() => {
+    try { localStorage.setItem("harmonia-blank-font-family", css); } catch {}
+    return css;
+  });
   const blankRef = useRef(null);
 
   // Lead ownership — a caller claims a lead as "mine" (auto on demo booked, or manual)
@@ -2884,32 +2925,84 @@ export default function HarmoniaOS() {
                       return (
                         <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
                           <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:10,color:C.t3,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>
-                              Write your script — drag variables in from the right
-                            </div>
-                            <textarea
-                              ref={blankRef}
-                              value={blankRaw}
-                              onChange={e=>updateBlank(e.target.value)}
-                              onDragOver={e=>e.preventDefault()}
-                              onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");if(t)insertToken(t);}}
-                              placeholder={"Start typing your script here…\n\ne.g. Hi {owner}, is this the owner of {biz}? I'm {caller} — I help salons in {city} stop missing new-client calls."}
-                              style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
-                                padding:"14px 16px",fontSize:14,color:C.t1,lineHeight:1.7,background:C.bg,
-                                outline:"none",resize:"vertical",fontFamily:F}}
-                            />
-                            {blankRaw.trim() && (
-                              <div style={{marginTop:12}}>
-                                <div style={{fontSize:10,color:C.t3,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>
-                                  Live preview — what to read
+                            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:6,flexWrap:"wrap"}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                <div style={{fontSize:10,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>
+                                  {blankShowValues ? "Read — values filled in" : "Write your script — drag variables in from the right"}
                                 </div>
-                                <div style={{border:`0.75px solid ${C.border}`,borderRadius:10,padding:"14px 16px",
-                                  background:C.surface,fontSize:14,lineHeight:1.7,color:C.t1,whiteSpace:"pre-wrap"}}>
-                                  {fillPlaceholders(formatScriptLines(blankRaw), ctx)}
+                                <div style={{display:"flex",border:`0.75px solid ${C.border}`,borderRadius:100,overflow:"hidden"}}>
+                                  {[{v:false,l:"Variables"},{v:true,l:"Values"}].map(m=>(
+                                    <button key={m.l} onClick={()=>{ if(blankShowValues!==m.v) toggleBlankShowValues(); }}
+                                      title={m.v?"Show the dynamic values filled in for this lead":"Show the {pseudocode} variables — editable"}
+                                      style={{padding:"3px 11px",border:"none",fontSize:10,fontWeight:500,cursor:"pointer",
+                                        background:blankShowValues===m.v?C.t1:"transparent",
+                                        color:blankShowValues===m.v?C.bg:C.t2,transition:"all 0.15s"}}>
+                                      {m.l}
+                                    </button>
+                                  ))}
                                 </div>
                               </div>
+                              <div style={{display:"flex",alignItems:"center",gap:12,flexShrink:0,flexWrap:"wrap"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>Font</span>
+                                  <select value={blankFontFamily} onChange={e=>changeBlankFontFamily(e.target.value)}
+                                    title="Font style"
+                                    style={{border:`0.75px solid ${C.borderMd}`,borderRadius:6,padding:"3px 6px",
+                                      fontSize:11,background:C.bg,color:C.t2,cursor:"pointer",fontFamily:F,outline:"none"}}>
+                                    {BLANK_FONTS.map(f=>(
+                                      <option key={f.id} value={f.css} style={{fontFamily:f.css}}>{f.label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>Color</span>
+                                  <input type="color" value={blankFontColor} onChange={e=>changeBlankFontColor(e.target.value)}
+                                    title="Text color"
+                                    style={{width:26,height:24,padding:0,border:`0.75px solid ${C.borderMd}`,
+                                      borderRadius:6,background:C.bg,cursor:"pointer"}} />
+                                  {blankFontColor.toLowerCase()!==C.t1.toLowerCase() && (
+                                    <button onClick={()=>changeBlankFontColor(C.t1)} title="Reset to default color"
+                                      style={{border:"none",background:"transparent",color:C.t3,cursor:"pointer",
+                                        fontSize:10,textDecoration:"underline",fontFamily:F,padding:0}}>reset</button>
+                                  )}
+                                </div>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>Text size</span>
+                                  <button onClick={()=>changeBlankFontSize(-1)} title="Smaller text"
+                                    style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
+                                      background:C.bg,color:C.t2,cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:F,
+                                      display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>A−</button>
+                                  <span style={{fontSize:10,color:C.t3,fontFamily:FM,minWidth:22,textAlign:"center"}}>{blankFontSize}</span>
+                                  <button onClick={()=>changeBlankFontSize(1)} title="Larger text"
+                                    style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
+                                      background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
+                                      display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>A+</button>
+                                </div>
+                              </div>
+                            </div>
+                            {blankShowValues ? (
+                              <div style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
+                                padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.surface,
+                                whiteSpace:"pre-wrap",fontFamily:blankFontFamily}}>
+                                {blankRaw.trim()
+                                  ? fillPlaceholders(formatScriptLines(blankRaw), ctx)
+                                  : <span style={{color:C.t3}}>Nothing written yet — switch to Variables to write your script.</span>}
+                              </div>
+                            ) : (
+                              <textarea
+                                ref={blankRef}
+                                value={blankRaw}
+                                onChange={e=>updateBlank(e.target.value)}
+                                onDragOver={e=>e.preventDefault()}
+                                onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");if(t)insertToken(t);}}
+                                placeholder={"Start typing your script here…\n\ne.g. Hi {owner}, is this the owner of {biz}? I'm {caller} — I help salons in {city} stop missing new-client calls."}
+                                style={{width:"100%",minHeight:300,border:`0.75px solid ${C.border}`,borderRadius:10,
+                                  padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.bg,
+                                  outline:"none",resize:"vertical",fontFamily:blankFontFamily}}
+                              />
                             )}
                           </div>
+                          {!blankShowValues && (
                           <div style={{width:200,flexShrink:0,border:`0.75px solid ${C.border}`,borderRadius:10,
                             padding:"12px",background:C.surface,position:"sticky",top:0}}>
                             <div style={{fontSize:10,fontWeight:600,color:C.t3,textTransform:"uppercase",
@@ -2936,6 +3029,7 @@ export default function HarmoniaOS() {
                               ))}
                             </div>
                           </div>
+                          )}
                         </div>
                       );
                     })() : !hasAnyScripts ? (
