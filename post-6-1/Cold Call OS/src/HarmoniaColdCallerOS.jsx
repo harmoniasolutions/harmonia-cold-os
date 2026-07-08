@@ -1242,6 +1242,24 @@ export default function HarmoniaOS() {
     }, 800);
   }, [offerCanvas, callerName]);
 
+  // Live-refresh "The Offer" for viewers — poll the team settings sheet every 30s so Javi's
+  // edits appear without a reload. Skipped for Javi (he's the author; never clobber his typing).
+  useEffect(() => {
+    if (callerName === "Javi") return;
+    let cancelled = false;
+    const pull = async () => {
+      const rows = await fetchSettingsSheet();
+      if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+      const off = parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OFFER_KEY));
+      if (off && typeof off.text === "string") {
+        try { localStorage.setItem("harmonia-team-offer", JSON.stringify(off)); } catch {}
+        setOfferCanvas(prev => prev === off.text ? prev : off.text);
+      }
+    };
+    const id = setInterval(pull, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [callerName]);
+
   const hasDiscoveryInput = Object.keys(discoveryResponses).length > 0;
   const painSignalCount = Object.values(discoveryResponses).filter(v=>v==="pain").length;
   const pitchUnlocked = painSignalCount >= 2;
