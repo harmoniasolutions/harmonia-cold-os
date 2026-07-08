@@ -905,18 +905,16 @@ export default function HarmoniaOS() {
     try { localStorage.setItem("harmonia-blank-font-family", css); } catch {}
     return css;
   });
-  // Blank-canvas height (px) — user drags the resize handle; persists across the Variables/Values
+  // Blank-canvas height (px) — user steps it taller/shorter; persists across the Variables/Values
   // toggle and reloads so the size sticks in both views.
   const [blankCanvasHeight, setBlankCanvasHeight] = useState(() => {
     try { return Number(localStorage.getItem("harmonia-blank-canvas-height")) || 300; } catch { return 300; }
   });
-  const saveCanvasHeight = (el) => {
-    if (!el) return;
-    const h = Math.round(el.getBoundingClientRect().height);
-    if (!h || h === blankCanvasHeight) return;
-    setBlankCanvasHeight(h);
-    try { localStorage.setItem("harmonia-blank-canvas-height", String(h)); } catch {}
-  };
+  const changeBlankCanvasHeight = (delta) => setBlankCanvasHeight(prev => {
+    const next = Math.min(900, Math.max(160, prev + delta));
+    try { localStorage.setItem("harmonia-blank-canvas-height", String(next)); } catch {}
+    return next;
+  });
   const blankRef = useRef(null);
 
   // Lead ownership — a caller claims a lead as "mine" (auto on demo booked, or manual)
@@ -2990,13 +2988,24 @@ export default function HarmoniaOS() {
                                       background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
                                       display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>A+</button>
                                 </div>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".05em"}}>Height</span>
+                                  <button onClick={()=>changeBlankCanvasHeight(-60)} title="Shorter canvas"
+                                    style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
+                                      background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
+                                      display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>−</button>
+                                  <span style={{fontSize:10,color:C.t3,fontFamily:FM,minWidth:26,textAlign:"center"}}>{blankCanvasHeight}</span>
+                                  <button onClick={()=>changeBlankCanvasHeight(60)} title="Taller canvas"
+                                    style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
+                                      background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
+                                      display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>+</button>
+                                </div>
                               </div>
                             </div>
                             {blankShowValues ? (
-                              <div onMouseUp={e=>saveCanvasHeight(e.currentTarget)}
-                                style={{width:"100%",height:blankCanvasHeight,minHeight:160,border:`0.75px solid ${C.border}`,borderRadius:10,
+                              <div style={{width:"100%",height:blankCanvasHeight,border:`0.75px solid ${C.border}`,borderRadius:10,
                                 padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.surface,
-                                whiteSpace:"pre-wrap",fontFamily:blankFontFamily,resize:"vertical",overflow:"auto"}}>
+                                whiteSpace:"pre-wrap",fontFamily:blankFontFamily,overflow:"auto"}}>
                                 {blankRaw.trim()
                                   ? fillPlaceholders(formatScriptLines(blankRaw), ctx)
                                   : <span style={{color:C.t3}}>Nothing written yet — switch to Variables to write your script.</span>}
@@ -3006,13 +3015,12 @@ export default function HarmoniaOS() {
                                 ref={blankRef}
                                 value={blankRaw}
                                 onChange={e=>updateBlank(e.target.value)}
-                                onMouseUp={e=>saveCanvasHeight(e.currentTarget)}
                                 onDragOver={e=>e.preventDefault()}
                                 onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");if(t)insertToken(t);}}
                                 placeholder={"Start typing your script here…\n\ne.g. Hi {owner}, is this the owner of {biz}? I'm {caller} — I help salons in {city} stop missing new-client calls."}
-                                style={{width:"100%",height:blankCanvasHeight,minHeight:160,border:`0.75px solid ${C.border}`,borderRadius:10,
+                                style={{width:"100%",height:blankCanvasHeight,border:`0.75px solid ${C.border}`,borderRadius:10,
                                   padding:"14px 16px",fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,background:C.bg,
-                                  outline:"none",resize:"vertical",fontFamily:blankFontFamily}}
+                                  outline:"none",resize:"none",fontFamily:blankFontFamily}}
                               />
                             )}
                           </div>
