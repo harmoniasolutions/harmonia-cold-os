@@ -868,8 +868,13 @@ export default function HarmoniaOS() {
   const [blankFontSize, setBlankFontSize] = useState(() => {
     try { return Number(localStorage.getItem("harmonia-blank-font-size")) || 14; } catch { return 14; }
   });
+  const applyBlankFontSize = (n) => setBlankFontSize(() => {
+    const next = Math.max(1, Math.round(n) || 1);   // no upper limit — type whatever you want
+    try { localStorage.setItem("harmonia-blank-font-size", String(next)); } catch {}
+    return next;
+  });
   const changeBlankFontSize = (delta) => setBlankFontSize(prev => {
-    const next = Math.min(28, Math.max(11, prev + delta));
+    const next = Math.max(1, prev + delta);
     try { localStorage.setItem("harmonia-blank-font-size", String(next)); } catch {}
     return next;
   });
@@ -910,8 +915,13 @@ export default function HarmoniaOS() {
   const [blankCanvasHeight, setBlankCanvasHeight] = useState(() => {
     try { return Number(localStorage.getItem("harmonia-blank-canvas-height")) || 300; } catch { return 300; }
   });
+  const applyBlankCanvasHeight = (n) => setBlankCanvasHeight(() => {
+    const next = Math.max(80, Math.round(n) || 80);   // no upper limit — go as tall as you want
+    try { localStorage.setItem("harmonia-blank-canvas-height", String(next)); } catch {}
+    return next;
+  });
   const changeBlankCanvasHeight = (delta) => setBlankCanvasHeight(prev => {
-    const next = Math.min(900, Math.max(160, prev + delta));
+    const next = Math.max(80, prev + delta);
     try { localStorage.setItem("harmonia-blank-canvas-height", String(next)); } catch {}
     return next;
   });
@@ -2982,7 +2992,10 @@ export default function HarmoniaOS() {
                                     style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
                                       background:C.bg,color:C.t2,cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:F,
                                       display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>A−</button>
-                                  <span style={{fontSize:10,color:C.t3,fontFamily:FM,minWidth:22,textAlign:"center"}}>{blankFontSize}</span>
+                                  <input type="number" value={blankFontSize} title="Type any font size"
+                                    onChange={e=>{ if(e.target.value!=="") applyBlankFontSize(Number(e.target.value)); }}
+                                    style={{width:44,height:24,textAlign:"center",fontSize:10,fontFamily:FM,color:C.t2,
+                                      border:`0.75px solid ${C.borderMd}`,borderRadius:6,background:C.bg,outline:"none",padding:"0 4px"}} />
                                   <button onClick={()=>changeBlankFontSize(1)} title="Larger text"
                                     style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
                                       background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
@@ -2994,7 +3007,10 @@ export default function HarmoniaOS() {
                                     style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
                                       background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
                                       display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>−</button>
-                                  <span style={{fontSize:10,color:C.t3,fontFamily:FM,minWidth:26,textAlign:"center"}}>{blankCanvasHeight}</span>
+                                  <input type="number" value={blankCanvasHeight} title="Type any canvas height (px)"
+                                    onChange={e=>{ if(e.target.value!=="") applyBlankCanvasHeight(Number(e.target.value)); }}
+                                    style={{width:52,height:24,textAlign:"center",fontSize:10,fontFamily:FM,color:C.t2,
+                                      border:`0.75px solid ${C.borderMd}`,borderRadius:6,background:C.bg,outline:"none",padding:"0 4px"}} />
                                   <button onClick={()=>changeBlankCanvasHeight(60)} title="Taller canvas"
                                     style={{width:24,height:24,borderRadius:6,border:`0.75px solid ${C.borderMd}`,
                                       background:C.bg,color:C.t2,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:F,
