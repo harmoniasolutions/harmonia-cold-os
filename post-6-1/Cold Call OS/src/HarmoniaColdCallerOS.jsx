@@ -2025,16 +2025,6 @@ export default function HarmoniaOS() {
 
                 {/* Call controls */}
                 <div style={{display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
-                  {callRun&&(
-                    <>
-                      <div style={{textAlign:"right"}}>
-                        <div style={{fontSize:22,fontWeight:300,fontFamily:FM,color:C.green}}>
-                          {fmt(callSecs)}
-                        </div>
-                        <div style={{fontSize:10,color:C.green,marginTop:1}}>live call</div>
-                      </div>
-                    </>
-                  )}
                   {(()=>{
                     const eff=leadStatusEffective(active);
                     const calledBefore=(callHistory[active.id]?.length||0)>0;
@@ -2104,38 +2094,49 @@ export default function HarmoniaOS() {
                         </div>
                       );
                     }
-                    // During call — show "Try another" dropdown if multiple phones
-                    if(callRun&&phones.length>1) return (
-                      <div style={{position:"relative",display:"inline-block"}}>
-                        <button onClick={()=>setPhoneMenuOpen(v=>!v)}
-                          style={{padding:"5px 12px",borderRadius:6,
-                            border:`0.75px solid ${C.border}`,background:"transparent",
-                            color:C.t2,fontSize:11,cursor:"pointer"}}>
-                          Try another #
-                        </button>
-                        {phoneMenuOpen&&(
-                          <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
-                            background:C.bg,border:`0.75px solid ${C.border}`,borderRadius:8,
-                            boxShadow:"0 2px 12px rgba(28,61,82,0.08)",zIndex:50,minWidth:200,
-                            overflow:"hidden"}}>
-                            {phones.filter(p=>p.number!==lastDialedPhone).map((p,i,arr)=>(
-                              <button key={i} onClick={()=>{
-                                  setLastDialedPhone(p.number);setPhoneMenuOpen(false);
-                                  const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.number)}`;
-                                  fetch(url,{method:"GET",mode:"no-cors"}).catch(()=>{});
-                                }}
-                                style={{display:"block",width:"100%",textAlign:"left",
-                                  padding:"9px 14px",border:"none",background:"transparent",
-                                  cursor:"pointer",fontSize:12,color:C.t1,
-                                  borderBottom:i<arr.length-1?`0.75px solid ${C.border}`:"none"}}
-                                onMouseEnter={e=>e.currentTarget.style.background=C.surface}
-                                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                                <span style={{fontWeight:500}}>{p.label}</span>
-                                <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
-                              </button>
-                            ))}
+                    // During the call the Dial button is replaced by a filled "End Call" button;
+                    // pressing it brings up the dispositions. (The call is ended on the phone.)
+                    if(callRun) return (
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {phones.length>1&&(
+                          <div style={{position:"relative",display:"inline-block"}}>
+                            <button onClick={()=>setPhoneMenuOpen(v=>!v)}
+                              style={{padding:"7px 12px",borderRadius:8,
+                                border:`0.75px solid ${C.border}`,background:"transparent",
+                                color:C.t2,fontSize:11,cursor:"pointer"}}>
+                              Try another #
+                            </button>
+                            {phoneMenuOpen&&(
+                              <div style={{position:"absolute",top:"100%",right:0,marginTop:4,
+                                background:C.bg,border:`0.75px solid ${C.border}`,borderRadius:8,
+                                boxShadow:"0 2px 12px rgba(28,61,82,0.08)",zIndex:50,minWidth:200,
+                                overflow:"hidden"}}>
+                                {phones.filter(p=>p.number!==lastDialedPhone).map((p,i,arr)=>(
+                                  <button key={i} onClick={()=>{
+                                      setLastDialedPhone(p.number);setPhoneMenuOpen(false);
+                                      const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.number)}`;
+                                      fetch(url,{method:"GET",mode:"no-cors"}).catch(()=>{});
+                                    }}
+                                    style={{display:"block",width:"100%",textAlign:"left",
+                                      padding:"9px 14px",border:"none",background:"transparent",
+                                      cursor:"pointer",fontSize:12,color:C.t1,
+                                      borderBottom:i<arr.length-1?`0.75px solid ${C.border}`:"none"}}
+                                    onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+                                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                    <span style={{fontWeight:500}}>{p.label}</span>
+                                    <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
+                        <button onClick={openDispoBar}
+                          style={{padding:"7px 22px",borderRadius:8,border:`0.75px solid ${C.red}`,
+                            background:C.red,color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",
+                            transition:"all 0.15s"}}>
+                          End Call
+                        </button>
                       </div>
                     );
                     return null;
@@ -3963,15 +3964,14 @@ export default function HarmoniaOS() {
         )}
       </div>
 
-      {/* Persistent "Log disposition" button — also available mid-call, since the call is ended
-          on the phone (no in-app End Call button). Opening it freezes the live-call timer. */}
-      {active&&!dispoBarOpen&&sessRun&&(
+      {/* Persistent "Log disposition" button — for re-logging when not on a live call
+          (during a call, the header "End Call" button opens the dispositions). */}
+      {active&&!dispoBarOpen&&!callRun&&sessRun&&(
         <button onClick={openDispoBar}
           style={{position:"fixed",bottom:16,right:20,padding:"6px 16px",borderRadius:100,
-            border:`0.75px solid ${callRun?C.red:C.border}`,background:C.bg,
-            color:callRun?C.red:C.t2,fontSize:11,fontWeight:500,
+            border:`0.75px solid ${C.border}`,background:C.bg,color:C.t2,fontSize:11,fontWeight:500,
             cursor:"pointer",boxShadow:"0 2px 10px rgba(28,61,82,0.07)",zIndex:100}}>
-          {callRun?"End & log call":"Log disposition"}
+          Log disposition
         </button>
       )}
 
