@@ -1103,6 +1103,15 @@ export default function HarmoniaOS() {
       setPhaseOrder(reconcilePhases(chosen.phaseOrder));
       setCollapsedPhases(new Set(Array.isArray(chosen.collapsedPhases) ? chosen.collapsedPhases : []));
       setOfferCollapsed(chosen.offerCollapsed === true);
+      // Saved standards sync per-caller. Only overwrite if the chosen blob carries them, so a
+      // pre-feature server row (no blankVersions) never wipes this device's local standards.
+      if (Array.isArray(chosen.blankVersions)) {
+        setBlankVersions(prev => {
+          const next = { ...prev, [name]: chosen.blankVersions };
+          try { localStorage.setItem("harmonia-blank-versions", JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
     } else {
       setCallerScripts(readLocal(`harmonia-scripts-${name}`) || {});   // legacy per-caller scripts
       if (isInitial) {                                                  // keep this device's existing layout once
@@ -1274,11 +1283,12 @@ export default function HarmoniaOS() {
   useEffect(() => {
     if (!callerName || !personalHydrated.current) return;
     const blob = { version:1, updated_at:new Date().toISOString(),
-      scripts: callerScripts, phaseOrder, collapsedPhases:[...collapsedPhases], offerCollapsed };
+      scripts: callerScripts, phaseOrder, collapsedPhases:[...collapsedPhases], offerCollapsed,
+      blankVersions: blankVersions[callerName] || [] };
     try { localStorage.setItem(`harmonia-settings-${callerName}`, JSON.stringify(blob)); } catch {}
     if (personalSaveTimer.current) clearTimeout(personalSaveTimer.current);
     personalSaveTimer.current = setTimeout(() => postSettings(callerName, blob), 800);
-  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, callerName]);
+  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, blankVersions, callerName]);
 
   useEffect(() => {
     if (!objectionsHydrated.current) return;
