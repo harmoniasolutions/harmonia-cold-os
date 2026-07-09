@@ -204,7 +204,7 @@ const OUTCOMES = {
   robo_responder: { label:"Robo responder", color:C.teal,    short:"Robo", ghl:null,                  discord:null                                                    },
   owner:          { label:"Owner",          color:C.t2,      short:"Own",  ghl:null,                  discord:null                                                    },
   number_error:   { label:"Number Error",   color:C.amber,   short:"Err",  ghl:null,                  discord:null                                                    },
-  no_answer:      { label:"No answer/VM",   color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
+  no_answer:      { label:"No Answer",      color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
   dnc:            { label:"Do not call",    color:C.red,     short:"DNC",  ghl:"Do Not Contact",      discord:null                                                    },
@@ -214,7 +214,7 @@ const OUTCOMES = {
 const OFFER_COLORS = ["#F97316","#10B981","#3B82F6","#8B5CF6","#EC4899","#F59E0B","#14B8A6","#EF4444"];
 
 const OUTCOME_ROWS = [
-  ["demo_booked", "followup_sent", "owner"],
+  ["demo_booked", "followup_sent", "no_answer"],
   ["voicemail", "gatekeeper", "robo_responder"],
   ["not_qualified", "dnc", "number_error"],
 ];
@@ -1578,14 +1578,29 @@ export default function HarmoniaOS() {
     setDispoBarOpen(true);
   }
 
+  // True when an outcome can be logged with the fields we already have — i.e. it needs no
+  // extra required input (prospect email / callback date-time). Simple dispositions like
+  // No Answer, Voicemail, Gatekeeper or DNC pass immediately, so pressing them = one-click log.
+  function outcomeReady(outcome) {
+    const meta = OUTCOMES[outcome];
+    if (!meta) return false;
+    if (meta.needsEmail && !captureEmail.trim()) return false;
+    if (meta.needsDateTime && (!callbackDate || !callbackTime)) return false;
+    if (meta.needsBooking && !captureEmail.trim()) return false;
+    return true;
+  }
+
   function selectOutcome(outcome) {
-    setPendingOutcome(outcome);
     if (outcome === "callback") {
       const def = defaultCallbackDateTime();
       setCallbackDate(def.date);
       setCallbackTime(def.time);
     }
     setCalendlyOpened(false);
+    // One-click logging: dispositions needing no extra input are submitted the moment they're
+    // pressed. Ones that need an email (demo/Loom/info) or a callback time still open the form.
+    if (outcomeReady(outcome)) { confirmOutcome(outcome); return; }
+    setPendingOutcome(outcome);
   }
 
   function canSubmit() {
@@ -1597,9 +1612,11 @@ export default function HarmoniaOS() {
     return true;
   }
 
-  async function confirmOutcome(){
-    if(!active||!pendingOutcome||!canSubmit()) return;
-    const outcome = pendingOutcome;
+  async function confirmOutcome(explicitOutcome){
+    // Called either from a one-click disposition (explicitOutcome is the outcome string) or as a
+    // button onClick handler (first arg is the event → ignore it and fall back to pendingOutcome).
+    const outcome = typeof explicitOutcome === "string" ? explicitOutcome : pendingOutcome;
+    if(!active||!outcome||!outcomeReady(outcome)) return;
     const meta = OUTCOMES[outcome];
     const dur=callSecs; setCallRun(false); setCallSecs(0);
     const finalPhaseTimes = {...phaseTimes, [callPhase]: phaseTimes[callPhase] + phaseSecs};
