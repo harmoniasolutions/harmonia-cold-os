@@ -1649,8 +1649,9 @@ export default function HarmoniaOS() {
     setPhaseSecs(0);
 
     // Script-used signal — a snapshot of what was actually on screen, not a manual dropdown:
-    //  • Blank canvas → save the raw canvas script the caller was working from.
-    //  • Phases       → snapshot the active opener option (variant id + its name).
+    //  • Blank canvas → save the raw canvas script the caller was working from (tokens kept raw).
+    //  • Phases       → FULL snapshot: active opener + every phase/section selection + flipped
+    //                   A/B toggles, so the sheet records exactly the option set that was live.
     const scriptUsed = (() => {
       if (scriptMode === "blank") {
         const canvas = (blankScripts[callerName || "_default"] || "").trim();
@@ -1660,9 +1661,22 @@ export default function HarmoniaOS() {
       const script = curScripts[vKey];
       const opener = script?.lines?.find(l => l.type === "opener");
       const name = opener?.name || script?.name;
-      return vKey
+      const openerLabel = vKey
         ? (name ? `${active.icp}-${vKey}: ${name}` : `${active.icp}-${vKey}`)
         : `${active.icp} phases`;
+      // Every per-phase / per-section variant pick (opener already shown in the label).
+      const sel = Object.entries(phaseSelections)
+        .filter(([k, v]) => k !== "opener" && v !== "" && v != null)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
+      // Only the A/B toggles the caller flipped to B (A is the default).
+      const ab = Object.entries(abChoice)
+        .filter(([, v]) => v === "B")
+        .map(([k]) => k)
+        .join(", ");
+      return [openerLabel, sel && `sel{${sel}}`, ab && `ab{${ab}}`]
+        .filter(Boolean)
+        .join(" · ");
     })();
 
     const objection = customObjection.trim() || objectionRaised;
