@@ -402,6 +402,27 @@ const sigPillStyle = (active, disabled) => ({
 });
 
 /* ─────────────────────────────────────────────
+   PHONE NORMALIZATION
+───────────────────────────────────────────── */
+// Normalize a raw phone to strict NANP E.164 (+1XXXXXXXXXX) — the only format Twilio's
+// <Dial> reliably connects. Sheet numbers arrive human-formatted ("(724) 728-8004",
+// "215-469-0896"), which Twilio rejects, so every dial must pass through here first.
+// Returns "" when the input can't be made callable (too few digits, junk, bad area code).
+function toE164(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim();
+  const d = s.replace(/\D/g, "");
+  let core = "";
+  if (d.length === 11 && d[0] === "1") core = d.slice(1);
+  else if (d.length === 10) core = d;
+  else if (s.startsWith("+") && d.length >= 11 && d.length <= 15) return "+" + d; // rare intl passthrough
+  else return "";
+  // NANP sanity: area-code and exchange first digit must be 2-9.
+  if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(core)) return "";
+  return "+1" + core;
+}
+
+/* ─────────────────────────────────────────────
    DATA PARSERS
 ───────────────────────────────────────────── */
 function parseLeads(rows) {
@@ -1548,21 +1569,28 @@ export default function HarmoniaOS() {
     if (lead.home_phone)      phones.push({ label: "Home",      number: lead.home_phone });
     // fallback for old data that still has single "phone" field
     if (phones.length === 0 && lead.phone) phones.push({ label: "Phone", number: lead.phone });
-    return phones;
+    // Tag each with its E.164 form + callability so the UI can flag/block un-dialable numbers.
+    return phones.map(p => { const e164 = toE164(p.number); return { ...p, e164, callable: !!e164 }; });
   }
+  // True when at least one of the lead's numbers can actually be dialed.
+  function leadHasCallableNumber(lead) { return getLeadPhones(lead).some(p => p.callable); }
 
   async function dial(lead, phoneNumber){
     if(!sessRun||callRun||leadStatusEffective(lead)!=="queued"||!callerName) return;
     const num = phoneNumber || getLeadPhones(lead)[0]?.number;
     if (!num) return;
+    // Twilio only connects strict E.164 — skip un-normalizable numbers instead of firing a
+    // doomed call that the caller would have to mark "Number Error".
+    const e164 = toE164(num);
+    if (!e164) { console.warn("[Harmonia] skipping un-callable number:", num); return; }
     setActive(lead);setCallRun(true);setCallSecs(0);setTab("script");setOpenObj(null);
     resetCaptureFields();
     setPhoneMenuOpen(false);
     setLastDialedPhone(num);
     setStats(s=>({...s,dials:s.dials+1}));
-    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(num)}`;
+    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(e164)}`;
     try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
-    catch(e){ console.log("Call fired:",num); }
+    catch(e){ console.log("Call fired:",e164); }
   }
 
   function openDispoBar() {
@@ -2074,6 +2102,7 @@ export default function HarmoniaOS() {
             {filtered.map(lead=>{
               const isActive=active?.id===lead.id;
               const effStatus=leadStatusEffective(lead), isDone=effStatus!=="queued";
+              const noCallable=!isDone&&!leadHasCallableNumber(lead);
               return (
                 <div key={lead.id} onClick={()=>selectLead(lead)}
                   style={{padding:"9px 14px",cursor:isDone?"default":"pointer",
@@ -2099,6 +2128,13 @@ export default function HarmoniaOS() {
                         color:claimedLeads[lead.id]===callerName?C.accent:C.purple,
                         background:(claimedLeads[lead.id]===callerName?C.accent:C.purple)+"15"}}>
                         ★ {claimedLeads[lead.id]===callerName?"Mine":claimedLeads[lead.id]}
+                      </div>
+                    )}
+                    {/* No dialable number — flag it so callers skip instead of burning a dial +
+                        a false Number-Error tag. Twilio can't connect a non-E.164 number. */}
+                    {noCallable&&(
+                      <div style={{marginTop:3,fontSize:10,fontWeight:500,color:C.amber}}>
+                        ⚠ Number not callable
                       </div>
                     )}
                     {/* Retired leads (demo booked / DNC) show a label; merely-called leads stay
@@ -2171,35 +2207,42 @@ export default function HarmoniaOS() {
                     const calledBefore=(callHistory[active.id]?.length||0)>0;
                     const canDial=sessRun&&eff==="queued"&&!!callerName;
                     const phones=getLeadPhones(active);
+                    // Only E.164-normalizable numbers connect on Twilio — everything else is a
+                    // wasted dial + a false "Number Error", so gate the dial buttons on callability.
+                    const dialable=phones.filter(p=>p.callable);
+                    const noneCallable=phones.length>0&&dialable.length===0;
+                    const primaryDialNum=(dialable[0]||phones[0])?.number;
                     if(!callRun&&!pendingOutcome) {
-                      const btnLabel=eff==="demo_booked"?"Demo booked":eff==="dnc"?"Do not call":!callerName?"Select caller":!sessRun?"Start session":calledBefore?"Dial again":"Dial";
+                      const btnLabel=eff==="demo_booked"?"Demo booked":eff==="dnc"?"Do not call":!callerName?"Select caller":!sessRun?"Start session":noneCallable?"Bad number":calledBefore?"Dial again":"Dial";
+                      const canDialNow=canDial&&!noneCallable;
                       if(phones.length<=1) return (
-                        <button onClick={()=>dial(active)}
-                          disabled={!canDial}
+                        <button onClick={()=>dial(active,primaryDialNum)}
+                          disabled={!canDialNow}
+                          title={noneCallable?`Un-callable number: ${phones[0]?.number||"—"}`:undefined}
                           style={{padding:"7px 22px",borderRadius:8,
-                            border:`0.75px solid ${canDial?C.t1:C.border}`,
-                            background:canDial?C.t1:"transparent",
-                            color:canDial?C.bg:C.t3,
+                            border:`0.75px solid ${canDialNow?C.t1:noneCallable?C.amber:C.border}`,
+                            background:canDialNow?C.t1:"transparent",
+                            color:canDialNow?C.bg:noneCallable?C.amber:C.t3,
                             fontSize:12,fontWeight:500,
-                            cursor:canDial?"pointer":"not-allowed",
+                            cursor:canDialNow?"pointer":"not-allowed",
                             transition:"all 0.15s"}}>
-                          {btnLabel}
+                          {noneCallable?"⚠ Bad number":btnLabel}
                         </button>
                       );
                       // Multiple phones — dial button + dropdown
                       return (
                         <div style={{position:"relative",display:"inline-block"}}>
                           <div style={{display:"flex",alignItems:"stretch"}}>
-                            <button onClick={()=>dial(active,phones[0].number)}
-                              disabled={!canDial}
+                            <button onClick={()=>dial(active,primaryDialNum)}
+                              disabled={!canDialNow}
                               style={{padding:"7px 16px",borderRadius:"8px 0 0 8px",
-                                border:`0.75px solid ${canDial?C.t1:C.border}`,borderRight:"none",
-                                background:canDial?C.t1:"transparent",
-                                color:canDial?C.bg:C.t3,
+                                border:`0.75px solid ${canDialNow?C.t1:noneCallable?C.amber:C.border}`,borderRight:"none",
+                                background:canDialNow?C.t1:"transparent",
+                                color:canDialNow?C.bg:noneCallable?C.amber:C.t3,
                                 fontSize:12,fontWeight:500,
-                                cursor:canDial?"pointer":"not-allowed",
+                                cursor:canDialNow?"pointer":"not-allowed",
                                 transition:"all 0.15s"}}>
-                              {btnLabel}
+                              {noneCallable?"⚠ Bad number":btnLabel}
                             </button>
                             <button onClick={()=>{ if(canDial) setPhoneMenuOpen(v=>!v); }}
                               disabled={!canDial}
@@ -2219,15 +2262,19 @@ export default function HarmoniaOS() {
                               boxShadow:"0 2px 12px rgba(28,61,82,0.08)",zIndex:50,minWidth:200,
                               overflow:"hidden"}}>
                               {phones.map((p,i)=>(
-                                <button key={i} onClick={()=>dial(active,p.number)}
+                                <button key={i} onClick={()=>{ if(p.callable) dial(active,p.number); }}
+                                  disabled={!p.callable}
+                                  title={p.callable?undefined:"Un-callable number — bad format"}
                                   style={{display:"block",width:"100%",textAlign:"left",
                                     padding:"9px 14px",border:"none",background:"transparent",
-                                    cursor:"pointer",fontSize:12,color:C.t1,
+                                    cursor:p.callable?"pointer":"not-allowed",fontSize:12,
+                                    color:p.callable?C.t1:C.t3,
                                     borderBottom:i<phones.length-1?`0.75px solid ${C.border}`:"none"}}
-                                  onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+                                  onMouseEnter={e=>{ if(p.callable) e.currentTarget.style.background=C.surface; }}
                                   onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                                   <span style={{fontWeight:500}}>{p.label}</span>
-                                  <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
+                                  <span style={{color:p.callable?C.t2:C.t3,marginLeft:8}}>{p.number}</span>
+                                  {!p.callable&&<span style={{color:C.amber,marginLeft:6,fontSize:10}}>⚠</span>}
                                 </button>
                               ))}
                             </div>
@@ -2254,18 +2301,23 @@ export default function HarmoniaOS() {
                                 overflow:"hidden"}}>
                                 {phones.filter(p=>p.number!==lastDialedPhone).map((p,i,arr)=>(
                                   <button key={i} onClick={()=>{
+                                      if(!p.callable) return;
                                       setLastDialedPhone(p.number);setPhoneMenuOpen(false);
-                                      const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.number)}`;
+                                      const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.e164)}`;
                                       fetch(url,{method:"GET",mode:"no-cors"}).catch(()=>{});
                                     }}
+                                    disabled={!p.callable}
+                                    title={p.callable?undefined:"Un-callable number — bad format"}
                                     style={{display:"block",width:"100%",textAlign:"left",
                                       padding:"9px 14px",border:"none",background:"transparent",
-                                      cursor:"pointer",fontSize:12,color:C.t1,
+                                      cursor:p.callable?"pointer":"not-allowed",fontSize:12,
+                                      color:p.callable?C.t1:C.t3,
                                       borderBottom:i<arr.length-1?`0.75px solid ${C.border}`:"none"}}
-                                    onMouseEnter={e=>e.currentTarget.style.background=C.surface}
+                                    onMouseEnter={e=>{ if(p.callable) e.currentTarget.style.background=C.surface; }}
                                     onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                                     <span style={{fontWeight:500}}>{p.label}</span>
-                                    <span style={{color:C.t2,marginLeft:8}}>{p.number}</span>
+                                    <span style={{color:p.callable?C.t2:C.t3,marginLeft:8}}>{p.number}</span>
+                                    {!p.callable&&<span style={{color:C.amber,marginLeft:6,fontSize:10}}>⚠</span>}
                                   </button>
                                 ))}
                               </div>
