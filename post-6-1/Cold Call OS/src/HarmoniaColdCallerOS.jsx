@@ -764,8 +764,6 @@ export default function HarmoniaOS() {
   const [authStep,         setAuthStep]         = useState("login");  // "login" | "setup" (first-time password)
   const [loginErr,         setLoginErr]         = useState("");
   const [loginBusy,        setLoginBusy]        = useState(false);
-  const [selectedScript,   setSelectedScript]   = useState("");   // Task 2 — resets per call
-  const [customScript,     setCustomScript]     = useState("");   // Task 2 — custom script name
   const [objectionRaised,  setObjectionRaised]  = useState("");   // Task 3 — resets per call
   const [customObjection,  setCustomObjection]  = useState("");   // Task 3 — custom objection text
   const [pendingOutcome,   setPendingOutcome]   = useState(null); // two-step disposition
@@ -1622,16 +1620,22 @@ export default function HarmoniaOS() {
     const finalPhaseTimes = {...phaseTimes, [callPhase]: phaseTimes[callPhase] + phaseSecs};
     setPhaseSecs(0);
 
-    const scriptUsed = selectedScript === "custom"
-      ? `Custom: ${customScript}`
-      : selectedScript
-        ? (() => {
-            const script = scripts[icpGroup(active.icp)]?.[selectedScript];
-            const opener = script?.lines.find(l => l.type === "opener");
-            const name = opener?.name || script?.name;
-            return name ? `${active.icp}-${selectedScript}: ${name}` : selectedScript;
-          })()
-        : variant;
+    // Script-used signal — a snapshot of what was actually on screen, not a manual dropdown:
+    //  • Blank canvas → save the raw canvas script the caller was working from.
+    //  • Phases       → snapshot the active opener option (variant id + its name).
+    const scriptUsed = (() => {
+      if (scriptMode === "blank") {
+        const canvas = (blankScripts[callerName || "_default"] || "").trim();
+        return canvas ? `Blank canvas: ${canvas}` : "Blank canvas (empty)";
+      }
+      const vKey = curScripts[variant] ? variant : Object.keys(curScripts)[0];
+      const script = curScripts[vKey];
+      const opener = script?.lines?.find(l => l.type === "opener");
+      const name = opener?.name || script?.name;
+      return vKey
+        ? (name ? `${active.icp}-${vKey}: ${name}` : `${active.icp}-${vKey}`)
+        : `${active.icp} phases`;
+    })();
 
     const objection = customObjection.trim() || objectionRaised;
 
@@ -1755,7 +1759,6 @@ export default function HarmoniaOS() {
 
   function resetCaptureFields() {
     setPendingOutcome(null);
-    setSelectedScript("");setCustomScript("");
     setObjectionRaised("");setCustomObjection("");
     setCaptureEmail("");setCapturePhone("");setCaptureNotes("");
     setCallbackDate("");setCallbackTime("");
@@ -2282,37 +2285,8 @@ export default function HarmoniaOS() {
                 </div>
               </div>
 
-              {/* Script selector — visible during call */}
-              {(callRun||pendingOutcome)&&(
-                <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 20px",flexShrink:0,
-                  borderBottom:`0.75px solid ${C.border}`}}>
-                  <span style={{fontSize:11,color:C.t3}}>Script</span>
-                  <select value={selectedScript} onChange={e=>{setSelectedScript(e.target.value);if(e.target.value!=="custom")setCustomScript("");}}
-                    style={{border:`0.75px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
-                      fontSize:12,background:C.bg,color:C.t1,outline:"none",flex:1,maxWidth:280}}>
-                    <option value="">Select script...</option>
-                    {Object.entries(scripts[icpGroup(active?.icp)]||{})
-                      .filter(([varId]) => !disabledScripts.has(varId) && ACTIVE_OPENERS.includes(varId))
-                      .map(([varId, script]) => {
-                        const opener = script.lines.find(l => l.type === "opener");
-                        const name = opener?.name || script.name;
-                        const tag = opener?.tag || script.tag;
-                        return (
-                          <option key={varId} value={varId}>
-                            {`${varId} — ${name}${tag ? ` (${tag})` : ''}`}
-                          </option>
-                        );
-                      })}
-                    <option value="custom">Custom...</option>
-                  </select>
-                  {selectedScript==="custom"&&(
-                    <input value={customScript} onChange={e=>setCustomScript(e.target.value)}
-                      placeholder="Script name..."
-                      style={{border:`0.75px solid ${C.border}`,borderRadius:6,padding:"3px 8px",
-                        fontSize:12,background:C.bg,color:C.t1,outline:"none",width:140}}/>
-                  )}
-                </div>
-              )}
+              {/* Script-used is now snapshotted automatically at disposition time (phases opener
+                  or blank-canvas text) — no manual "Script" dropdown. */}
 
               {/* Disposition logging happens only after End Call, via the dispo bar modal */}
 
