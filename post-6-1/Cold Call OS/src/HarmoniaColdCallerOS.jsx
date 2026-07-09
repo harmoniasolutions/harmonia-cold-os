@@ -2764,22 +2764,17 @@ export default function HarmoniaOS() {
                                         {h.duration ? fmt(h.duration) : ""}
                                       </span>
                                     </div>
-                                    {/* Row 2: caller, date, script */}
+                                    {/* Row 2: caller, date — script intentionally omitted from the
+                                        OS chip (it's still written to the sheet, just not shown here). */}
                                     <div style={{display:"flex",justifyContent:"space-between",marginTop:4,
                                       alignItems:"center",flexWrap:"wrap",gap:4}}>
                                       <span style={{fontSize:11,color:C.t2,fontWeight:500}}>
                                         {h.caller || "Unknown caller"}
                                       </span>
-                                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                                        {h.variant && (
-                                          <span style={{fontSize:9,color:C.t3,background:C.surface,borderRadius:4,
-                                            padding:"1px 5px",border:`0.75px solid ${C.border}`}}>Script {h.variant}</span>
-                                        )}
-                                        <span style={{fontSize:10,color:C.t3}}>
-                                          {h.timestamp ? new Date(h.timestamp).toLocaleDateString("en-US",
-                                            {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}
-                                        </span>
-                                      </div>
+                                      <span style={{fontSize:10,color:C.t3}}>
+                                        {h.timestamp ? new Date(h.timestamp).toLocaleDateString("en-US",
+                                          {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}
+                                      </span>
                                     </div>
                                     {/* Row 3: spoke with */}
                                     {h.spoke_with && (
