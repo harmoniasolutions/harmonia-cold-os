@@ -1517,6 +1517,24 @@ export default function HarmoniaOS() {
     })).filter(o => o.text);
   })();
   const curCustomOpeners = customOpeners[active?.icp] || [];
+  // Custom openers shaped as A/B "frames" so they drop into the Opener phase dropdown next to the
+  // scripted ones. One piece carries the whole body (editable()'s formatScriptLines handles // →
+  // line breaks). Names are de-duplicated against the scripted openers so the by-name dropdown
+  // selection never collides.
+  const customOpenerFrames = (() => {
+    const used = new Set(scriptedOpeners.map(o => o.name));
+    return curCustomOpeners.map((o, ci) => {
+      let name = (o.name || "").trim() || `Custom opener ${ci + 1}`;
+      const base = name; let n = 2;
+      while (used.has(name)) name = `${base} (${n++})`;
+      used.add(name);
+      return {
+        key: `co-${ci}`, name, tag: undefined, _custom: true,
+        pieces: [{ sub: "", _pname: name,
+          a: { text: o.body || "", note: o.added_by ? `Added by ${o.added_by}` : "" }, b: null }],
+      };
+    });
+  })();
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
@@ -3410,7 +3428,10 @@ export default function HarmoniaOS() {
                                 /* ── A/B format: ONE selected frame per stage + per-piece A/B toggle + editable text + reply chips ── */
                                 if (scriptFormat === 'ab') {
                                   const ab = abPhase || { groups: [], replies: [] };
-                                  const frames = ab.groups;
+                                  // Team-shared custom openers appear as extra frames in the Opener dropdown.
+                                  const frames = phase === 'opener' && customOpenerFrames.length
+                                    ? [...ab.groups, ...customOpenerFrames]
+                                    : ab.groups;
                                   const selName = frames.find(f => f.name === phaseSelections[phase]) ? phaseSelections[phase] : (frames[0]?.name || '');
                                   const frame = frames.find(f => f.name === selName) || frames[0] || null;
                                   const activeChip = abReplyOpen[phase];
