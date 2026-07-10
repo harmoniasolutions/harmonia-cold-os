@@ -31,6 +31,7 @@ const CALLER_SETTINGS_SHEET_ID = import.meta.env.VITE_CALLER_SETTINGS_SHEET_ID |
 const CALLER_SETTINGS_TAB      = 'Settings';
 const CALLER_SETTINGS_WEBHOOK  = import.meta.env.VITE_CALLER_SETTINGS_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/caller-settings-save';
 const OBJECTIONS_KEY = '__OBJECTIONS__';
+const OPENERS_KEY    = '__OPENERS__';   // team-shared custom openers — any caller adds, everyone sees
 const ADMIN_KEY      = '__ADMIN__';
 const OFFER_KEY      = '__OFFER__';   // team-shared Offer canvas — Javi (admin) edits, everyone reads
 
@@ -826,6 +827,17 @@ export default function HarmoniaOS() {
   const [newObjQ, setNewObjQ] = useState("");
   const [newObjA, setNewObjA] = useState("");
 
+  // Custom openers added by callers — shared team-wide (same mechanism as objections).
+  // Keyed by ICP: { [icp]: [{ name, body, added_by }] }. The scripted openers still come
+  // from the Scripts sheet; these are caller-authored and sync to everyone via OPENERS_KEY.
+  const [customOpeners, setCustomOpeners] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-custom-openers") || "{}"); }
+    catch { return {}; }
+  });
+  const [newOpenerName, setNewOpenerName] = useState("");
+  const [newOpenerBody, setNewOpenerBody] = useState("");
+  const [openOpener, setOpenOpener] = useState(null);   // expanded card key ("s0" scripted / "c0" custom)
+
   // Phase order — reorderable, removable, addable
   const [phaseOrder, setPhaseOrder] = useState(() => {
     try {
@@ -997,9 +1009,11 @@ export default function HarmoniaOS() {
   const [allCallerSettings, setAllCallerSettings] = useState([]);
   const personalHydrated   = useRef(false);
   const objectionsHydrated = useRef(false);
+  const openersHydrated    = useRef(false);
   const adminHydrated      = useRef(false);
   const personalSaveTimer   = useRef(null);
   const objectionsSaveTimer = useRef(null);
+  const openersSaveTimer    = useRef(null);
   const adminSaveTimer      = useRef(null);
 
   // Team-shared "The Offer" canvas — Javi (admin) edits, everyone else views what he saved
@@ -1099,6 +1113,8 @@ export default function HarmoniaOS() {
   function hydrateTeam(rows) {
     const obj = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OBJECTIONS_KEY)), readLocal("harmonia-team-objections"));
     if (obj && obj.customObjections) setCustomObjections(obj.customObjections);
+    const opn = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OPENERS_KEY)), readLocal("harmonia-team-openers"));
+    if (opn && opn.customOpeners) setCustomOpeners(opn.customOpeners);
     const adm = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === ADMIN_KEY)), readLocal("harmonia-team-admin"));
     if (adm) {
       if (Array.isArray(adm.disabledScripts)) setDisabledScripts(new Set(adm.disabledScripts.filter(id => id!=="7" && id!=="8")));
@@ -1107,6 +1123,7 @@ export default function HarmoniaOS() {
     const off = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OFFER_KEY)), readLocal("harmonia-team-offer"));
     if (off && typeof off.text === "string") setOfferCanvas(off.text);
     objectionsHydrated.current = true;
+    openersHydrated.current = true;
     adminHydrated.current = true;
     offerHydrated.current = true;
   }
@@ -1317,6 +1334,16 @@ export default function HarmoniaOS() {
     objectionsSaveTimer.current = setTimeout(() => postSettings(OBJECTIONS_KEY, blob), 800);
   }, [customObjections]);
 
+  // Custom openers → team-shared row. Any caller who adds an opener writes OPENERS_KEY;
+  // every device rehydrates it, so a new opener reaches the whole system.
+  useEffect(() => {
+    if (!openersHydrated.current) return;
+    const blob = { version:1, updated_at:new Date().toISOString(), customOpeners };
+    try { localStorage.setItem("harmonia-team-openers", JSON.stringify(blob)); } catch {}
+    if (openersSaveTimer.current) clearTimeout(openersSaveTimer.current);
+    openersSaveTimer.current = setTimeout(() => postSettings(OPENERS_KEY, blob), 800);
+  }, [customOpeners]);
+
   useEffect(() => {
     if (!adminHydrated.current) return;
     const blob = { version:1, updated_at:new Date().toISOString(),
@@ -1472,6 +1499,24 @@ export default function HarmoniaOS() {
   // Gates the "No scripts found" message so A/B mode (which leaves `scripts` empty) still renders.
   const curAbPhases  = scriptFormat === 'ab' ? (abData[icpGroup(active?.icp)] || {}) : null;
   const hasAnyScripts = variants.length > 0 || (!!curAbPhases && Object.values(curAbPhases).some(p => ((p.groups?.length || 0) + (p.replies?.length || 0)) > 0));
+  // The scripted openers for the active vertical, reconstructed from the loaded Scripts data.
+  // A/B format: each opener "frame" (group) is one scripted opener; join its A-line pieces.
+  // Legacy format: each variant's opener-typed lines. These are read-only reference cards in the
+  // Openers tab (independent of the ACTIVE_OPENERS display filter — show all of them here).
+  const scriptedOpeners = (() => {
+    const ab = curAbPhases?.opener;
+    if (ab && Array.isArray(ab.groups) && ab.groups.length) {
+      return ab.groups.map(g => ({
+        name: g.name || "Opener",
+        text: (g.pieces || []).map(pc => (pc.a?.text || pc.b?.text || "")).filter(Boolean).join(" // "),
+      })).filter(o => o.text);
+    }
+    return Object.entries(curScripts).map(([id, v]) => ({
+      name: v.name || `Opener ${id}`,
+      text: (v.lines || []).filter(l => l.type === "opener").map(l => l.text).join(" // "),
+    })).filter(o => o.text);
+  })();
+  const curCustomOpeners = customOpeners[active?.icp] || [];
   const flaggedReviews = (active?.google_reviews||[]).filter(r=>r.flagged||r.flagged==="TRUE"||r.flagged==="true");
   const recommended = active ? getRecommendedOpeners(active) : [];
   const recMap = Object.fromEntries(recommended.map(r=>[r.openerId, r.reason]));
@@ -2527,6 +2572,7 @@ export default function HarmoniaOS() {
                   {id:"intel",      label:"Intel"},
                   {id:"script",     label:"Script"},
                   {id:"offer",      label:"The Offer"},
+                  {id:"openers",    label:`Openers (${scriptedOpeners.length + curCustomOpeners.length})`},
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
                   {id:"roi",        label:"ROI Calc"},
@@ -3969,6 +4015,117 @@ export default function HarmoniaOS() {
                     </div>
                   </div>
                 )}
+
+                {/* ── OPENERS ── */}
+                {tab==="openers"&&(() => {
+                  const openerCtx = buildPlaceholderContext(active, callerName);
+                  const cards = [
+                    ...scriptedOpeners.map((o,i)=>({...o, key:`s${i}`, scripted:true})),
+                    ...curCustomOpeners.map((o,i)=>({name:o.name, text:o.body, added_by:o.added_by, key:`c${i}`, scripted:false, customIdx:i})),
+                  ];
+                  return (
+                  <div style={{display:"flex",flexDirection:"column",gap:8,maxWidth:600}}>
+                    <div style={{fontSize:11,color:C.t3,marginBottom:2}}>
+                      The scripted openers plus any your team has written. Add one and it's shared with everyone.
+                    </div>
+                    {cards.length === 0 && (
+                      <div style={{fontSize:12,color:C.t3,padding:"10px 0"}}>
+                        No openers yet for this vertical.
+                      </div>
+                    )}
+                    {cards.map(card => {
+                      const isOpen = openOpener===card.key;
+                      return (
+                        <div key={card.key} style={{borderRadius:12,overflow:"hidden",
+                          border:`0.75px solid ${isOpen?C.borderMd:card.scripted?C.border:C.t2+"40"}`,
+                          transition:"border-color 0.15s"}}>
+                          <div onClick={()=>setOpenOpener(isOpen?null:card.key)}
+                            style={{padding:"12px 16px",display:"flex",alignItems:"center",
+                              gap:12,cursor:"pointer",background:isOpen?C.surface:C.bg}}>
+                            <div style={{width:5,height:5,borderRadius:"50%",
+                              background:isOpen?C.t1:C.t3,flexShrink:0,transition:"background 0.15s"}}/>
+                            <span style={{fontSize:13,color:C.t1,flex:1,fontWeight:500}}>{card.name}</span>
+                            <span style={{fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:".04em",
+                              padding:"2px 7px",borderRadius:4,flexShrink:0,
+                              background:card.scripted?C.t3+"22":C.accent+"1a",
+                              color:card.scripted?C.t3:C.accent}}>
+                              {card.scripted?"Scripted":"Team"}
+                            </span>
+                            {!card.scripted&&(
+                              <button onClick={e=>{
+                                e.stopPropagation();
+                                setCustomOpeners(prev => {
+                                  const icp = active?.icp;
+                                  const next = {...prev, [icp]: (prev[icp]||[]).filter((_,ci)=>ci!==card.customIdx)};
+                                  localStorage.setItem("harmonia-custom-openers", JSON.stringify(next));
+                                  return next;
+                                });
+                                if(isOpen) setOpenOpener(null);
+                              }}
+                                style={{fontSize:10,color:C.t3,border:"none",background:"transparent",
+                                  cursor:"pointer",padding:"2px 6px",flexShrink:0}}
+                                title="Remove this opener">✕</button>
+                            )}
+                            <span style={{fontSize:10,color:C.t3}}>{isOpen?"▲":"▼"}</span>
+                          </div>
+                          {isOpen&&(
+                            <div style={{padding:"0 16px 14px 33px",borderTop:`0.75px solid ${C.border}`}}>
+                              <div style={{fontSize:10,color:C.t3,margin:"10px 0 7px",
+                                textTransform:"uppercase",letterSpacing:"0.03em",fontWeight:500}}>
+                                Say this
+                              </div>
+                              <div style={{fontSize:13,color:C.t1,lineHeight:1.72,whiteSpace:"pre-wrap"}}>
+                                {fillPlaceholdersPlain(formatScriptLines(card.text), openerCtx)}
+                              </div>
+                              {!card.scripted&&card.added_by&&(
+                                <div style={{fontSize:10,color:C.t3,marginTop:8}}>
+                                  Added by {card.added_by}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Add new opener form — shared with the whole team on save */}
+                    <div style={{borderRadius:12,border:`1px dashed ${C.border}`,padding:"14px 16px",
+                      marginTop:cards.length>0?8:0}}>
+                      <div style={{fontSize:10,color:C.t3,marginBottom:8,fontWeight:500,textTransform:"uppercase",
+                        letterSpacing:"0.03em"}}>Write your own opener</div>
+                      <input value={newOpenerName} onChange={e=>setNewOpenerName(e.target.value)}
+                        placeholder="Name it — e.g. 'The Referral Angle'"
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                          fontSize:12,background:C.bg,color:C.t1,outline:"none",marginBottom:8}}/>
+                      <textarea value={newOpenerBody} onChange={e=>setNewOpenerBody(e.target.value)}
+                        placeholder="What do you say? You can use {owner}, {biz}, {city}, {caller} — they fill in on the live call."
+                        rows={4}
+                        style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"8px 10px",
+                          fontSize:12,background:C.bg,color:C.t1,outline:"none",resize:"vertical",
+                          lineHeight:1.6}}/>
+                      <button onClick={()=>{
+                        if(!newOpenerName.trim()||!newOpenerBody.trim()) return;
+                        const icp = active?.icp;
+                        if(!icp) return;
+                        const entry = {name:newOpenerName.trim(), body:newOpenerBody.trim(), added_by:callerName||"Unknown"};
+                        setCustomOpeners(prev => {
+                          const next = {...prev, [icp]: [...(prev[icp]||[]), entry]};
+                          localStorage.setItem("harmonia-custom-openers", JSON.stringify(next));
+                          return next;
+                        });
+                        setNewOpenerName("");setNewOpenerBody("");
+                      }}
+                        disabled={!newOpenerName.trim()||!newOpenerBody.trim()}
+                        style={{marginTop:8,padding:"6px 18px",borderRadius:6,border:"none",
+                          background:newOpenerName.trim()&&newOpenerBody.trim()?C.t1:`${C.t3}40`,
+                          color:newOpenerName.trim()&&newOpenerBody.trim()?C.bg:C.t3,
+                          fontSize:11,fontWeight:500,cursor:newOpenerName.trim()&&newOpenerBody.trim()?"pointer":"not-allowed"}}>
+                        Add Opener — shared with team
+                      </button>
+                    </div>
+                  </div>
+                  );
+                })()}
 
                 {/* ── OBJECTIONS ── */}
                 {tab==="objections"&&(
