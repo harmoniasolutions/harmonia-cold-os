@@ -14,6 +14,8 @@ const BASE        = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/v
 const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-log';
 // Lead tags (Intel tab) — upserts the Leads row by id → cross-device tag persistence
 const TAG_WEBHOOK_URL = import.meta.env.VITE_TAG_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/lead-tag-save';
+// Shared Notes — upserts the Leads row by id (lead_notes/notes_edited_by/notes_edited_at) → truly shared across devices
+const NOTES_WEBHOOK_URL = import.meta.env.VITE_NOTES_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/lead-notes-save';
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
@@ -3029,8 +3031,9 @@ export default function HarmoniaOS() {
                             if (notesSaveRef.current) clearTimeout(notesSaveRef.current);
                             setNotesSaveStatus("saving");
                             notesSaveRef.current = setTimeout(() => {
-                              fetch(WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
-                                body:JSON.stringify({type:'lead_notes_update',lead_id:active.id,biz:active.biz,
+                              // Upsert into the Leads sheet by id so notes are shared across every device.
+                              fetch(NOTES_WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                                body:JSON.stringify({lead_id:active.id,biz:active.biz,
                                   lead_notes:val,notes_edited_by:callerName||"Unknown",
                                   notes_edited_at:new Date().toISOString()})
                               }).catch(()=>{});
