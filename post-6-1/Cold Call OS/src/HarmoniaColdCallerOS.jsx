@@ -17,6 +17,10 @@ const TAG_WEBHOOK_URL = import.meta.env.VITE_TAG_WEBHOOK_URL || 'https://infohar
 // Shared Notes — upserts the Leads row by id (lead_notes/notes_edited_by/notes_edited_at) → truly shared across devices
 const NOTES_WEBHOOK_URL = import.meta.env.VITE_NOTES_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/lead-notes-save';
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
+// Recording library — uploads an MP3 (base64 JSON) → n8n → Google Drive + a Recordings tab row.
+const RECORDING_UPLOAD_WEBHOOK = import.meta.env.VITE_RECORDING_UPLOAD_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/recording-upload';
+// Number Error investigator — auto-fixes a fixable phone in Leads OS, else pings Discord to decide.
+const NUMBER_ERROR_WEBHOOK = import.meta.env.VITE_NUMBER_ERROR_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/number-error-check';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
 // ── Scripts now come from a SEPARATE sheet with one tab per ICP (Salon, Barbershop, …) ──
@@ -86,6 +90,20 @@ async function fetchSettingsSheet() {
     if (!headers) return [];
     return rows.map(row => Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""])));
   } catch (e) { console.warn('[Harmonia] caller-settings read error', e); return []; }
+}
+
+// Read the Recordings tab (call-library) from the same Caller Settings spreadsheet.
+// Degrades to [] on any failure (e.g. the tab doesn't exist yet) so it never blocks app load.
+async function fetchRecordingsSheet() {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${CALLER_SETTINGS_SHEET_ID}/values/Recordings?key=${API_KEY}`;
+    const res = await fetch(url);
+    const json = await res.json().catch(() => null);
+    if (!res.ok) { console.warn(`[Harmonia] recordings read failed: HTTP ${res.status}`); return []; }
+    const [headers, ...rows] = json?.values || [];
+    if (!headers) return [];
+    return rows.map(row => Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""])));
+  } catch (e) { console.warn('[Harmonia] recordings read error', e); return []; }
 }
 
 /* ─────────────────────────────────────────────
@@ -219,6 +237,8 @@ const OUTCOMES = {
   number_error:   { label:"Number Error",   color:C.amber,   short:"Err",  ghl:null,                  discord:null                                                    },
   no_answer:      { label:"No Answer",      color:C.red,     short:"N/A",  ghl:null,                  discord:null                                                    },
   not_interested: { label:"Not interested", color:C.t3,      short:"N/I",  ghl:"Closed Lost",         discord:null                                                    },
+  hung_up:        { label:"Hung up",        color:C.red,     short:"Hung", ghl:null,                  discord:null                                                    },
+  wrong_icp:      { label:"Wrong ICP",      color:C.t3,      short:"ICP",  ghl:"Closed Lost",         discord:null                                                    },
   not_qualified:  { label:"Not qualified",  color:C.t3,      short:"N/Q",  ghl:"Closed Lost",         discord:null                                                    },
   dnc:            { label:"Do not call",    color:C.red,     short:"DNC",  ghl:"Do Not Contact",      discord:null                                                    },
 };
@@ -230,6 +250,7 @@ const OUTCOME_ROWS = [
   ["demo_booked", "followup_sent", "no_answer"],
   ["voicemail", "gatekeeper", "robo_responder"],
   ["not_qualified", "dnc", "number_error"],
+  ["not_interested", "hung_up", "wrong_icp"],
 ];
 
 // Caller roster — seeds the leaderboard so every caller shows even with 0 activity.
@@ -767,6 +788,14 @@ export default function HarmoniaOS() {
   const [leads,    setLeads]    = useState([]);
   const [scripts,  setScripts]  = useState({});
   const [objections,setObjections]= useState({});
+  // Recording library (call MP3s) — rows from the Recordings tab + the upload form state.
+  const [recordings,   setRecordings]   = useState([]);
+  const [recFile,      setRecFile]      = useState(null);
+  const [recTitle,     setRecTitle]     = useState("");
+  const [recNotes,     setRecNotes]     = useState("");
+  const [recVisibility,setRecVisibility]= useState("private"); // private (just me) | global (team)
+  const [recUploading, setRecUploading] = useState(false);
+  const [recError,     setRecError]     = useState("");
   const [bridgeBubbles, setBridgeBubbles] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [loadError,setLoadError]= useState(null);
@@ -1166,6 +1195,41 @@ export default function HarmoniaOS() {
     }).catch(()=>{});
   }
 
+  // ── Recording library ── re-read the Recordings tab (after an upload), and base64-upload an MP3.
+  async function refreshRecordings() {
+    try { setRecordings(await fetchRecordingsSheet()); } catch {}
+  }
+  function uploadRecording() {
+    if (!recFile) { setRecError("Choose an audio file first."); return; }
+    const MAX = 12 * 1024 * 1024; // ~12MB pre-encode — stays under n8n Cloud's ~16MB webhook limit once base64'd
+    if (recFile.size > MAX) { setRecError("File too large (max ~12 MB). Trim or re-export the recording."); return; }
+    setRecError(""); setRecUploading(true);
+    const reader = new FileReader();
+    reader.onerror = () => { setRecUploading(false); setRecError("Couldn't read that file."); };
+    reader.onload = async () => {
+      try {
+        const dataUrl = String(reader.result || "");
+        const data_b64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
+        const res = await fetch(RECORDING_UPLOAD_WEBHOOK, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: recFile.name, mime: recFile.type || 'audio/mpeg', data_b64,
+            title: (recTitle || recFile.name).trim(), notes: recNotes || "",
+            caller_name: callerName || "Unknown", visibility: recVisibility,
+          }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || out.status !== "ok") throw new Error(out.error || `HTTP ${res.status}`);
+        setFlash("Recording uploaded ✦"); setTimeout(() => setFlash(null), 3000);
+        setRecFile(null); setRecTitle(""); setRecNotes("");
+        setTimeout(() => refreshRecordings(), 1500);
+      } catch (err) {
+        setRecError("Upload failed — try again. (" + (err?.message || "error") + ")");
+      } finally { setRecUploading(false); }
+    };
+    reader.readAsDataURL(recFile);
+  }
+
   // Hydrate the team-shared rows (objections + admin) — server-or-local, newest wins.
   function hydrateTeam(rows) {
     const obj = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OBJECTIONS_KEY)), readLocal("harmonia-team-objections"));
@@ -1262,14 +1326,16 @@ export default function HarmoniaOS() {
   useEffect(() => {
     async function load() {
       try {
-        const [leadsRaw, objectionsRaw, offersRaw, callerSettingsRaw, salonRaw, barberRaw] = await Promise.all([
+        const [leadsRaw, objectionsRaw, offersRaw, callerSettingsRaw, salonRaw, barberRaw, recordingsRaw] = await Promise.all([
           fetchSheet("Leads"),
           fetchSheet("Objections"),
           fetchSheet("Offers").catch(() => []),
           fetchSettingsSheet(),
           fetchScriptTabRaw(SCRIPT_ICP_TABS.salon),       // scripts now live on the per-ICP scripts sheet
           fetchScriptTabRaw(SCRIPT_ICP_TABS.barbershop),
+          fetchRecordingsSheet(),                          // call-library (Recordings tab on the settings sheet)
         ]);
+        setRecordings(recordingsRaw);
         // Cross-device settings: stash rows, hydrate team-shared now, and this device's
         // remembered caller (server is the source of truth; localStorage is the fallback).
         setAllCallerSettings(callerSettingsRaw);
@@ -1934,6 +2000,16 @@ export default function HarmoniaOS() {
         fetch("https://discord.com/api/webhooks/1490887089812672612/AaHbR7e7xDC6cWp_FDLHXVwDPQy-vFrZSjrz_QwrfYSj7i5RFKFCOvNlXeDLdqfYHhzy", {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ content: `${emoji} **${label}** — ${active.biz}${active.owner?` (${active.owner})`:""}${active.city?`, ${active.city}`:""}\nCaller: ${callerName||"Unknown"} | Script: ${scriptUsed} | Duration: ${fmt(dur)}${captureEmail?`\nEmail: ${captureEmail}`:""}${captureNotes?`\nNotes: ${captureNotes}`:""}` })
+        }).catch(()=>{});
+      }
+      // Number Error → hand the lead to the investigator: it auto-fixes a fixable phone in
+      // Leads OS, otherwise pings Discord for Javi to decide (delete / enrich / find another).
+      if (outcome === "number_error") {
+        fetch(NUMBER_ERROR_WEBHOOK, {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ lead_id:active.id, biz:active.biz, owner:active.owner,
+            city:active.city, state:active.state, icp:active.icp, caller_name:callerName||"Unknown",
+            mobile_phone:active.mobile_phone||"", corporate_phone:active.corporate_phone||"",
+            home_phone:active.home_phone||"", phone:active.phone||"" })
         }).catch(()=>{});
       }
     } catch(err){ console.error('webhook failed:',err); }
@@ -2723,6 +2799,7 @@ export default function HarmoniaOS() {
                   {id:"openers",    label:`Openers (${scriptedOpeners.length + curCustomOpeners.length})`},
                   {id:"objections", label:`Objections (${curObjs.length})`},
                   {id:"voicemail",  label:"Voicemail"},
+                  {id:"recording",  label:"Recording"},
                   {id:"roi",        label:"ROI Calc"},
                   {id:"booking",    label:"Booking"},
                 ].map(t=>(
@@ -4473,6 +4550,103 @@ export default function HarmoniaOS() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* ── RECORDING ── standalone call library; upload an MP3, keep it private or share with the team ── */}
+                {tab==="recording"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:640}}>
+                    <div style={{fontSize:11,color:C.t3}}>
+                      Upload an MP3 of a call. <strong>Private</strong> is visible only to you; <strong>Global</strong> is shared with the whole team.
+                    </div>
+
+                    {/* Upload card */}
+                    <div style={{borderRadius:12,border:`0.75px solid ${C.border}`,overflow:"hidden"}}>
+                      <div style={{padding:"10px 16px",background:C.surface,borderBottom:`0.75px solid ${C.border}`,
+                        fontSize:12,fontWeight:500,color:C.t1}}>Upload a recording</div>
+                      <div style={{padding:16,display:"flex",flexDirection:"column",gap:12}}>
+                        <label style={{display:"flex",alignItems:"center",gap:10,fontSize:12,color:C.t2,cursor:"pointer"}}>
+                          <span style={{padding:"6px 12px",borderRadius:8,border:`0.75px solid ${C.border}`,
+                            background:C.bg,color:C.t1,fontSize:12,whiteSpace:"nowrap"}}>Choose file</span>
+                          <span style={{color:recFile?C.t1:C.t3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {recFile ? `${recFile.name} (${(recFile.size/1024/1024).toFixed(1)} MB)` : "No file selected"}
+                          </span>
+                          <input type="file" accept="audio/*" style={{display:"none"}}
+                            onChange={e=>{setRecFile(e.target.files?.[0]||null);setRecError("");}} />
+                        </label>
+                        <input type="text" value={recTitle} placeholder="Title (e.g. Salon owner — great objection handle)"
+                          onChange={e=>setRecTitle(e.target.value)}
+                          style={{padding:"8px 12px",borderRadius:8,border:`0.75px solid ${C.border}`,
+                            background:C.bg,color:C.t1,fontSize:13,outline:"none"}} />
+                        <textarea value={recNotes} placeholder="Notes (optional)" rows={2}
+                          onChange={e=>setRecNotes(e.target.value)}
+                          style={{padding:"8px 12px",borderRadius:8,border:`0.75px solid ${C.border}`,
+                            background:C.bg,color:C.t1,fontSize:13,outline:"none",resize:"vertical",fontFamily:"inherit"}} />
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{fontSize:12,color:C.t3}}>Visibility</span>
+                          {[["private","🔒 Private to me"],["global","🌐 Global team"]].map(([v,lbl])=>(
+                            <button key={v} onClick={()=>setRecVisibility(v)}
+                              style={{padding:"5px 12px",borderRadius:100,fontSize:11,fontWeight:500,cursor:"pointer",
+                                border:`0.75px solid ${recVisibility===v?C.accent:C.border}`,
+                                background:recVisibility===v?C.accent+"15":C.bg,
+                                color:recVisibility===v?C.accent:C.t2}}>{lbl}</button>
+                          ))}
+                        </div>
+                        {recError&&<div style={{fontSize:11,color:C.red}}>{recError}</div>}
+                        <button onClick={uploadRecording} disabled={recUploading||!recFile}
+                          style={{alignSelf:"flex-start",padding:"8px 18px",borderRadius:8,border:"none",
+                            background:recUploading||!recFile?C.t3:C.accent,color:"#fff",fontSize:13,fontWeight:500,
+                            cursor:recUploading||!recFile?"default":"pointer"}}>
+                          {recUploading?"Uploading…":"Upload recording"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Library list */}
+                    {(()=>{
+                      const mine = recordings
+                        .filter(r=>(r.visibility||"").toLowerCase()==="global" || (r.caller_name||"")===callerName)
+                        .sort((a,b)=>(b.uploaded_at||"").localeCompare(a.uploaded_at||""));
+                      if(!mine.length) return (
+                        <div style={{fontSize:12,color:C.t3,padding:"8px 0"}}>No recordings yet. Upload one above.</div>
+                      );
+                      return (
+                        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                          <div style={{fontSize:11,color:C.t3}}>{mine.length} recording{mine.length===1?"":"s"}</div>
+                          {mine.map((r,i)=>{
+                            const isGlobal=(r.visibility||"").toLowerCase()==="global";
+                            const when=r.uploaded_at?new Date(r.uploaded_at).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
+                            return (
+                              <div key={r.id||i} style={{borderRadius:12,border:`0.75px solid ${C.border}`,overflow:"hidden"}}>
+                                <div style={{padding:"10px 16px",background:C.surface,borderBottom:`0.75px solid ${C.border}`,
+                                  display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                                  <span style={{fontSize:12,fontWeight:500,color:C.t1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                    {r.title||"Untitled"}
+                                  </span>
+                                  <span style={{fontSize:9,fontWeight:600,padding:"2px 8px",borderRadius:100,whiteSpace:"nowrap",
+                                    color:isGlobal?C.green:C.t2,background:(isGlobal?C.green:C.t3)+"18"}}>
+                                    {isGlobal?"🌐 Global":"🔒 Private"}
+                                  </span>
+                                </div>
+                                <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
+                                  <div style={{fontSize:10,color:C.t3}}>
+                                    {r.caller_name||"Unknown"}{when?` · ${when}`:""}{r.notes?` · ${r.notes}`:""}
+                                  </div>
+                                  {r.drive_file_id&&(
+                                    <audio controls preload="none" style={{width:"100%",height:36}}
+                                      src={`https://drive.google.com/uc?export=download&id=${r.drive_file_id}`} />
+                                  )}
+                                  {r.drive_file_id&&(
+                                    <a href={`https://drive.google.com/file/d/${r.drive_file_id}/view`} target="_blank" rel="noreferrer"
+                                      style={{fontSize:11,color:C.accent,textDecoration:"none"}}>Open in Drive ↗</a>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
