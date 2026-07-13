@@ -1277,6 +1277,36 @@ export default function HarmoniaOS() {
         if (storedSession) hydrateCaller(storedSession, callerSettingsRaw, true);
         const parsedLeads = parseLeads(leadsRaw);
         setLeads(parsedLeads);
+        // One-time per-device migration: legacy Shared Notes used to live only in this
+        // browser's localStorage. Push any that the sheet doesn't already have up to the
+        // Leads sheet so they become truly shared. Skips leads that already have a sheet
+        // note (never clobbers a newer shared note); runs once, guarded by a flag.
+        try {
+          if (!localStorage.getItem("harmonia-notes-migrated-v1")) {
+            const byId = Object.fromEntries(parsedLeads.map(l => [String(l.id), l]));
+            const pending = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (!k || !k.startsWith("harmonia-notes-")) continue;
+              const id = k.slice("harmonia-notes-".length);
+              let nd; try { nd = JSON.parse(localStorage.getItem(k) || "null"); } catch { nd = null; }
+              const text = (nd?.text || "").trim();
+              const lead = byId[String(id)];
+              if (!text || !lead) continue;
+              if ((lead.lead_notes || "").trim()) continue; // sheet already has a note — leave it
+              pending.push({ id, text, edited_by: nd.edited_by || "Unknown",
+                edited_at: nd.edited_at || new Date().toISOString(), biz: lead.biz });
+            }
+            // Stagger so we don't fire a burst of concurrent sheet upserts.
+            pending.forEach((p, idx) => setTimeout(() => {
+              fetch(NOTES_WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({lead_id:p.id,biz:p.biz,lead_notes:p.text,
+                  notes_edited_by:p.edited_by,notes_edited_at:p.edited_at})}).catch(()=>{});
+            }, idx * 500));
+            localStorage.setItem("harmonia-notes-migrated-v1", String(pending.length));
+            if (pending.length) console.log(`[Harmonia] migrating ${pending.length} local note(s) to the shared sheet`);
+          }
+        } catch {}
         // Scripts come from the per-ICP tabs. Auto-detect each tab's format from its header so the
         // old (Variant/Name + "-" replies) and new A/B (Element/A/B, multi-part frames) layouts both
         // work — old keeps rendering as-is, A/B switches the phase body to frames + toggles + chips.
