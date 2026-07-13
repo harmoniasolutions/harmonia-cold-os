@@ -12,6 +12,8 @@ const SHEET_ID    = import.meta.env.VITE_SHEET_ID;
 const API_KEY     = import.meta.env.VITE_SHEETS_API_KEY;
 const BASE        = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values`;
 const WEBHOOK_URL = import.meta.env.VITE_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-log';
+// Lead tags (Intel tab) — upserts the Leads row by id → cross-device tag persistence
+const TAG_WEBHOOK_URL = import.meta.env.VITE_TAG_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/lead-tag-save';
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
@@ -125,6 +127,14 @@ const icpGroup = (raw) => {
 // hidden from the queue/filters entirely (see VISIBLE_GROUPS / activeLeads).
 const FILTER_GROUPS = ["all", "salon", "barbershop"];
 const GROUP_LABEL   = { salon:"Hair Salon", barbershop:"Barbershop" };
+// Caller-applied lead tags (Intel tab). "E" opens a free-text field.
+const LEAD_TAGS = [
+  { code:"A", label:"No Online Booking" },
+  { code:"B", label:"Owner Operator" },
+  { code:"C", label:"No Receptionist" },
+  { code:"D", label:"Receptionist" },
+  { code:"E", label:"Other" },
+];
 // Groups that show anywhere in the app. Everything else (spa/nail/medspa/pet/junk) is filtered out.
 const VISIBLE_GROUPS = new Set(["salon", "barbershop"]);
 
@@ -450,6 +460,10 @@ function parseLeads(rows) {
       call_count:         parseInt(r.call_count) || 0,
       last_call_timestamp: r.last_call_timestamp || "",
       disposition:         r.disposition || "",
+      caller_tag:         r.caller_tag || "",
+      caller_tag_other:   r.caller_tag_other || "",
+      tag_by:             r.tag_by || "",
+      tag_at:             r.tag_at || "",
       };
     });
 }
@@ -759,6 +773,8 @@ export default function HarmoniaOS() {
   const [filter,   setFilter]   = useState("all");
   const [phoneFilter,   setPhoneFilter]   = useState("all"); // all | mobile | corporate
   const [emailedFilter, setEmailedFilter] = useState("all"); // all | emailed | not
+  const [starFilter,    setStarFilter]    = useState("all"); // all | starred
+  const [filtersOpen,   setFiltersOpen]   = useState(false); // filter panel collapsed by default
   const [tab,      setTab]      = useState("intel");
   // ── Brand signature (the etched rings in the empty centre) ──
   const BELIEFS = ["every call answered","presence as a product","silence costs revenue","nothing left to add"];
@@ -970,6 +986,16 @@ export default function HarmoniaOS() {
   const [claimedLeads, setClaimedLeads] = useState(() => { // { [leadId]: callerName }
     try { return JSON.parse(localStorage.getItem("harmonia-claimed-leads") || "{}"); } catch { return {}; }
   });
+  // Starred leads — a caller flags leads worth coming back to (per-device, persisted)
+  const [starredLeads, setStarredLeads] = useState(() => { // { [leadId]: true }
+    try { return JSON.parse(localStorage.getItem("harmonia-starred-leads") || "{}"); } catch { return {}; }
+  });
+  const toggleStar = (leadId) => setStarredLeads(prev => {
+    const next = { ...prev };
+    if (next[leadId]) delete next[leadId]; else next[leadId] = true;
+    try { localStorage.setItem("harmonia-starred-leads", JSON.stringify(next)); } catch {}
+    return next;
+  });
   // Preserve the queue's scroll position across the end-call auto-advance
   const queueScrollRef    = useRef(null);
   const preserveScrollRef = useRef(null);
@@ -979,6 +1005,35 @@ export default function HarmoniaOS() {
   const [notesSaveStatus, setNotesSaveStatus] = useState(null);
   const notesSaveRef = useRef(null);
   const [spokeWith, setSpokeWith] = useState("");
+
+  // Caller-applied lead tags (Intel tab) — { leadId: { tag, other, tagged_by, tagged_at } }
+  // Seeds from a local cache for instant paint; the sheet-loaded value (active.caller_tag)
+  // is the shared source of truth and is merged in when a lead is selected.
+  const [leadTags, setLeadTags] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-lead-tags") || "{}"); } catch { return {}; }
+  });
+  const tagSaveRef = useRef({}); // per-lead debounce timers for the free-text field
+  const saveLeadTag = (leadId, biz, patch) => setLeadTags(prev => {
+    const cur = prev[leadId] || {};
+    const rec = { tag:"", other:"", ...cur, ...patch,
+      tagged_by: callerName || "Unknown", tagged_at: new Date().toISOString() };
+    const next = { ...prev, [leadId]: rec };
+    try { localStorage.setItem("harmonia-lead-tags", JSON.stringify(next)); } catch {}
+    // Persist to the Leads sheet (upsert by id) so tags are shared across all devices.
+    // Debounce so typing in the "Other" box doesn't fire a write per keystroke.
+    const push = () => fetch(TAG_WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lead_id:leadId,biz,
+        tag:rec.tag,tag_label:(LEAD_TAGS.find(t=>t.code===rec.tag)||{}).label||"",
+        tag_other:rec.other,tagged_by:rec.tagged_by,tagged_at:rec.tagged_at})
+    }).catch(()=>{});
+    if (tagSaveRef.current[leadId]) clearTimeout(tagSaveRef.current[leadId]);
+    if ("other" in patch && !("tag" in patch)) {
+      tagSaveRef.current[leadId] = setTimeout(push, 900); // free-text edits: debounce
+    } else {
+      push(); // dropdown pick: write immediately
+    }
+    return next;
+  });
 
   // Admin Console — Javi-only script management
   const [disabledScripts, setDisabledScripts] = useState(() => {
@@ -1485,7 +1540,8 @@ export default function HarmoniaOS() {
   const filtered     = activeLeads.filter(l =>
        (filter==="all" || icpGroup(l.icp)===filter)
     && (phoneFilter==="all"   || (phoneFilter==="mobile" ? (l.mobile_phone||"").trim()!=="" : (l.corporate_phone||"").trim()!==""))
-    && (emailedFilter==="all" || (emailedFilter==="emailed" ? leadEmailed(l).sent : !leadEmailed(l).sent)));
+    && (emailedFilter==="all" || (emailedFilter==="emailed" ? leadEmailed(l).sent : !leadEmailed(l).sent))
+    && (starFilter==="all"    || !!starredLeads[l.id]));
   const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
   const totalAns     = stats.answered + stats.demos;
   const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
@@ -2125,45 +2181,80 @@ export default function HarmoniaOS() {
         {/* ── QUEUE ── */}
         <div style={{width:244,borderRight:`0.75px solid ${C.border}`,
           display:"flex",flexDirection:"column",flexShrink:0}}>
-          <div style={{padding:"9px 10px 8px",borderBottom:`0.75px solid ${C.border}`,
-            display:"flex",gap:4,flexWrap:"wrap"}}>
-            {FILTER_GROUPS.filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
-              <button key={f} onClick={()=>setFilter(f)}
-                style={{padding:"3px 10px",borderRadius:100,
-                  border:`0.75px solid ${filter===f?C.t1:C.border}`,
-                  background:filter===f?C.t1:"transparent",
-                  color:filter===f?C.bg:C.t2,fontSize:10,fontWeight:500,transition:"all 0.12s"}}>
-                {f==="all"?"All":GROUP_LABEL[f]}
+          {(()=>{
+            const activeCount = (filter!=="all"?1:0)+(phoneFilter!=="all"?1:0)+(emailedFilter!=="all"?1:0)+(starFilter!=="all"?1:0);
+            return (
+          <div style={{borderBottom:`0.75px solid ${C.border}`}}>
+            {/* Filter toggle button — all filters live behind this */}
+            <div style={{padding:"9px 10px",display:"flex",alignItems:"center",gap:6}}>
+              <button onClick={()=>setFiltersOpen(o=>!o)}
+                style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:100,
+                  border:`0.75px solid ${activeCount||filtersOpen?C.t1:C.border}`,
+                  background:activeCount?C.t1:"transparent",
+                  color:activeCount?C.bg:C.t2,fontSize:10,fontWeight:500,cursor:"pointer",transition:"all 0.12s"}}>
+                <span>Filter{activeCount?` · ${activeCount}`:""}</span>
+                <span style={{fontSize:8,opacity:0.7}}>{filtersOpen?"▲":"▼"}</span>
               </button>
-            ))}
-          </div>
-          <div style={{padding:"2px 10px 8px",borderBottom:`0.75px solid ${C.border}`,
-            display:"flex",flexDirection:"column",gap:5}}>
-            <div style={{display:"flex",gap:4,alignItems:"center"}}>
-              <span style={{fontSize:9,color:C.t3,width:32,flexShrink:0}}>Phone</span>
-              {[["all","All"],["mobile","Mobile"],["corporate","Corp"]].map(([v,lbl])=>(
-                <button key={v} onClick={()=>setPhoneFilter(v)}
-                  style={{padding:"2px 8px",borderRadius:100,
-                    border:`0.75px solid ${phoneFilter===v?C.t1:C.border}`,
-                    background:phoneFilter===v?C.t1:"transparent",
-                    color:phoneFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
-                  {lbl}
-                </button>
-              ))}
+              {activeCount>0&&(
+                <button onClick={()=>{setFilter("all");setPhoneFilter("all");setEmailedFilter("all");setStarFilter("all");}}
+                  style={{background:"none",border:"none",padding:0,cursor:"pointer",
+                    color:C.t3,fontSize:10,fontWeight:500}}>Clear</button>
+              )}
             </div>
-            <div style={{display:"flex",gap:4,alignItems:"center"}}>
-              <span style={{fontSize:9,color:C.t3,width:32,flexShrink:0}}>Email</span>
-              {[["all","All"],["not","New"],["emailed","Emailed"]].map(([v,lbl])=>(
-                <button key={v} onClick={()=>setEmailedFilter(v)}
-                  style={{padding:"2px 8px",borderRadius:100,
-                    border:`0.75px solid ${emailedFilter===v?C.t1:C.border}`,
-                    background:emailedFilter===v?C.t1:"transparent",
-                    color:emailedFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
+            {filtersOpen&&(
+              <div style={{padding:"0 10px 10px",display:"flex",flexDirection:"column",gap:8}}>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {FILTER_GROUPS.filter(f=>f==="all"||!disabledIcps.has(f)).map(f=>(
+                    <button key={f} onClick={()=>setFilter(f)}
+                      style={{padding:"3px 10px",borderRadius:100,
+                        border:`0.75px solid ${filter===f?C.t1:C.border}`,
+                        background:filter===f?C.t1:"transparent",
+                        color:filter===f?C.bg:C.t2,fontSize:10,fontWeight:500,transition:"all 0.12s"}}>
+                      {f==="all"?"All":GROUP_LABEL[f]}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <span style={{fontSize:9,color:C.t3,width:38,flexShrink:0}}>Starred</span>
+                  {[["all","All"],["starred","★ Starred"]].map(([v,lbl])=>(
+                    <button key={v} onClick={()=>setStarFilter(v)}
+                      style={{padding:"2px 8px",borderRadius:100,
+                        border:`0.75px solid ${starFilter===v?C.amber:C.border}`,
+                        background:starFilter===v?C.amber:"transparent",
+                        color:starFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <span style={{fontSize:9,color:C.t3,width:38,flexShrink:0}}>Phone</span>
+                  {[["all","All"],["mobile","Mobile"],["corporate","Corp"]].map(([v,lbl])=>(
+                    <button key={v} onClick={()=>setPhoneFilter(v)}
+                      style={{padding:"2px 8px",borderRadius:100,
+                        border:`0.75px solid ${phoneFilter===v?C.t1:C.border}`,
+                        background:phoneFilter===v?C.t1:"transparent",
+                        color:phoneFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <span style={{fontSize:9,color:C.t3,width:38,flexShrink:0}}>Email</span>
+                  {[["all","All"],["not","New"],["emailed","Emailed"]].map(([v,lbl])=>(
+                    <button key={v} onClick={()=>setEmailedFilter(v)}
+                      style={{padding:"2px 8px",borderRadius:100,
+                        border:`0.75px solid ${emailedFilter===v?C.t1:C.border}`,
+                        background:emailedFilter===v?C.t1:"transparent",
+                        color:emailedFilter===v?C.bg:C.t2,fontSize:9,fontWeight:500,transition:"all 0.12s"}}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+            );
+          })()}
           <div style={{padding:"7px 14px 5px",display:"flex",justifyContent:"space-between"}}>
             <span style={{fontSize:11,color:C.t3}}>{queueLeft} remaining</span>
             <span style={{fontSize:11,color:C.t3}}>{filtered.length} total</span>
@@ -2191,7 +2282,14 @@ export default function HarmoniaOS() {
                     <div style={{width:6,height:6,borderRadius:"50%",
                       background:SCORE_DOT[lead.score]||C.t3,flexShrink:0}}/>
                     <span style={{fontSize:11,fontWeight:500,flex:1,lineHeight:1.3}}>{lead.biz}</span>
-                    <span style={{fontSize:10,fontFamily:FM,...painStyle(displayPain(lead))}}>{displayPain(lead)}/10</span>
+                    <button
+                      onClick={(e)=>{e.stopPropagation();toggleStar(lead.id);}}
+                      title={starredLeads[lead.id]?"Unstar lead":"Star lead"}
+                      style={{background:"none",border:"none",padding:0,cursor:"pointer",lineHeight:1,
+                        fontSize:13,flexShrink:0,transition:"color 0.12s",
+                        color:starredLeads[lead.id]?C.amber:C.t3}}>
+                      {starredLeads[lead.id]?"★":"☆"}
+                    </button>
                   </div>
                   <div style={{paddingLeft:12}}>
                     <div style={{fontSize:11,color:C.t2}}>{lead.owner}</div>
@@ -2691,6 +2789,52 @@ export default function HarmoniaOS() {
                           )}
                         </div>
                       );})()}
+
+                      {/* Caller tag — quick-classify the lead from the call.
+                          Local edit wins; otherwise show the sheet value (shared across devices). */}
+                      {(()=>{
+                        const local = leadTags[active.id];
+                        const rec = {
+                          tag:   local?.tag   ?? active.caller_tag ?? "",
+                          other: local?.other ?? active.caller_tag_other ?? "",
+                          tagged_by: local?.tagged_by ?? active.tag_by ?? "",
+                          tagged_at: local?.tagged_at ?? active.tag_at ?? "",
+                        };
+                        return (
+                        <div style={{background:C.surface,borderRadius:14,padding:"15px 18px",maxWidth:340,width:"100%"}}>
+                          <div style={{fontSize:10,fontWeight:600,letterSpacing:"0.08em",color:C.t3,
+                            textTransform:"uppercase",marginBottom:11}}>Tag</div>
+                          <select
+                            value={rec.tag||""}
+                            onChange={e=>saveLeadTag(active.id,active.biz,{tag:e.target.value,other:rec.other})}
+                            style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,
+                              padding:"9px 12px",fontSize:13,background:C.bg,color:rec.tag?C.t1:C.t3,
+                              outline:"none",fontFamily:F,cursor:"pointer"}}>
+                            <option value="">Select a tag…</option>
+                            {LEAD_TAGS.map(t=>(
+                              <option key={t.code} value={t.code}>{t.code}: {t.label}</option>
+                            ))}
+                          </select>
+                          {rec.tag==="E"&&(
+                            <textarea
+                              value={rec.other||""}
+                              onChange={e=>saveLeadTag(active.id,active.biz,{other:e.target.value})}
+                              placeholder="Describe…"
+                              rows={2}
+                              style={{width:"100%",marginTop:8,border:`0.75px solid ${C.border}`,borderRadius:8,
+                                padding:"9px 12px",fontSize:13,background:C.bg,color:C.t1,outline:"none",
+                                resize:"vertical",lineHeight:1.5,fontFamily:F}}
+                            />
+                          )}
+                          {rec.tag&&rec.tagged_by&&(
+                            <div style={{fontSize:10,color:C.t3,marginTop:8}}>
+                              Tagged by {rec.tagged_by}
+                              {rec.tagged_at?` on ${new Date(rec.tagged_at).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`:""}
+                            </div>
+                          )}
+                        </div>
+                        );
+                      })()}
 
                       {active.leak&&active.leak!=="—"&&(
                       <div style={{background:C.surface,borderRadius:12,padding:"14px 16px",maxWidth:200}}>
