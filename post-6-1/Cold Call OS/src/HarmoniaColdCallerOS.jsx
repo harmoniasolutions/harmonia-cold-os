@@ -129,6 +129,10 @@ const C = {
 const F  = "'IBM Plex Sans', -apple-system, sans-serif";
 const FM = "'IBM Plex Mono', 'SF Mono', monospace";
 
+// Ordered tab-ribbon ids — kept in sync with tabDefs at the ribbon. Used by the
+// active-tab guard so a hidden tab can never remain selected.
+const TAB_IDS = ["intel","script","offer","openers","objections","voicemail","recording","roi","booking","history"];
+
 // Raw Leads-tab icp values → canonical group used by the Scripts/Objections tabs + filter buttons.
 // The raw icp is kept on the lead so the card shows the specific sub-type; the group is for lookup/filtering.
 const ICP_GROUP = {
@@ -282,6 +286,51 @@ const fmtH = (s) => {
   const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;
   return h>0?`${pad(h)}:${pad(m)}:${pad(sc)}`:`${pad(m)}:${pad(sc)}`;
 };
+// NaN-safe timestamp → epoch ms. Blank/garbage cells on the "history" tab are common, and
+// new Date("") is Invalid Date → subtraction yields NaN, which corrupts newest-first sorts.
+const parseTs = (s) => { const t = Date.parse(s || ""); return isNaN(t) ? 0 : t; };
+
+// ── Call-recording playback + script decoding (used by the Call History view) ──
+// Raw Twilio recording URLs need HTTP basic-auth, so they won't play in a bare <audio> tag.
+// If an audio-proxy webhook is configured (VITE_CALL_AUDIO_PROXY), route Twilio media through
+// it; Drive / other already-public URLs are returned unchanged.
+const CALL_AUDIO_PROXY = import.meta.env.VITE_CALL_AUDIO_PROXY || "";
+function playableAudioUrl(url) {
+  const u = (url || "").trim();
+  if (!u) return "";
+  // Twilio *and* SignalWire recording URLs are ".../Recordings/<id>" and need HTTP basic-auth,
+  // so they won't play in a bare <audio>. Route them through the audio-proxy webhook when one is
+  // configured; already-public URLs (Google Drive, googleusercontent, direct .mp3) pass through.
+  const isAuthGated = /\/Recordings\//i.test(u) && !/drive\.google|googleusercontent/i.test(u);
+  if (isAuthGated && CALL_AUDIO_PROXY) return `${CALL_AUDIO_PROXY}${CALL_AUDIO_PROXY.includes("?")?"&":"?"}url=${encodeURIComponent(u)}`;
+  return u; // Drive / other public URL (or best-effort raw provider URL when no proxy is configured)
+}
+
+// Turn the dense "Script Used" blob the logger writes (e.g.
+// "hair_salon-A: Referral opener · sel{close=2, bridge=1} · ab{bridge}") into readable parts.
+function decodeScriptVariant(variant) {
+  const raw = (variant || "").trim();
+  if (!raw) return { title: "—", parts: [], raw: "" };
+  if (/^blank canvas/i.test(raw)) {
+    const after = raw.replace(/^blank canvas:?\s*/i, "").trim();
+    return { title: "Blank canvas", parts: (after && !/^\(empty\)$/i.test(after)) ? [after.slice(0,120)] : [], raw };
+  }
+  const parts = [];
+  const head = raw.split(" · ")[0] || raw;
+  let title = head;
+  const m = head.match(/^(.*?)-([A-Za-z0-9]+):\s*(.*)$/); // "<icp>-<Variant>: <opener name>"
+  if (m) { title = `Script ${m[2]}`; if (m[3]) parts.push(`opener “${m[3]}”`); }
+  const sel = raw.match(/sel\{([^}]*)\}/);                // sel{close=2, bridge=1} → "close v2"
+  if (sel && sel[1].trim()) {
+    sel[1].split(",").map(s=>s.trim()).filter(Boolean).forEach(pair => {
+      const [k,v] = pair.split("=").map(x=>(x||"").trim());
+      if (k) parts.push(`${k} v${v || "?"}`);
+    });
+  }
+  const ab = raw.match(/ab\{([^}]*)\}/);                  // ab{bridge} → "bridge → B"
+  if (ab && ab[1].trim()) ab[1].split(",").map(s=>s.trim()).filter(Boolean).forEach(k => parts.push(`${k} → B`));
+  return { title, parts, raw };
+}
 function fillPlaceholders(text, context) {
   if (!text) return "";
   const map = context || {};
@@ -782,6 +831,117 @@ function LoadingScreen({ error }) {
 }
 
 /* ─────────────────────────────────────────────
+   OSSelect — native-to-the-OS dropdown (replaces browser <select> in the
+   Script mixer). Renders a styled trigger + a popover list in the Harmonia
+   design language. When `onAdd` is passed, the menu grows an inline
+   "＋ Add option" row so callers can author their own options in place;
+   `onRemove` (custom options only) shows a × to delete one.
+───────────────────────────────────────────── */
+function OSSelect({ value, options = [], onChange, onAdd, onRemove, size = "md",
+                   placeholder = "Select…", triggerStyle = {}, menuWidth, star }) {
+  const [open, setOpen]   = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const rootRef = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) { setOpen(false); setAdding(false); } };
+    const onKey = (e) => { if (e.key === "Escape") { setOpen(false); setAdding(false); } };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  useEffect(() => { if (adding && inputRef.current) inputRef.current.focus(); }, [adding]);
+
+  const sel = options.find(o => o.value === value) || null;
+  const pad  = size === "sm" ? "3px 7px" : "4px 9px";
+  const font = size === "sm" ? 10 : 11;
+  const selLabel = sel ? sel.label : placeholder;
+
+  const commitAdd = () => {
+    const t = draft.trim();
+    if (t && onAdd) onAdd(t);
+    setDraft(""); setAdding(false); setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} style={{ position: "relative", ...(triggerStyle.flex ? { flex: triggerStyle.flex } : {}), minWidth: 0, ...triggerStyle.wrap }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", boxSizing: "border-box",
+          border: `0.75px solid ${open ? C.accent : C.border}`, borderRadius: 6, padding: pad,
+          fontSize: font, background: C.bg, color: sel ? C.t1 : C.t3, cursor: "pointer", outline: "none",
+          fontFamily: F, textAlign: "left", transition: "border-color 0.12s", ...triggerStyle }}>
+        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {selLabel}{star && sel && star(sel) ? " ★" : ""}
+        </span>
+        <span style={{ fontSize: font - 2, color: C.t3, flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.12s" }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 40,
+          minWidth: menuWidth || "100%", maxWidth: 340, maxHeight: 280, overflowY: "auto",
+          background: C.bg, border: `0.75px solid ${C.borderMd}`, borderRadius: 8,
+          boxShadow: "0 8px 24px rgba(28,61,82,0.14)", padding: 4, fontFamily: F }}>
+          {options.length === 0 && !onAdd && (
+            <div style={{ padding: "6px 9px", fontSize: font, color: C.t3 }}>No options</div>
+          )}
+          {options.map(o => {
+            const on = o.value === value;
+            return (
+              <div key={o.value} onClick={() => { onChange && onChange(o.value); setOpen(false); }}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: pad, borderRadius: 5,
+                  fontSize: font, color: on ? C.accent : C.t1, cursor: "pointer",
+                  background: on ? C.accent + "14" : "transparent", fontWeight: on ? 600 : 400 }}
+                onMouseEnter={e => { if (!on) e.currentTarget.style.background = C.surface; }}
+                onMouseLeave={e => { if (!on) e.currentTarget.style.background = "transparent"; }}>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {o.label}{star && star(o) ? " ★" : ""}{o.custom ? "" : ""}
+                </span>
+                {o.custom && onRemove && (
+                  <span onClick={(e) => { e.stopPropagation(); onRemove(o.value); }}
+                    title="Remove this custom option"
+                    style={{ fontSize: font + 1, lineHeight: 1, color: C.t3, padding: "0 2px", cursor: "pointer" }}
+                    onMouseEnter={e => { e.currentTarget.style.color = C.red; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = C.t3; }}>×</span>
+                )}
+              </div>
+            );
+          })}
+          {onAdd && (
+            <>
+              <div style={{ height: 1, background: C.border, margin: "4px 2px" }} />
+              {adding ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px" }}>
+                  <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
+                                      else if (e.key === "Escape") { e.stopPropagation(); setAdding(false); setDraft(""); } }}
+                    placeholder="Name your option…"
+                    style={{ flex: 1, minWidth: 0, border: `0.75px solid ${C.borderMd}`, borderRadius: 5,
+                      padding: "4px 7px", fontSize: font, fontFamily: F, color: C.t1, background: C.bg, outline: "none" }} />
+                  <button type="button" onClick={commitAdd} disabled={!draft.trim()}
+                    style={{ border: "none", borderRadius: 5, padding: "4px 9px", fontSize: font, fontWeight: 600, fontFamily: F,
+                      background: draft.trim() ? C.accent : C.border, color: draft.trim() ? "#fff" : C.t3,
+                      cursor: draft.trim() ? "pointer" : "default" }}>Add</button>
+                </div>
+              ) : (
+                <div onClick={() => setAdding(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: pad, borderRadius: 5,
+                    fontSize: font, color: C.accent, cursor: "pointer", fontWeight: 500 }}
+                  onMouseEnter={e => { e.currentTarget.style.background = C.accent + "10"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                  <span style={{ fontSize: font + 2, lineHeight: 1 }}>＋</span> Add option
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
    MAIN COMPONENT
 ───────────────────────────────────────────── */
 export default function HarmoniaOS() {
@@ -929,11 +1089,52 @@ export default function HarmoniaOS() {
     try { const s = JSON.parse(localStorage.getItem("harmonia-collapsed-phases")); return new Set(Array.isArray(s)?s:[]); } catch { return new Set(); }
   });
 
+  // Tab ribbon visibility — ids of tabs the caller has hidden. Per-caller (rides the
+  // settings blob) + localStorage fallback, same as the phase layout. Managed from the
+  // ⚙ button at the end of the ribbon. See tabDefs / visibleTabs at the ribbon.
+  const [hiddenTabs, setHiddenTabs] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem("harmonia-hidden-tabs")); return new Set(Array.isArray(s)?s:[]); } catch { return new Set(); }
+  });
+  const [tabManagerOpen, setTabManagerOpen] = useState(false);
+
   // Script Mixer — per-caller editable scripts
   const [phaseSelections, setPhaseSelections] = useState({opener:"1",bridge:"1",discovery:"1",pitch:"1",close:"1"});
   const [callerScripts, setCallerScripts] = useState({}); // { "opener_1": "custom text", ... }
   const [scriptSaveStatus, setScriptSaveStatus] = useState({}); // { phase: 'saved'|'saving'|'reset'|null }
   const saveTimerRefs = useRef({});
+
+  // Caller-authored dropdown options, keyed per dropdown (e.g. "variant:opener",
+  // "frame:bridge", "section:discovery:Anchor"). Each entry is a list of { value, label }.
+  // Persists to localStorage now and rides along in the per-caller settings blob so a
+  // caller's custom options follow them across devices. See addDropdownOption / removeDropdownOption.
+  const [customDropdownOpts, setCustomDropdownOpts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-custom-dropdown-opts") || "{}"); }
+    catch { return {}; }
+  });
+  const persistDropdownOpts = (next) => {
+    try { localStorage.setItem("harmonia-custom-dropdown-opts", JSON.stringify(next)); } catch {}
+  };
+  const addDropdownOption = (dropdownKey, label) => {
+    const clean = (label || "").trim();
+    if (!clean) return null;
+    const value = `custom-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    setCustomDropdownOpts(prev => {
+      const list = prev[dropdownKey] || [];
+      const next = { ...prev, [dropdownKey]: [...list, { value, label: clean }] };
+      persistDropdownOpts(next);
+      return next;
+    });
+    return value;
+  };
+  const removeDropdownOption = (dropdownKey, value) => {
+    setCustomDropdownOpts(prev => {
+      const list = (prev[dropdownKey] || []).filter(o => o.value !== value);
+      const next = { ...prev, [dropdownKey]: list };
+      persistDropdownOpts(next);
+      return next;
+    });
+  };
+  const customOptsFor = (dropdownKey) => (customDropdownOpts[dropdownKey] || []);
 
   // Script tab mode — "phases" (the mixer) or "blank" (free-text canvas + draggable variables)
   const [scriptMode, setScriptMode] = useState(() => {
@@ -1086,6 +1287,9 @@ export default function HarmoniaOS() {
 
   // Call history from the "history" tab — shared across all callers
   const [callHistory, setCallHistory] = useState({}); // { leadId: [{caller, outcome, duration, variant, timestamp, notes, spoke_with}, ...] }
+  // Call History OS (Javi-only tab): free-text search across every logged call
+  const [histQuery, setHistQuery] = useState("");
+  const [histSelected, setHistSelected] = useState(null); // leadId of the opened result
 
   // Leaderboard: top-level view toggle + Booked Demos rows (source of Shows)
   const [mainView, setMainView] = useState("workspace"); // "workspace" | "leaderboard"
@@ -1128,7 +1332,11 @@ export default function HarmoniaOS() {
     const spokeW    = clean(r["Spoke With"] || r.spoke_with || "");
     const biz       = clean(r["Business Name"] || r.biz || "");
     const gatekeeper= clean(r["Gatekeeper Name"] || r.gatekeeper_name || "");
-    return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper };
+    const owner     = clean(r["Owner Name"] || r.owner || "");
+    const recording = clean(r["recording_url"] || r["Recording URL"] || r.recording_url || "");
+    const transcript= clean(r["transcript_url"] || r["Transcript"] || r.transcript || r.transcript_url || "");
+    const callSid   = clean(r["call_sid"] || r["Call SID"] || r.call_sid || r.recording_sid || "");
+    return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper, owner, recording, transcript, callSid };
   }
 
   // Re-fetch the "history" tab (per-call log written by n8n) and rebuild call history map
@@ -1149,9 +1357,13 @@ export default function HarmoniaOS() {
           notes:      p.notes,
           spoke_with: p.spoke_with,
           biz:        p.biz,
+          owner:      p.owner,
+          recording:  p.recording,
+          transcript: p.transcript,
+          call_sid:   p.callSid,
         });
       });
-      Object.values(histMap).forEach(arr => arr.sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp)));
+      Object.values(histMap).forEach(arr => arr.sort((a,b) => parseTs(b.timestamp) - parseTs(a.timestamp)));
       setCallHistory(histMap);
       console.log("[Harmonia] Call history built for", Object.keys(histMap).length, "leads");
     } catch(e) { console.error("[Harmonia] Failed to refresh call history:", e); }
@@ -1268,6 +1480,17 @@ export default function HarmoniaOS() {
           try { localStorage.setItem("harmonia-blank-versions", JSON.stringify(next)); } catch {}
           return next;
         });
+      }
+      // Caller-authored dropdown options — only overwrite when the blob carries them, so a
+      // pre-feature server row can't wipe this device's local custom options.
+      if (chosen.customDropdownOpts && typeof chosen.customDropdownOpts === "object") {
+        setCustomDropdownOpts(chosen.customDropdownOpts);
+        persistDropdownOpts(chosen.customDropdownOpts);
+      }
+      // Hidden-tab preferences — only overwrite when present (pre-feature rows keep this device's).
+      if (Array.isArray(chosen.hiddenTabs)) {
+        setHiddenTabs(new Set(chosen.hiddenTabs));
+        try { localStorage.setItem("harmonia-hidden-tabs", JSON.stringify(chosen.hiddenTabs)); } catch {}
       }
     } else {
       setCallerScripts(readLocal(`harmonia-scripts-${name}`) || {});   // legacy per-caller scripts
@@ -1465,6 +1688,17 @@ export default function HarmoniaOS() {
     return()=>clearInterval(phaseRef.current);
   },[callRun]);
 
+  // Never leave a hidden tab selected — if the active tab gets hidden (here or on another
+  // device via synced prefs, or set by selectLead/skip), fall back to the first visible tab.
+  useEffect(() => {
+    if (hiddenTabs.has(tab)) {
+      // "history" is a Javi-only tab (not in tabDefs for others) — never fall back onto it for a
+      // non-Javi, or the ribbon/body would render blank.
+      const fv = TAB_IDS.find(id => !hiddenTabs.has(id) && (id !== "history" || callerName === "Javi"));
+      if (fv && fv !== tab) setTab(fv);
+    }
+  }, [hiddenTabs, tab, callerName]);
+
   // ── Cross-device persistence: save settings (debounced 800ms). The mutation sites
   // already call setState, so these effects catch every script/layout/objection/admin
   // change and upsert the full blob. Gated by the hydrated refs so loading data never
@@ -1473,11 +1707,11 @@ export default function HarmoniaOS() {
     if (!callerName || !personalHydrated.current) return;
     const blob = { version:1, updated_at:new Date().toISOString(),
       scripts: callerScripts, phaseOrder, collapsedPhases:[...collapsedPhases], offerCollapsed,
-      blankVersions: blankVersions[callerName] || [] };
+      blankVersions: blankVersions[callerName] || [], customDropdownOpts, hiddenTabs:[...hiddenTabs] };
     try { localStorage.setItem(`harmonia-settings-${callerName}`, JSON.stringify(blob)); } catch {}
     if (personalSaveTimer.current) clearTimeout(personalSaveTimer.current);
     personalSaveTimer.current = setTimeout(() => postSettings(callerName, blob), 800);
-  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, blankVersions, callerName]);
+  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, blankVersions, customDropdownOpts, hiddenTabs, callerName]);
 
   useEffect(() => {
     if (!objectionsHydrated.current) return;
@@ -2790,9 +3024,8 @@ export default function HarmoniaOS() {
               )}
 
               {/* Tabs */}
-              <div style={{display:"flex",padding:"0 20px",borderBottom:`0.75px solid ${C.border}`,
-                gap:0,flexShrink:0,background:C.bg}}>
-                {[
+              {(() => {
+                const tabDefs = [
                   {id:"intel",      label:"Intel"},
                   {id:"script",     label:"Script"},
                   {id:"offer",      label:"The Offer"},
@@ -2802,17 +3035,77 @@ export default function HarmoniaOS() {
                   {id:"recording",  label:"Recording"},
                   {id:"roi",        label:"ROI Calc"},
                   {id:"booking",    label:"Booking"},
-                ].map(t=>(
-                  <button key={t.id} onClick={()=>setTab(t.id)}
-                    style={{padding:"10px 15px",border:"none",background:"transparent",
-                      borderBottom:tab===t.id?`1.5px solid ${C.accent}`:"1.5px solid transparent",
-                      color:tab===t.id?C.t1:C.t3,fontSize:12,
-                      fontWeight:tab===t.id?500:400,marginBottom:"-1px",
-                      transition:"color 0.15s"}}>
-                    {t.label}
+                  ...(callerName === "Javi" ? [{id:"history", label:"Call History"}] : []),
+                ];
+                const visibleTabs = tabDefs.filter(t => !hiddenTabs.has(t.id));
+                const toggleTab = (id) => {
+                  const next = new Set(hiddenTabs);
+                  if (next.has(id)) { next.delete(id); }
+                  else {
+                    // Never hide the last visible tab — always leave at least one.
+                    if (tabDefs.filter(t => !next.has(t.id) && t.id !== id).length === 0) return;
+                    next.add(id);
+                    if (tab === id) { const fv = tabDefs.find(t => !next.has(t.id)); if (fv) setTab(fv.id); }
+                  }
+                  setHiddenTabs(next);
+                  try { localStorage.setItem("harmonia-hidden-tabs", JSON.stringify([...next])); } catch {}
+                };
+                return (
+                <div style={{display:"flex",alignItems:"center",padding:"0 20px",borderBottom:`0.75px solid ${C.border}`,
+                  gap:0,flexShrink:0,background:C.bg,position:"relative"}}>
+                  {visibleTabs.map(t=>(
+                    <button key={t.id} onClick={()=>setTab(t.id)}
+                      style={{padding:"10px 15px",border:"none",background:"transparent",
+                        borderBottom:tab===t.id?`1.5px solid ${C.accent}`:"1.5px solid transparent",
+                        color:tab===t.id?C.t1:C.t3,fontSize:12,
+                        fontWeight:tab===t.id?500:400,marginBottom:"-1px",
+                        transition:"color 0.15s"}}>
+                      {t.label}
+                    </button>
+                  ))}
+                  <div style={{flex:1}} />
+                  {/* Manage tabs — hide/unhide from the ribbon */}
+                  <button onClick={()=>setTabManagerOpen(o=>!o)}
+                    title="Show or hide tabs"
+                    style={{border:`0.75px solid ${tabManagerOpen?C.accent:C.border}`,borderRadius:100,
+                      background:tabManagerOpen?C.accent+"12":"transparent",color:tabManagerOpen?C.accent:C.t3,
+                      cursor:"pointer",fontSize:11,fontWeight:500,fontFamily:F,padding:"3px 11px",
+                      display:"flex",alignItems:"center",gap:5,marginLeft:8,alignSelf:"center",transition:"all 0.15s"}}>
+                    <span style={{fontSize:12,lineHeight:1}}>⚙</span> Tabs
                   </button>
-                ))}
-              </div>
+                  {tabManagerOpen && (
+                    <>
+                      <div onClick={()=>setTabManagerOpen(false)}
+                        style={{position:"fixed",inset:0,zIndex:49}} />
+                      <div style={{position:"absolute",top:"calc(100% + 6px)",right:16,zIndex:50,width:240,
+                        background:C.bg,border:`0.75px solid ${C.borderMd}`,borderRadius:10,
+                        boxShadow:"0 10px 30px rgba(28,61,82,0.16)",padding:8,fontFamily:F}}>
+                        <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                          letterSpacing:".06em",padding:"4px 8px 8px"}}>Show tabs</div>
+                        {tabDefs.map(t=>{
+                          const shown = !hiddenTabs.has(t.id);
+                          const isLastVisible = shown && visibleTabs.length === 1;
+                          return (
+                            <div key={t.id} onClick={()=>{ if(!isLastVisible) toggleTab(t.id); }}
+                              title={isLastVisible?"At least one tab must stay visible":(shown?"Click to hide":"Click to show")}
+                              style={{display:"flex",alignItems:"center",gap:9,padding:"6px 8px",borderRadius:6,
+                                cursor:isLastVisible?"default":"pointer",opacity:isLastVisible?0.55:1}}
+                              onMouseEnter={e=>{ if(!isLastVisible) e.currentTarget.style.background=C.surface; }}
+                              onMouseLeave={e=>{ e.currentTarget.style.background="transparent"; }}>
+                              <span style={{width:16,height:16,borderRadius:4,flexShrink:0,display:"flex",
+                                alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,
+                                border:`1px solid ${shown?C.accent:C.borderMd}`,
+                                background:shown?C.accent:"transparent",color:shown?"#fff":"transparent"}}>✓</span>
+                              <span style={{flex:1,fontSize:12,color:shown?C.t1:C.t3}}>{t.label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+                );
+              })()}
 
               {/* Tab content */}
               <div style={{flex:1,overflowY:"auto",padding:20,position:"relative"}}>
@@ -3175,7 +3468,7 @@ export default function HarmoniaOS() {
                     {/* Toggle buttons for Call History & Notes */}
                     <div style={{display:"flex",gap:6,marginBottom:12,alignItems:"center"}}>
                       <div style={{display:"flex",border:`0.75px solid ${C.border}`,borderRadius:100,overflow:"hidden",marginRight:2}}>
-                        {[{id:"phases",l:"Phases"},{id:"blank",l:"Blank Canvas"}].map(m=>(
+                        {[{id:"phases",l:"Phases"},{id:"script",l:"Script"},{id:"blank",l:"Blank Canvas"}].map(m=>(
                           <button key={m.id} onClick={()=>{setScriptMode(m.id);try{localStorage.setItem("harmonia-script-mode",m.id);}catch{}}}
                             style={{padding:"4px 12px",border:"none",fontSize:10,fontWeight:500,cursor:"pointer",
                               background:scriptMode===m.id?C.t1:"transparent",
@@ -3505,7 +3798,172 @@ export default function HarmoniaOS() {
                           )}
                         </div>
                       );
-                    })() : !hasAnyScripts ? (
+                    })() : scriptMode==="script" ? (
+                      /* ── SCRIPT READOUT ── read-only rendering of the exact phases the caller built:
+                         the chosen variant/frame text, filled with this lead's values, top to bottom.
+                         Reply "They respond…" chips and A/B toggles stay clickable so you can still
+                         click through a live call. Off (collapsed) phases are excluded. This mirrors
+                         the Phases mixer's selection logic — keep the two in sync when either changes. */
+                      !hasAnyScripts ? (
+                        <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
+                          No script yet — build it in the Phases tab first.
+                        </div>
+                      ) : (() => {
+                        const placeholderCtx = buildPlaceholderContext(active, callerName);
+                        const icpKey = icpGroup(active?.icp);
+                        const ABON = scriptFormat === 'ab';
+                        const abText = (editKey, sheetText) => {
+                          const raw = (callerScripts[editKey] !== undefined && callerScripts[editKey] !== null) ? callerScripts[editKey] : sheetText;
+                          return fillPlaceholdersPlain(formatScriptLines(raw), placeholderCtx);
+                        };
+                        // Clickable reply chips (shared by legacy + A/B). Same look as the mixer.
+                        const renderReplies = (items, openIdx, onToggle) => (!items || items.length === 0) ? null : (
+                          <div style={{marginTop:10}}>
+                            <div style={{fontSize:9,fontWeight:600,color:C.t3,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>They respond…</div>
+                            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:openIdx!=null?10:0}}>
+                              {items.map((it,oi)=>{ const on=openIdx===oi; const s=BUBBLE_STYLES[it.tag]||BUBBLE_STYLES.yellow;
+                                return (<button key={oi} onClick={()=>onToggle(on?null:oi)}
+                                  style={{padding:"6px 14px",borderRadius:20,fontSize:11,fontWeight:500,cursor:"pointer",fontFamily:F,
+                                    border:`1.5px solid ${on?s.border:"#e5e5e5"}`,background:on?s.bg:"#fff",color:on?s.text:"#555",minHeight:36}}>{it.label}</button>);
+                              })}
+                            </div>
+                            {openIdx!=null && items[openIdx] && (()=>{ const it=items[openIdx]; const s=BUBBLE_STYLES[it.tag]||BUBBLE_STYLES.yellow;
+                              return (<div style={{background:s.bg,border:`0.75px solid ${s.border}`,borderRadius:10,padding:"12px 14px"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                                  <div style={{width:7,height:7,borderRadius:"50%",background:s.dot}} />
+                                  <span style={{fontSize:10,fontWeight:600,color:s.text,textTransform:"uppercase",letterSpacing:".04em"}}>{s.label}</span>
+                                </div>
+                                <div style={{fontSize:12,color:s.text,lineHeight:1.7,whiteSpace:"pre-line"}}>{fillPlaceholdersPlain(it.text||"", placeholderCtx)}</div>
+                                {it.note && <div style={{fontSize:10,color:s.text,opacity:0.7,marginTop:6,fontStyle:"italic"}}>{it.note}</div>}
+                              </div>);
+                            })()}
+                          </div>
+                        );
+                        const visiblePhases = phaseOrder.filter(p => !collapsedPhases.has(p.id));
+                        return (
+                          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                            <div style={{fontSize:10,color:C.t3,letterSpacing:".03em",lineHeight:1.5}}>
+                              Read-only view of the script you built in <b style={{color:C.t2}}>Phases</b>. Reply chips and A/B toggles stay clickable — switch to Phases to edit.
+                            </div>
+                            {visiblePhases.map(phaseObj => {
+                              const phase = phaseObj.id;
+                              const phaseColor = phaseObj.color;
+                              const isCustomPhase = !phaseObj.isDefault;
+                              let caption = "";
+                              const blocks = []; // [{name?, text, note?, toggle?:{ck,choice}}]
+                              let replies = null;
+
+                              if (ABON) {
+                                const ab = (abData[icpKey] || {})[phase] || { groups: [], replies: [], sections: [] };
+                                const customFrames = customOptsFor(`frame:${phase}`).map(o => ({ name: o.label, _custom: true, pieces: [{ sub: "", a: { text: "", note: "" }, b: null }] }));
+                                const frames = [...(ab.groups || []), ...(phase === 'opener' ? customOpenerFrames : []), ...customFrames];
+                                const selName = frames.find(f => f.name === phaseSelections[phase]) ? phaseSelections[phase] : (frames[0]?.name || '');
+                                const frame = frames.find(f => f.name === selName) || frames[0] || null;
+                                const showAll = phase === 'discovery';
+                                const sections = ab.sections || [];
+                                const useSections = showAll && sections.length > 0;
+                                if (!showAll && frame && frames.length > 1) caption = frame.name;
+                                if (useSections) {
+                                  sections.forEach(sec => {
+                                    const secDdKey = `section:${phase}:${sec.name}`;
+                                    const secVariants = [...sec.variants, ...customOptsFor(secDdKey).map(o => ({ id: o.value, custom: true, a: { text: "", note: "" }, b: null }))];
+                                    const selKey = `${phase}:${sec.name}`;
+                                    const selId = secVariants.find(v => v.id === phaseSelections[selKey]) ? phaseSelections[selKey] : secVariants[0]?.id;
+                                    const vr = secVariants.find(v => v.id === selId) || secVariants[0] || { a: null, b: null };
+                                    const ck = `${phase}:${sec.name}:ab`;
+                                    const choice = (abChoice[ck] === 'B' && vr.b) ? 'B' : 'A';
+                                    const shown = (choice === 'B' ? vr.b : vr.a) || vr.a || vr.b || { text: '', note: '' };
+                                    const editKey = `ab:${phase}:${sec.name}:${selId}:${choice}`;
+                                    blocks.push({ name: sec.name, text: abText(editKey, shown.text), note: shown.note, toggle: vr.b ? { ck, choice } : null });
+                                  });
+                                } else {
+                                  const list = showAll ? frames : (frame ? [frame] : []);
+                                  list.forEach((fr) => (fr.pieces || []).forEach((pc, pi) => {
+                                    const ck = `${phase}:${fr.name}:${pc.sub || pi}`;
+                                    const choice = (abChoice[ck] === 'B' && pc.b) ? 'B' : 'A';
+                                    const variant = choice === 'B' ? pc.b : pc.a;
+                                    const editKey = `ab:${phase}:${fr.name}:${pc.sub || pi}:${choice}`;
+                                    const subLabel = showAll ? fr.name : ((pc.sub && pc.sub !== fr.name) ? pc.sub : '');
+                                    blocks.push({ name: subLabel, text: abText(editKey, variant?.text || ''), note: variant?.note, toggle: pc.b ? { ck, choice } : null });
+                                  }));
+                                }
+                                const repItems = (ab.replies || []).map((rep, ri) => {
+                                  const ck = `${phase}:reply:${ri}`;
+                                  const choice = (abChoice[ck] === 'B' && rep.b) ? 'B' : 'A';
+                                  const v = choice === 'B' ? rep.b : rep.a;
+                                  const editKey = `ab:${phase}:reply:${ri}:${choice}`;
+                                  return { label: rep.name, tag: rep.tag, text: abText(editKey, v?.text || ''), note: v?.note };
+                                });
+                                replies = renderReplies(repItems, abReplyOpen[phase] ?? null, i => setAbReplyOpen(prev => ({ ...prev, [phase]: i })));
+                              } else if (isCustomPhase) {
+                                blocks.push({ text: fillPlaceholdersPlain(formatScriptLines(callerScripts[`${phase}_custom`] || ""), placeholderCtx) });
+                              } else if (phase === 'discovery') {
+                                const steps = Object.entries(scripts[icpKey] || {})
+                                  .map(([v, sc]) => { const l = (sc.lines || []).find(x => x.type === 'discovery'); return l ? { variant: v, name: l.name, text: l.text, note: l.note } : null; })
+                                  .filter(Boolean).sort((a, b) => (parseInt(a.variant) || 0) - (parseInt(b.variant) || 0));
+                                steps.forEach((st, si) => blocks.push({ name: `${si + 1}. ${st.name}`, text: fillPlaceholdersPlain(formatScriptLines(st.text), placeholderCtx), note: st.note }));
+                                const rep = (bubbleData[icpKey] || {}).discovery || [];
+                                replies = renderReplies(rep.map(o => ({ label: o.label, tag: o.type, text: o.response, note: o.note })), activeDiscoveryBubble, setActiveDiscoveryBubble);
+                              } else {
+                                const icpScripts = scripts[icpKey] || {};
+                                const REMOVED = new Set(["7", "8"]);
+                                const options = [];
+                                Object.entries(icpScripts).forEach(([varId, script]) => {
+                                  if (phase === "opener" && !ACTIVE_OPENERS.includes(varId)) return;
+                                  if (REMOVED.has(varId)) return;
+                                  if (disabledScripts.has(varId)) return;
+                                  const pls = script.lines.filter(l => l.type === phase);
+                                  const line = pls[pls.length - 1];
+                                  if (!line && phase !== "opener") return;
+                                  options.push({ id: varId, name: line?.name || script.name, text: line?.text || "" });
+                                });
+                                customOptsFor(`variant:${phase}`).forEach(o => options.push({ id: o.value, name: o.label, text: "" }));
+                                const persistedSel = phaseSelections[phase];
+                                const selectedVar = (options.find(o => o.id === persistedSel) ? persistedSel : null) || options[0]?.id || "1";
+                                const selectedOption = options.find(o => o.id === selectedVar) || options[0];
+                                if (options.length > 1) caption = selectedOption?.name || "";
+                                const customText = callerScripts[`${phase}_${selectedVar}`];
+                                const rawText = (customText !== undefined && customText !== null) ? customText : (selectedOption?.text || "");
+                                blocks.push({ text: fillPlaceholdersPlain(formatScriptLines(rawText), placeholderCtx) });
+                                if (phase === 'bridge') { const rep = (bubbleData[icpKey] || {}).bridge || []; replies = renderReplies(rep.map(o => ({ label: o.label, tag: o.type, text: o.response, note: o.note })), activeBridgeBubble, setActiveBridgeBubble); }
+                                if (phase === 'close') { const rep = (bubbleData[icpKey] || {}).close || []; replies = renderReplies(rep.map(o => ({ label: o.label, tag: o.type, text: o.response, note: o.note })), activeCloseBubble, setActiveCloseBubble); }
+                              }
+
+                              const hasContent = blocks.some(b => b.text && b.text.trim()) || replies != null;
+                              if (!hasContent) return null;
+
+                              return (
+                                <div key={phase} style={{borderLeft:`3px solid ${phaseColor}`,background:`${phaseColor}04`,borderRadius:"0 10px 10px 0",padding:"12px 16px"}}>
+                                  <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}>
+                                    <span style={{fontSize:10,fontWeight:600,color:phaseColor,textTransform:"uppercase",letterSpacing:".05em"}}>{phaseObj.label}</span>
+                                    {caption && <span style={{fontSize:10,color:C.t3}}>{caption}</span>}
+                                  </div>
+                                  {blocks.map((b, bi) => (
+                                    <div key={bi} style={{marginBottom: bi < blocks.length - 1 ? 12 : 0}}>
+                                      {(b.name || b.toggle) && (
+                                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                                          {b.name ? <span style={{flex:1,fontSize:10,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".04em"}}>{b.name}</span> : <span style={{flex:1}} />}
+                                          {b.toggle && ['A','B'].map(opt => { const on = b.toggle.choice === opt;
+                                            return (<button key={opt} onClick={()=>setAbChoice(prev => ({...prev, [b.toggle.ck]: opt}))}
+                                              style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,cursor:"pointer",fontFamily:F,
+                                                border:`1px solid ${on?phaseColor:C.border}`,background:on?phaseColor:"#fff",color:on?"#fff":C.t3}}>{opt}</button>);
+                                          })}
+                                        </div>
+                                      )}
+                                      <div style={{fontSize:14,color:C.t1,lineHeight:1.75,whiteSpace:"pre-line"}}>
+                                        {b.text ? b.text : <span style={{color:C.t3,fontStyle:"italic"}}>— nothing chosen —</span>}
+                                      </div>
+                                      {b.note && <div style={{fontSize:10,color:C.t3,marginTop:4,fontStyle:"italic",lineHeight:1.5}}>{b.note}</div>}
+                                    </div>
+                                  ))}
+                                  {replies}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()
+                    ) : !hasAnyScripts ? (
                       <div style={{fontSize:12,color:C.t3,padding:"20px 0"}}>
                         No scripts found for this vertical.<br/>
                         Add rows to the Scripts tab in your Google Sheet.
@@ -3546,6 +4004,12 @@ export default function HarmoniaOS() {
                                 tag: line?.tag || script.tag,
                                 text: line?.text || "",
                               });
+                            });
+                            // Caller-authored variants for this phase's dropdown. They start with no
+                            // sheet text (text:"") — selecting one shows an empty editable textarea the
+                            // caller fills in, saved under callerScripts[`${phase}_${customValue}`].
+                            customOptsFor(`variant:${phase}`).forEach(o => {
+                              options.push({ id: o.value, name: o.label, tag: undefined, text: "", custom: true });
                             });
                           }
 
@@ -3634,17 +4098,19 @@ export default function HarmoniaOS() {
                                 )}
                                 {/* Cost Frame shows all its steps in sequence, so no variant picker there */}
                                 {scriptFormat !== 'ab' && (!isCustomPhase || isBridge) && !isDiscoveryPhase && options.length > 0 && (
-                                  <select value={selectedVar}
-                                    onChange={e => setPhaseSelections(prev => ({...prev, [phase]: e.target.value}))}
-                                    style={{flex:1,border:`0.75px solid ${C.border}`,borderRadius:6,padding:"4px 8px",
-                                      fontSize:11,background:C.bg,color:C.t1,outline:"none",maxWidth:320}}>
-                                    {options.map(o => (
-                                      <option key={o.id} value={o.id}>
-                                        {isBridge ? `${o.id} — ${o.name}${o.id==="1"?" \u2605":""}` :
-                                          `${o.id} — ${o.name}${isOpener && recMap[o.id] ? " \u2605" : ""}`}
-                                      </option>
-                                    ))}
-                                  </select>
+                                  <OSSelect
+                                    value={selectedVar}
+                                    options={options.map(o => ({
+                                      value: o.id,
+                                      label: o.custom ? o.name : `${o.id} — ${o.name}`,
+                                      custom: o.custom,
+                                    }))}
+                                    onChange={v => setPhaseSelections(prev => ({...prev, [phase]: v}))}
+                                    onAdd={label => { const v = addDropdownOption(`variant:${phase}`, label); if (v) setPhaseSelections(prev => ({...prev, [phase]: v})); }}
+                                    onRemove={v => { removeDropdownOption(`variant:${phase}`, v); if (selectedVar === v) { const fb = options.find(o => o.id !== v); setPhaseSelections(prev => ({...prev, [phase]: fb ? fb.id : "1"})); } }}
+                                    star={o => isBridge ? o.value === "1" : (isOpener && !!recMap[o.value])}
+                                    triggerStyle={{ flex: 1, maxWidth: 320 }}
+                                  />
                                 )}
                                 {isCustomPhase && !isBridge && (
                                   <span style={{flex:1,fontSize:10,color:C.t3,fontStyle:"italic"}}>Custom phase</span>
@@ -3682,10 +4148,19 @@ export default function HarmoniaOS() {
                                 /* ── A/B format: ONE selected frame per stage + per-piece A/B toggle + editable text + reply chips ── */
                                 if (scriptFormat === 'ab') {
                                   const ab = abPhase || { groups: [], replies: [] };
+                                  // Caller-authored frames added straight from this phase's dropdown. Each is a
+                                  // single empty editable piece the caller fills in (keyed by its own name).
+                                  // Name === stored label, so removal/selection can match by name.
+                                  const customFrames = customOptsFor(`frame:${phase}`).map(o => ({
+                                    key: `cf-${o.value}`, name: o.label, tag: undefined, _custom: true, _optValue: o.value,
+                                    pieces: [{ sub: "", a: { text: "", note: "" }, b: null }],
+                                  }));
                                   // Team-shared custom openers appear as extra frames in the Opener dropdown.
-                                  const frames = phase === 'opener' && customOpenerFrames.length
-                                    ? [...ab.groups, ...customOpenerFrames]
-                                    : ab.groups;
+                                  const frames = [
+                                    ...ab.groups,
+                                    ...(phase === 'opener' ? customOpenerFrames : []),
+                                    ...customFrames,
+                                  ];
                                   const selName = frames.find(f => f.name === phaseSelections[phase]) ? phaseSelections[phase] : (frames[0]?.name || '');
                                   const frame = frames.find(f => f.name === selName) || frames[0] || null;
                                   const activeChip = abReplyOpen[phase];
@@ -3726,17 +4201,28 @@ export default function HarmoniaOS() {
                                   return (
                                     <div style={{padding:"8px 16px 12px"}}>
                                       {!showAll && frames.length > 1 && (
-                                        <select value={selName} onChange={e=>setPhaseSelections(prev=>({...prev,[phase]:e.target.value}))}
-                                          style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:6,padding:"5px 8px",
-                                            fontSize:11,background:C.bg,color:C.t1,outline:"none",marginBottom:10,fontFamily:F}}>
-                                          {frames.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
-                                        </select>
+                                        <div style={{marginBottom:10}}>
+                                          <OSSelect
+                                            value={selName}
+                                            options={frames.map(f => ({ value: f.name, label: f.name, custom: !!f._custom }))}
+                                            onChange={v => setPhaseSelections(prev => ({...prev, [phase]: v}))}
+                                            onAdd={label => { const val = addDropdownOption(`frame:${phase}`, label); if (val) setPhaseSelections(prev => ({...prev, [phase]: label})); }}
+                                            onRemove={name => { const opt = customOptsFor(`frame:${phase}`).find(o => o.label === name); if (opt) removeDropdownOption(`frame:${phase}`, opt.value); if (selName === name) setPhaseSelections(prev => ({...prev, [phase]: ab.groups[0]?.name || ''})); }}
+                                            triggerStyle={{ width: "100%" }}
+                                          />
+                                        </div>
                                       )}
                                       {useSections && sections.map((sec, si) => {
                                         const secAccent = BUBBLE_STYLES[sec.tag] ? BUBBLE_STYLES[sec.tag].border : phaseColor;
+                                        const secDdKey = `section:${phase}:${sec.name}`;
+                                        // Caller-authored section variants (empty a-line the caller fills in).
+                                        const secVariants = [
+                                          ...sec.variants,
+                                          ...customOptsFor(secDdKey).map(o => ({ id: o.value, _label: o.label, custom: true, a: { text: "", note: "" }, b: null })),
+                                        ];
                                         const selKey = `${phase}:${sec.name}`;
-                                        const selId = sec.variants.find(v => v.id === phaseSelections[selKey]) ? phaseSelections[selKey] : sec.variants[0]?.id;
-                                        const vr = sec.variants.find(v => v.id === selId) || sec.variants[0] || { a: null, b: null };
+                                        const selId = secVariants.find(v => v.id === phaseSelections[selKey]) ? phaseSelections[selKey] : secVariants[0]?.id;
+                                        const vr = secVariants.find(v => v.id === selId) || secVariants[0] || { a: null, b: null };
                                         const ck = `${phase}:${sec.name}:ab`;
                                         const choice = (abChoice[ck] === 'B' && vr.b) ? 'B' : 'A';
                                         const shown = (choice === 'B' ? vr.b : vr.a) || vr.a || vr.b || { text: '', note: '' };
@@ -3745,11 +4231,17 @@ export default function HarmoniaOS() {
                                           <div key={sec.name || si} style={{marginBottom:12}}>
                                             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                                               <span style={{fontSize:10,fontWeight:700,color:C.t2,textTransform:"uppercase",letterSpacing:".04em"}}>{sec.name}</span>
-                                              {sec.variants.length > 1 && (
-                                                <select value={selId} onChange={e=>setPhaseSelections(prev=>({...prev,[selKey]:e.target.value}))}
-                                                  style={{border:`0.75px solid ${C.border}`,borderRadius:5,padding:"2px 6px",fontSize:10,background:C.bg,color:C.t1,outline:"none",fontFamily:F}}>
-                                                  {sec.variants.map(v => <option key={v.id} value={v.id}>{v.id}</option>)}
-                                                </select>
+                                              {secVariants.length > 1 && (
+                                                <OSSelect
+                                                  value={selId}
+                                                  size="sm"
+                                                  options={secVariants.map(v => ({ value: v.id, label: v.custom ? (v._label || "Custom") : v.id, custom: v.custom }))}
+                                                  onChange={val => setPhaseSelections(prev => ({...prev, [selKey]: val}))}
+                                                  onAdd={label => { const val = addDropdownOption(secDdKey, label); if (val) setPhaseSelections(prev => ({...prev, [selKey]: val})); }}
+                                                  onRemove={val => { removeDropdownOption(secDdKey, val); if (selId === val) setPhaseSelections(prev => ({...prev, [selKey]: sec.variants[0]?.id})); }}
+                                                  triggerStyle={{ minWidth: 68 }}
+                                                  menuWidth={160}
+                                                />
                                               )}
                                               <span style={{flex:1}} />
                                               {vr.b && ['A','B'].map(opt => {
@@ -4707,6 +5199,204 @@ export default function HarmoniaOS() {
                           No offer posted yet. Javi will add it here.
                         </div>
                       )}
+                    </div>
+                  );
+                })()}
+
+                {/* ── CALL HISTORY (Javi-only) — search every logged call, play the recording ── */}
+                {tab==="history" && callerName==="Javi" && (()=>{
+                  const tsval = parseTs; // NaN-safe (module helper) — shared with refreshCallHistory
+                  // Build the search index from the already-loaded history map + leads (no new fetch).
+                  const leadById = {};
+                  leads.forEach(l => { if (l.id) leadById[l.id] = l; });
+                  const groups = Object.entries(callHistory).map(([leadId, calls])=>{
+                    const l = leadById[leadId] || {};
+                    const last = calls[0] || {};
+                    return {
+                      leadId,
+                      biz:   (l.biz || last.biz || "").trim(),
+                      owner: (l.owner || (calls.find(c=>c.owner)||{}).owner || "").trim(),
+                      phone: (l.phone || "").trim(),
+                      city:  (l.city || "").trim(),
+                      state: (l.state || "").trim(),
+                      icp:   (l.icp || "").trim(),
+                      calls,
+                      lastTs: last.timestamp || "",
+                    };
+                  });
+                  const q = histQuery.trim().toLowerCase();
+                  const matches = groups
+                    .filter(g => !q || g.biz.toLowerCase().includes(q) || g.owner.toLowerCase().includes(q) || g.phone.toLowerCase().includes(q))
+                    .sort((a,b)=> tsval(b.lastTs) - tsval(a.lastTs));
+                  const CAP = 60;
+                  const shown = matches.slice(0, CAP);
+                  const sel = matches.find(g=>g.leadId===histSelected) || shown[0] || null;
+                  const titleOf = g => g.biz || g.owner || g.phone || `Lead ${g.leadId}`;
+                  const totalCalls = groups.reduce((n,g)=>n+g.calls.length,0);
+                  return (
+                    <div>
+                      <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:12}}>
+                        <span style={{fontSize:14,fontWeight:600,color:C.t1}}>Call History</span>
+                        <span style={{fontSize:11,color:C.t3}}>{Object.keys(callHistory).length} leads · {totalCalls} calls logged</span>
+                      </div>
+                      <input value={histQuery} onChange={e=>{setHistQuery(e.target.value); setHistSelected(null);}}
+                        placeholder="Search owner, business, or phone…" autoFocus
+                        style={{width:"100%",maxWidth:520,border:`0.75px solid ${C.borderMd}`,borderRadius:100,
+                          padding:"9px 16px",fontSize:13,background:C.bg,color:C.t1,outline:"none",fontFamily:F,marginBottom:14}}/>
+                      <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start"}}>
+                        {/* master list */}
+                        <div style={{flex:"1 1 300px",minWidth:280,maxWidth:400,display:"flex",flexDirection:"column",
+                          gap:6,maxHeight:600,overflowY:"auto"}}>
+                          <div style={{fontSize:10,color:C.t3,fontWeight:500,textTransform:"uppercase",letterSpacing:".03em"}}>
+                            {q ? `${matches.length} result${matches.length!==1?"s":""}` : "Recently called"}{matches.length>CAP?` · showing ${CAP}`:""}
+                          </div>
+                          {shown.length===0 && (
+                            <div style={{fontSize:12,color:C.t3,padding:"10px 2px"}}>
+                              {Object.keys(callHistory).length===0 ? "Call history is still loading…" : `No calls match “${histQuery}”.`}
+                            </div>
+                          )}
+                          {shown.map(g=>{
+                            const last = g.calls[0]||{};
+                            const isSel = sel && g.leadId===sel.leadId;
+                            const oc = OUTCOMES[last.outcome];
+                            return (
+                              <button key={g.leadId} onClick={()=>setHistSelected(g.leadId)}
+                                style={{textAlign:"left",border:`0.75px solid ${isSel?C.accent:C.border}`,
+                                  background:isSel?C.accent+"0C":C.bg,borderRadius:10,padding:"9px 12px",cursor:"pointer",
+                                  fontFamily:F,display:"flex",flexDirection:"column",gap:3}}>
+                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                                  <span style={{fontSize:13,fontWeight:500,color:C.t1,overflow:"hidden",
+                                    textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{titleOf(g)}</span>
+                                  <span style={{fontSize:9,fontWeight:600,padding:"1px 7px",borderRadius:100,flexShrink:0,
+                                    color:oc?.color||C.t3,background:(oc?.color||C.t3)+"18"}}>{oc?.short||last.outcome||"—"}</span>
+                                </div>
+                                <div style={{fontSize:10,color:C.t3,display:"flex",gap:6,flexWrap:"wrap"}}>
+                                  {g.owner && <span>{g.owner}</span>}
+                                  {(g.city||g.state) && <span>· {[g.city,g.state].filter(Boolean).join(", ")}</span>}
+                                  <span>· {g.calls.length} call{g.calls.length!==1?"s":""}</span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {/* detail */}
+                        <div style={{flex:"2 1 420px",minWidth:340}}>
+                          {!sel ? (
+                            <div style={{border:`1px dashed ${C.border}`,borderRadius:12,padding:"40px 18px",
+                              textAlign:"center",fontSize:12,color:C.t3}}>
+                              {q ? "Select a result to see its full call history." : "Search a business or owner to begin."}
+                            </div>
+                          ) : (()=>{
+                            const hist = sel.calls;
+                            const callers = [...new Set(hist.map(h=>h.caller).filter(Boolean))];
+                            const lastCall = hist[0]||{};
+                            return (
+                              // key by leadId → switching leads remounts, clearing uncontrolled
+                              // <details>/<audio> state so it never bleeds onto another business.
+                              <div key={sel.leadId} style={{display:"flex",flexDirection:"column",gap:12}}>
+                                <div>
+                                  <div style={{fontSize:16,fontWeight:600,color:C.t1}}>{titleOf(sel)}</div>
+                                  <div style={{fontSize:11,color:C.t3,marginTop:2,display:"flex",gap:8,flexWrap:"wrap"}}>
+                                    {sel.owner && <span>{sel.owner}</span>}
+                                    {sel.phone && <span style={{fontFamily:FM}}>{sel.phone}</span>}
+                                    {(sel.city||sel.state) && <span>{[sel.city,sel.state].filter(Boolean).join(", ")}</span>}
+                                    {sel.icp && <span>{sel.icp}</span>}
+                                  </div>
+                                </div>
+                                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                                  <div style={{background:C.surface,borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
+                                    <div style={{fontSize:18,fontWeight:500,color:C.t1,fontFamily:FM}}>{hist.length}</div>
+                                    <div style={{fontSize:9,color:C.t3,marginTop:2}}>Total calls</div>
+                                  </div>
+                                  <div style={{background:C.surface,borderRadius:8,padding:"8px 10px",textAlign:"center",
+                                    border:`0.75px solid ${OUTCOMES[lastCall.outcome]?.color||C.border}`}}>
+                                    <div style={{fontSize:12,fontWeight:600,color:OUTCOMES[lastCall.outcome]?.color||C.t1,lineHeight:1.3}}>
+                                      {OUTCOMES[lastCall.outcome]?.label||lastCall.outcome||"—"}
+                                    </div>
+                                    <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last result</div>
+                                  </div>
+                                  <div style={{background:C.surface,borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
+                                    <div style={{fontSize:12,fontWeight:500,color:C.t1,lineHeight:1.3}}>{lastCall.caller||"—"}</div>
+                                    <div style={{fontSize:9,color:C.t3,marginTop:2}}>Last caller</div>
+                                  </div>
+                                </div>
+                                {callers.length>0 && (
+                                  <div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+                                    <span style={{fontSize:10,color:C.t3,marginRight:2}}>Called by</span>
+                                    {callers.map(c=>(
+                                      <span key={c} style={{fontSize:10,padding:"2px 8px",borderRadius:100,
+                                        background:C.t2+"14",color:C.t2,fontWeight:500}}>{c}</span>
+                                    ))}
+                                  </div>
+                                )}
+                                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                                  {hist.map((h,i)=>{
+                                    const oc = OUTCOMES[h.outcome];
+                                    const script = decodeScriptVariant(h.variant);
+                                    const audio = playableAudioUrl(h.recording);
+                                    const tr = (h.transcript||"").trim();
+                                    const trIsUrl = /^https?:\/\//i.test(tr);
+                                    return (
+                                      <div key={(h.timestamp||"t")+"-"+i} style={{background:C.bg,borderRadius:10,padding:"10px 12px",
+                                        border:`0.75px solid ${(oc?.color||C.border)}40`}}>
+                                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                            <span style={{width:6,height:6,borderRadius:"50%",background:oc?.color||C.t3,flexShrink:0}}/>
+                                            <span style={{fontSize:12,fontWeight:600,color:oc?.color||C.t1}}>{oc?.label||h.outcome||"Unknown"}</span>
+                                          </div>
+                                          <span style={{fontSize:10,color:C.t3,fontFamily:FM}}>{h.duration?fmt(h.duration):""}</span>
+                                        </div>
+                                        <div style={{display:"flex",justifyContent:"space-between",marginTop:4,
+                                          alignItems:"center",flexWrap:"wrap",gap:4}}>
+                                          <span style={{fontSize:11,color:C.t2,fontWeight:500}}>{h.caller||"Unknown caller"}</span>
+                                          <span style={{fontSize:10,color:C.t3}}>
+                                            {h.timestamp?new Date(h.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}):""}
+                                          </span>
+                                        </div>
+                                        {script.title!=="—" && (
+                                          <div style={{marginTop:6,display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                                            <span style={{fontSize:9,color:C.t3,textTransform:"uppercase",letterSpacing:".04em"}}>Script</span>
+                                            <span title={script.raw} style={{fontSize:10,fontWeight:600,color:C.t1,
+                                              padding:"1px 8px",borderRadius:100,background:C.accent+"12"}}>{script.title}</span>
+                                            {script.parts.map((p,pi)=>(
+                                              <span key={pi} style={{fontSize:10,color:C.t2,padding:"1px 8px",borderRadius:100,
+                                                background:C.surface,border:`0.75px solid ${C.border}`}}>{p}</span>
+                                            ))}
+                                          </div>
+                                        )}
+                                        {h.spoke_with && <div style={{fontSize:10,color:C.t2,marginTop:5}}>Spoke with: <strong>{h.spoke_with}</strong></div>}
+                                        {h.notes && (
+                                          <div style={{fontSize:10,color:C.t2,marginTop:5,fontStyle:"italic",
+                                            background:C.surface,borderRadius:6,padding:"5px 8px"}}>“{h.notes.slice(0,400)}{h.notes.length>400?"…":""}”</div>
+                                        )}
+                                        {audio ? (
+                                          <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:3}}>
+                                            <audio controls preload="none" style={{width:"100%",height:34}} src={audio} />
+                                            <a href={audio} target="_blank" rel="noreferrer"
+                                              style={{fontSize:10,color:C.accent,textDecoration:"none"}}>Open recording ↗</a>
+                                          </div>
+                                        ) : (
+                                          <div style={{marginTop:8,fontSize:10,color:C.t3}}>No recording linked to this call.</div>
+                                        )}
+                                        {tr && (trIsUrl ? (
+                                          <a href={tr} target="_blank" rel="noreferrer"
+                                            style={{fontSize:10,color:C.accent,textDecoration:"none",marginTop:4,display:"inline-block"}}>View transcript ↗</a>
+                                        ) : (
+                                          <details style={{marginTop:6}}>
+                                            <summary style={{fontSize:10,color:C.accent,cursor:"pointer"}}>Transcript</summary>
+                                            <div style={{fontSize:11,color:C.t2,lineHeight:1.6,marginTop:4,whiteSpace:"pre-wrap",
+                                              maxHeight:240,overflowY:"auto",background:C.surface,borderRadius:6,padding:"8px 10px"}}>{tr}</div>
+                                          </details>
+                                        ))}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
                     </div>
                   );
                 })()}
