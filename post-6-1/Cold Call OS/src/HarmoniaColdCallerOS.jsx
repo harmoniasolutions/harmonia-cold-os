@@ -19,8 +19,10 @@ const NOTES_WEBHOOK_URL = import.meta.env.VITE_NOTES_WEBHOOK_URL || 'https://inf
 const DISCORD_WEBHOOK_URL = 'https://infoharmonia.app.n8n.cloud/webhook/cold-call-discord';
 // Recording library — uploads an MP3 (base64 JSON) → n8n → Google Drive + a Recordings tab row.
 const RECORDING_UPLOAD_WEBHOOK = import.meta.env.VITE_RECORDING_UPLOAD_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/recording-upload';
-// Number Error investigator — auto-fixes a fixable phone in Leads OS, else pings Discord to decide.
+// Number Error investigator — auto-fixes a fixable phone in Leads OS, else hands the lead to the orphan flow.
 const NUMBER_ERROR_WEBHOOK = import.meta.env.VITE_NUMBER_ERROR_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/number-error-check';
+// Orphan a lead — copies the full row to the Harmonia Orphans sheet, then deletes it from Leads OS.
+const ORPHAN_WEBHOOK = import.meta.env.VITE_ORPHAN_WEBHOOK_URL || 'https://infoharmonia.app.n8n.cloud/webhook/orphan-lead';
 const CALENDLY_URL = import.meta.env.VITE_CALENDLY_URL || 'https://calendly.com/harmonia-demo';
 
 // ── Scripts now come from a SEPARATE sheet with one tab per ICP (Salon, Barbershop, …) ──
@@ -42,6 +44,10 @@ const OBJECTIONS_KEY = '__OBJECTIONS__';
 const OPENERS_KEY    = '__OPENERS__';   // team-shared custom openers — any caller adds, everyone sees
 const ADMIN_KEY      = '__ADMIN__';
 const OFFER_KEY      = '__OFFER__';   // team-shared Offer canvas — Javi (admin) edits, everyone reads
+// Team-shared Intel-tab dropdown options (Tag + POS). These two dropdowns write a SHARED Leads
+// column everyone reports off, so a caller-authored option has to reach every device — a per-caller
+// list would let Julian tag a POS Javi can't see or resolve. Any caller adds, everyone sees.
+const INTEL_OPTS_KEY = '__INTEL_OPTS__';
 
 async function fetchSheet(tab) {
   const res = await fetch(`${BASE}/${tab}?key=${API_KEY}`);
@@ -172,6 +178,21 @@ const LEAD_TAGS = [
   { code:"C", label:"No Receptionist" },
   { code:"D", label:"Receptionist" },
   { code:"E", label:"Other" },
+];
+// Booking/POS system the shop runs on (Intel tab) — the 8 that actually come up on salon &
+// barbershop calls. Stored as the `code` so a renamed label never orphans existing rows.
+// "other" opens a free-text field; "none" means pen & paper / no system at all.
+const POS_OPTIONS = [
+  { code:"vagaro",      label:"Vagaro" },
+  { code:"blvd",        label:"Boulevard (BLVD)" },
+  { code:"square",      label:"Square" },
+  { code:"mangomint",   label:"Mangomint" },
+  { code:"fresha",      label:"Fresha" },
+  { code:"booksy",      label:"Booksy" },
+  { code:"glossgenius", label:"GlossGenius" },
+  { code:"phorest",     label:"Phorest" },
+  { code:"other",       label:"Other" },
+  { code:"none",        label:"None" },
 ];
 // Groups that show anywhere in the app. Everything else (spa/nail/medspa/pet/junk) is filtered out.
 const VISIBLE_GROUPS = new Set(["salon", "barbershop"]);
@@ -557,6 +578,8 @@ function parseLeads(rows) {
       caller_tag_other:   r.caller_tag_other || "",
       tag_by:             r.tag_by || "",
       tag_at:             r.tag_at || "",
+      pos:                r.pos || "",
+      pos_other:          r.pos_other || "",
       };
     });
 }
@@ -877,8 +900,9 @@ function OSSelect({ value, options = [], onChange, onAdd, onRemove, size = "md",
   useEffect(() => { if (adding && inputRef.current) inputRef.current.focus(); }, [adding]);
 
   const sel = options.find(o => o.value === value) || null;
-  const pad  = size === "sm" ? "3px 7px" : "4px 9px";
-  const font = size === "sm" ? 10 : 11;
+  // "lg" matches the Intel cards (13px / roomier); sm & md are the compact Script-mixer sizes.
+  const pad  = size === "sm" ? "3px 7px" : size === "lg" ? "9px 12px" : "4px 9px";
+  const font = size === "sm" ? 10 : size === "lg" ? 13 : 11;
   const selLabel = sel ? sel.label : placeholder;
 
   const commitAdd = () => {
@@ -1261,6 +1285,17 @@ export default function HarmoniaOS() {
     try { localStorage.setItem("harmonia-starred-leads", JSON.stringify(next)); } catch {}
     return next;
   });
+  // Leads sent to the Orphans sheet. n8n deletes the row, but that round-trip is slower than the
+  // caller's next click — this hides it instantly. Self-cleaning: once the row is gone from the
+  // sheet, the next mount read never returns it again.
+  const [orphanedLeads, setOrphanedLeads] = useState(() => { // { [leadId]: true }
+    try { return JSON.parse(localStorage.getItem("harmonia-orphaned-leads") || "{}"); } catch { return {}; }
+  });
+  const markOrphaned = (leadId) => setOrphanedLeads(prev => {
+    const next = { ...prev, [leadId]: true };
+    try { localStorage.setItem("harmonia-orphaned-leads", JSON.stringify(next)); } catch {}
+    return next;
+  });
   // Preserve the queue's scroll position across the end-call auto-advance
   const queueScrollRef    = useRef(null);
   const preserveScrollRef = useRef(null);
@@ -1271,28 +1306,34 @@ export default function HarmoniaOS() {
   const notesSaveRef = useRef(null);
   const [spokeWith, setSpokeWith] = useState("");
 
-  // Caller-applied lead tags (Intel tab) — { leadId: { tag, other, tagged_by, tagged_at } }
+  // Caller-applied lead intel (Intel tab) — { leadId: { tag, other, pos, pos_other, tagged_by, tagged_at } }
   // Seeds from a local cache for instant paint; the sheet-loaded value (active.caller_tag)
   // is the shared source of truth and is merged in when a lead is selected.
   const [leadTags, setLeadTags] = useState(() => {
     try { return JSON.parse(localStorage.getItem("harmonia-lead-tags") || "{}"); } catch { return {}; }
   });
-  const tagSaveRef = useRef({}); // per-lead debounce timers for the free-text field
-  const saveLeadTag = (leadId, biz, patch) => setLeadTags(prev => {
-    const cur = prev[leadId] || {};
-    const rec = { tag:"", other:"", ...cur, ...patch,
+  const tagSaveRef = useRef({}); // per-lead debounce timers for the free-text fields
+  // `base` is the merged local-over-sheet record the Intel tab renders. The save webhook auto-maps
+  // every field it receives onto the Leads row, so each write must carry the WHOLE record —
+  // sending only the patch would blank the sibling columns (e.g. picking a POS would wipe the tag).
+  const saveLeadTag = (leadId, biz, base, patch) => setLeadTags(prev => {
+    const rec = { tag:"", other:"", pos:"", pos_other:"", ...base, ...patch,
       tagged_by: callerName || "Unknown", tagged_at: new Date().toISOString() };
     const next = { ...prev, [leadId]: rec };
     try { localStorage.setItem("harmonia-lead-tags", JSON.stringify(next)); } catch {}
     // Persist to the Leads sheet (upsert by id) so tags are shared across all devices.
-    // Debounce so typing in the "Other" box doesn't fire a write per keystroke.
+    // Debounce so typing in an "Other" box doesn't fire a write per keystroke.
     const push = () => fetch(TAG_WEBHOOK_URL, {method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({lead_id:leadId,biz,
-        tag:rec.tag,tag_label:(LEAD_TAGS.find(t=>t.code===rec.tag)||{}).label||"",
-        tag_other:rec.other,tagged_by:rec.tagged_by,tagged_at:rec.tagged_at})
+        tag:rec.tag,tag_label:intelLabelOf("tag",rec.tag),
+        tag_other:rec.other,
+        pos:rec.pos,pos_label:intelLabelOf("pos",rec.pos),
+        pos_other:rec.pos_other,
+        tagged_by:rec.tagged_by,tagged_at:rec.tagged_at})
     }).catch(()=>{});
     if (tagSaveRef.current[leadId]) clearTimeout(tagSaveRef.current[leadId]);
-    if ("other" in patch && !("tag" in patch)) {
+    const freeTextOnly = Object.keys(patch).every(k => k === "other" || k === "pos_other");
+    if (freeTextOnly) {
       tagSaveRef.current[leadId] = setTimeout(push, 900); // free-text edits: debounce
     } else {
       push(); // dropdown pick: write immediately
@@ -1337,10 +1378,56 @@ export default function HarmoniaOS() {
   const objectionsHydrated = useRef(false);
   const openersHydrated    = useRef(false);
   const adminHydrated      = useRef(false);
+  const intelOptsHydrated  = useRef(false);
   const personalSaveTimer   = useRef(null);
   const objectionsSaveTimer = useRef(null);
   const openersSaveTimer    = useRef(null);
   const adminSaveTimer      = useRef(null);
+  const intelOptsSaveTimer  = useRef(null);
+
+  // Caller-authored Tag / POS options (Intel tab) — { tag:[{value,label}], pos:[...] }.
+  // Team-shared via INTEL_OPTS_KEY. Unlike the Script tab's customDropdownOpts (per-caller,
+  // random `custom-<ts>` values), these values are label slugs: they land in the Leads sheet
+  // verbatim, so `zenoti` reads as data while `custom-1736…-482` would not.
+  const [customIntelOpts, setCustomIntelOpts] = useState({ tag: [], pos: [] });
+  const addIntelOption = (kind, label) => {
+    const clean = (label || "").trim();
+    if (!clean) return null;
+    const base = clean.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "opt";
+    const builtins = kind === "pos" ? POS_OPTIONS : LEAD_TAGS;
+    const taken = new Set([
+      ...builtins.map(o => (o.code || "").toLowerCase()),
+      ...(customIntelOpts[kind] || []).map(o => o.value),
+    ]);
+    let value = base, n = 2;
+    while (taken.has(value)) value = `${base}_${n++}`;   // never collide with a builtin or sibling
+    setCustomIntelOpts(prev => ({ ...prev, [kind]: [...(prev[kind] || []), { value, label: clean }] }));
+    return value;
+  };
+  const removeIntelOption = (kind, value) =>
+    setCustomIntelOpts(prev => ({ ...prev, [kind]: (prev[kind] || []).filter(o => o.value !== value) }));
+  // Human label for a stored value. Falls back to de-slugging the value itself, which covers the
+  // just-added option (state hasn't flushed yet when the add triggers the save) and any option a
+  // caller has since deleted. Slug values make that fallback readable: "zenoti" → "Zenoti".
+  const intelLabelOf = (kind, value) => {
+    if (!value) return "";
+    const b = (kind === "pos" ? POS_OPTIONS : LEAD_TAGS).find(o => o.code === value);
+    if (b) return b.label;
+    const c = (customIntelOpts[kind] || []).find(o => o.value === value);
+    if (c) return c.label;
+    return value.replace(/_/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
+  };
+  // Builtins + team customs, plus a synthesized entry for any value already on the lead that no
+  // longer matches an option (e.g. someone deleted the custom) so the sheet value still shows.
+  const intelOptionsFor = (kind, current) => {
+    const builtins = (kind === "pos" ? POS_OPTIONS : LEAD_TAGS).map(o => ({
+      value: o.code, label: kind === "pos" ? o.label : `${o.code}: ${o.label}`,
+    }));
+    const customs = (customIntelOpts[kind] || []).map(o => ({ ...o, custom: true }));
+    const all = [...builtins, ...customs];
+    if (current && !all.some(o => o.value === current)) all.push({ value: current, label: intelLabelOf(kind, current) });
+    return all;
+  };
 
   // Team-shared "The Offer" canvas — Javi (admin) edits, everyone else views what he saved
   const [offerCanvas, setOfferCanvas] = useState("");
@@ -1498,10 +1585,13 @@ export default function HarmoniaOS() {
     }
     const off = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === OFFER_KEY)), readLocal("harmonia-team-offer"));
     if (off && typeof off.text === "string") setOfferCanvas(off.text);
+    const iop = pickNewer(parseSettingsRow(rows.find(r => (r.caller_name||"").trim() === INTEL_OPTS_KEY)), readLocal("harmonia-team-intel-opts"));
+    if (iop) setCustomIntelOpts({ tag: iop.tag || [], pos: iop.pos || [] });
     objectionsHydrated.current = true;
     openersHydrated.current = true;
     adminHydrated.current = true;
     offerHydrated.current = true;
+    intelOptsHydrated.current = true;
   }
 
   // Hydrate one caller's personal scripts + layout. isInitial preserves this device's
@@ -1681,8 +1771,10 @@ export default function HarmoniaOS() {
             status: clean(r["Status"] || r.status || ""),
           })));
         }).catch(() => setBookedDemos([]));
-        // Land on the first visible (hair salon / barbershop) lead, not a hidden vertical.
-        const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && getLeadPhones(l).length > 0) || parsedLeads[0];
+        // Land on the first visible (hair salon / barbershop) lead, not a hidden vertical — and
+        // never on one already sent to Orphans (its row may not be deleted from the sheet yet).
+        const firstVisible = parsedLeads.find(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !orphanedLeads[l.id] && getLeadPhones(l).length > 0)
+          || parsedLeads.find(l => !orphanedLeads[l.id]);
         if (firstVisible) {
           setActive(firstVisible);
           // Opener-variant pick is legacy-only (A/B mode lists frames, no single selected variant).
@@ -1783,6 +1875,16 @@ export default function HarmoniaOS() {
     if (openersSaveTimer.current) clearTimeout(openersSaveTimer.current);
     openersSaveTimer.current = setTimeout(() => postSettings(OPENERS_KEY, blob), 800);
   }, [customOpeners]);
+
+  // Custom Tag / POS options → team-shared row, same pattern as openers.
+  useEffect(() => {
+    if (!intelOptsHydrated.current) return;
+    const blob = { version:1, updated_at:new Date().toISOString(),
+      tag: customIntelOpts.tag || [], pos: customIntelOpts.pos || [] };
+    try { localStorage.setItem("harmonia-team-intel-opts", JSON.stringify(blob)); } catch {}
+    if (intelOptsSaveTimer.current) clearTimeout(intelOptsSaveTimer.current);
+    intelOptsSaveTimer.current = setTimeout(() => postSettings(INTEL_OPTS_KEY, blob), 800);
+  }, [customIntelOpts]);
 
   useEffect(() => {
     if (!adminHydrated.current) return;
@@ -1921,16 +2023,17 @@ export default function HarmoniaOS() {
   }
 
   // Surface leads that have a MOBILE or a CORPORATE number — only no-number leads are hidden.
-  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && ((l.mobile_phone || "").trim() !== "" || (l.corporate_phone || "").trim() !== ""));
+  const activeLeads  = leads.filter(l => VISIBLE_GROUPS.has(icpGroup(l.icp)) && !disabledIcps.has(icpGroup(l.icp)) && !orphanedLeads[l.id] && ((l.mobile_phone || "").trim() !== "" || (l.corporate_phone || "").trim() !== ""));
   const filtered     = activeLeads.filter(l =>
        (filter==="all" || icpGroup(l.icp)===filter)
     && (phoneFilter==="all"   || (phoneFilter==="mobile" ? (l.mobile_phone||"").trim()!=="" : (l.corporate_phone||"").trim()!==""))
     && (emailedFilter==="all" || (emailedFilter==="emailed" ? leadEmailed(l).sent : !leadEmailed(l).sent))
     && (starFilter==="all"    || !!starredLeads[l.id]));
   const queueLeft    = filtered.filter(l=>leadStatusEffective(l)==="queued").length;
-  const totalAns     = stats.answered + stats.demos;
-  const connectRate  = stats.dials>0 ? Math.round(totalAns/stats.dials*100) : 0;
-  const demoRate     = totalAns>0    ? Math.round(stats.demos/totalAns*100) : 0;
+  /* Connect / demo rates are NOT derivable from dispositions: only hung_up, not_interested and
+     followup_sent imply a human answered, and answered/owner/gatekeeper aren't pressed reliably.
+     Every rate built on them was fiction, so they are not displayed. stats.answered/.demos keep
+     accruing (the leaderboard's Booked column reads stats.demos) — display only was removed. */
 
   const curScripts   = scripts[icpGroup(active?.icp)] || {};
   const curScript    = curScripts[variant]  || curScripts[Object.keys(curScripts)[0]];
@@ -2299,8 +2402,18 @@ export default function HarmoniaOS() {
           body: JSON.stringify({ content: `${emoji} **${label}** — ${active.biz}${active.owner?` (${active.owner})`:""}${active.city?`, ${active.city}`:""}\nCaller: ${callerName||"Unknown"} | Script: ${scriptUsed} | Duration: ${fmt(dur)}${captureEmail?`\nEmail: ${captureEmail}`:""}${captureNotes?`\nNotes: ${captureNotes}`:""}` })
         }).catch(()=>{});
       }
-      // Number Error → hand the lead to the investigator: it auto-fixes a fixable phone in
-      // Leads OS, otherwise pings Discord for Javi to decide (delete / enrich / find another).
+      // Wrong ICP → the lead is not one of ours, so retire it out of Leads OS entirely: n8n copies
+      // the full row to the Harmonia Orphans sheet and deletes it from Leads.
+      if (outcome === "wrong_icp") {
+        markOrphaned(active.id);
+        fetch(ORPHAN_WEBHOOK, {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ lead_id:active.id, reason:'wrong_icp',
+            detail:`icp on file: ${active.icp||"(blank)"}`, caller_name:callerName||"Unknown", biz:active.biz })
+        }).catch(()=>{});
+      }
+      // Number Error → hand the lead to the investigator: it auto-fixes a fixable phone in Leads OS
+      // and keeps the lead; only a genuinely un-callable number gets orphaned (from n8n, not here —
+      // hiding it now would throw away leads whose number just needed reformatting).
       if (outcome === "number_error") {
         fetch(NUMBER_ERROR_WEBHOOK, {method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ lead_id:active.id, biz:active.biz, owner:active.owner,
@@ -2463,9 +2576,7 @@ export default function HarmoniaOS() {
           </button>
         </div>
         <div style={{width:1,height:18,background:C.border}}/>
-        {[{l:"Dials",v:stats.dials,c:C.t1},{l:"Connect",v:stats.dials>0?connectRate+"%":"—",c:C.t1},
-          {l:"Demos",v:stats.demos,c:C.green},
-          {l:"Looms",v:stats.looms,c:C.teal}
+        {[{l:"Dials",v:stats.dials,c:C.t1}
         ].map(({l,v,c})=>(
           <div key={l} style={{textAlign:"center"}}>
             <div style={{fontSize:16,fontWeight:400,color:c,lineHeight:1,fontFamily:FM}}>{v}</div>
@@ -3257,43 +3368,70 @@ export default function HarmoniaOS() {
                         </div>
                       );})()}
 
-                      {/* Caller tag — quick-classify the lead from the call.
+                      {/* Caller tag + POS — quick-classify the lead from the call.
                           Local edit wins; otherwise show the sheet value (shared across devices). */}
                       {(()=>{
                         const local = leadTags[active.id];
                         const rec = {
                           tag:   local?.tag   ?? active.caller_tag ?? "",
                           other: local?.other ?? active.caller_tag_other ?? "",
+                          pos:       local?.pos       ?? active.pos       ?? "",
+                          pos_other: local?.pos_other ?? active.pos_other ?? "",
                           tagged_by: local?.tagged_by ?? active.tag_by ?? "",
                           tagged_at: local?.tagged_at ?? active.tag_at ?? "",
                         };
+                        const save = patch => saveLeadTag(active.id, active.biz, rec, patch);
+                        const textareaStyle = {width:"100%",marginTop:8,border:`0.75px solid ${C.border}`,
+                          borderRadius:8,padding:"9px 12px",fontSize:13,background:C.bg,color:C.t1,
+                          outline:"none",resize:"vertical",lineHeight:1.5,fontFamily:F};
+                        const labelStyle = {fontSize:10,fontWeight:600,letterSpacing:"0.08em",color:C.t3,
+                          textTransform:"uppercase",marginBottom:11};
+                        const trigger = {borderRadius:8};
                         return (
                         <div style={{background:C.surface,borderRadius:14,padding:"15px 18px",maxWidth:340,width:"100%"}}>
-                          <div style={{fontSize:10,fontWeight:600,letterSpacing:"0.08em",color:C.t3,
-                            textTransform:"uppercase",marginBottom:11}}>Tag</div>
-                          <select
+                          <div style={labelStyle}>Tag</div>
+                          <OSSelect
+                            size="lg"
                             value={rec.tag||""}
-                            onChange={e=>saveLeadTag(active.id,active.biz,{tag:e.target.value,other:rec.other})}
-                            style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,
-                              padding:"9px 12px",fontSize:13,background:C.bg,color:rec.tag?C.t1:C.t3,
-                              outline:"none",fontFamily:F,cursor:"pointer"}}>
-                            <option value="">Select a tag…</option>
-                            {LEAD_TAGS.map(t=>(
-                              <option key={t.code} value={t.code}>{t.code}: {t.label}</option>
-                            ))}
-                          </select>
+                            options={intelOptionsFor("tag", rec.tag)}
+                            placeholder="Select a tag…"
+                            triggerStyle={trigger}
+                            onChange={v=>save({tag:v})}
+                            onAdd={label=>{ const v = addIntelOption("tag", label); if (v) save({tag:v}); }}
+                            onRemove={v=>{ removeIntelOption("tag", v); if (rec.tag===v) save({tag:""}); }}
+                          />
                           {rec.tag==="E"&&(
                             <textarea
                               value={rec.other||""}
-                              onChange={e=>saveLeadTag(active.id,active.biz,{other:e.target.value})}
+                              onChange={e=>save({other:e.target.value})}
                               placeholder="Describe…"
                               rows={2}
-                              style={{width:"100%",marginTop:8,border:`0.75px solid ${C.border}`,borderRadius:8,
-                                padding:"9px 12px",fontSize:13,background:C.bg,color:C.t1,outline:"none",
-                                resize:"vertical",lineHeight:1.5,fontFamily:F}}
+                              style={textareaStyle}
                             />
                           )}
-                          {rec.tag&&rec.tagged_by&&(
+
+                          <div style={{...labelStyle,marginTop:16}}>POS / Booking system</div>
+                          <OSSelect
+                            size="lg"
+                            value={rec.pos||""}
+                            options={intelOptionsFor("pos", rec.pos)}
+                            placeholder="Select a system…"
+                            triggerStyle={trigger}
+                            onChange={v=>save({pos:v})}
+                            onAdd={label=>{ const v = addIntelOption("pos", label); if (v) save({pos:v}); }}
+                            onRemove={v=>{ removeIntelOption("pos", v); if (rec.pos===v) save({pos:""}); }}
+                          />
+                          {rec.pos==="other"&&(
+                            <textarea
+                              value={rec.pos_other||""}
+                              onChange={e=>save({pos_other:e.target.value})}
+                              placeholder="Which system?"
+                              rows={2}
+                              style={textareaStyle}
+                            />
+                          )}
+
+                          {(rec.tag||rec.pos)&&rec.tagged_by&&(
                             <div style={{fontSize:10,color:C.t3,marginTop:8}}>
                               Tagged by {rec.tagged_by}
                               {rec.tagged_at?` on ${new Date(rec.tagged_at).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`:""}
@@ -5651,12 +5789,8 @@ export default function HarmoniaOS() {
             <div style={{padding:"8px 10px 0",display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
               {[
                 {l:"Dials",v:stats.dials,c:C.t1},
-                {l:"Answered",v:totalAns,c:C.t1},
-                {l:"Demos",v:stats.demos,c:C.green},
-                {l:"Looms",v:stats.looms,c:C.teal},
                 {l:"Voicemail",v:stats.vm,c:C.amber},
-                {l:"Connect%",v:stats.dials>0?connectRate+"%":"—",c:C.t1},
-                {l:"Demo rate",v:totalAns>0?demoRate+"%":"—",c:C.green},
+                {l:"Looms",v:stats.looms,c:C.teal},
               ].map(({l,v,c})=>(
                 <div key={l} style={{background:C.surface,borderRadius:8,
                   padding:"9px 10px",textAlign:"center"}}>
