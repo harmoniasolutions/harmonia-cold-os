@@ -106,6 +106,20 @@ async function fetchRecordingsSheet() {
   } catch (e) { console.warn('[Harmonia] recordings read error', e); return []; }
 }
 
+// Read the `call_recordings` tab (row_id → Twilio recording + Drive transcript, written by the
+// recording_done / transcribe_call workflows). Kept OFF the append-only `history` tab so the
+// call log is never upserted into. Degrades to [] if the tab doesn't exist yet.
+async function fetchCallRecordingsSheet() {
+  try {
+    const res = await fetch(`${BASE}/call_recordings?key=${API_KEY}`);
+    const json = await res.json().catch(() => null);
+    if (!res.ok) { console.warn(`[Harmonia] call_recordings read failed: HTTP ${res.status}`); return []; }
+    const [headers, ...rows] = json?.values || [];
+    if (!headers) return [];
+    return rows.map(row => Object.fromEntries(headers.map((h, i) => [h.trim(), row[i] ?? ""])));
+  } catch (e) { console.warn('[Harmonia] call_recordings read error', e); return []; }
+}
+
 /* ─────────────────────────────────────────────
    DESIGN TOKENS
 ───────────────────────────────────────────── */
@@ -289,6 +303,13 @@ const fmtH = (s) => {
 // NaN-safe timestamp → epoch ms. Blank/garbage cells on the "history" tab are common, and
 // new Date("") is Invalid Date → subtraction yields NaN, which corrupts newest-first sorts.
 const parseTs = (s) => { const t = Date.parse(s || ""); return isNaN(t) ? 0 : t; };
+
+// One unique id per call attempt. It rides click_to_call → twiml_bridge → recording_done
+// (Twilio's recordingStatusCallback) AND is written onto this call's `history` row, so the
+// recording/transcript that lands seconds later can be joined back to this exact call.
+// Must never be blank: a blank id would collide with every other blank one.
+const newRowId = (leadId) =>
+  `${leadId || "lead"}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 // ── Call-recording playback + script decoding (used by the Call History view) ──
 // Raw Twilio recording URLs need HTTP basic-auth, so they won't play in a bare <audio> tag.
@@ -1299,6 +1320,9 @@ export default function HarmoniaOS() {
 
   // Call history from the "history" tab — shared across all callers
   const [callHistory, setCallHistory] = useState({}); // { leadId: [{caller, outcome, duration, variant, timestamp, notes, spoke_with}, ...] }
+  // Recording linkage: the row_id minted for the call currently being dialed/logged.
+  const [callRowId, setCallRowId] = useState("");
+
   // Call History OS (Javi-only tab): free-text search across every logged call
   const [histQuery, setHistQuery] = useState("");
   const [histSelected, setHistSelected] = useState(null); // leadId of the opened result
@@ -1348,18 +1372,23 @@ export default function HarmoniaOS() {
     const recording = clean(r["recording_url"] || r["Recording URL"] || r.recording_url || "");
     const transcript= clean(r["transcript_url"] || r["Transcript"] || r.transcript || r.transcript_url || "");
     const callSid   = clean(r["call_sid"] || r["Call SID"] || r.call_sid || r.recording_sid || "");
-    return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper, owner, recording, transcript, callSid };
+    const rowId     = clean(r["row_id"] || r.row_id || "");
+    return { lid, caller, outcome, duration, variant, timestamp, notes, spoke_with: spokeW, biz, gatekeeper, owner, recording, transcript, callSid, rowId };
   }
 
   // Re-fetch the "history" tab (per-call log written by n8n) and rebuild call history map
   async function refreshCallHistory() {
     try {
-      const perfRaw = await fetchSheet("history");
+      // The call log (append-only) + the recordings side-table, joined on row_id.
+      const [perfRaw, recRaw] = await Promise.all([fetchSheet("history"), fetchCallRecordingsSheet()]);
+      const recMap = {};
+      recRaw.forEach(r => { const k = (r.row_id || "").trim(); if (k) recMap[k] = r; });
       const histMap = {};
       perfRaw.forEach(r => {
         const p = parsePerfRow(r);
         if (!p.lid || !p.lid.trim()) return;
         if (!histMap[p.lid]) histMap[p.lid] = [];
+        const rec = p.rowId ? recMap[p.rowId] : null;
         histMap[p.lid].push({
           caller:     p.caller,
           outcome:    p.outcome,
@@ -1370,9 +1399,11 @@ export default function HarmoniaOS() {
           spoke_with: p.spoke_with,
           biz:        p.biz,
           owner:      p.owner,
-          recording:  p.recording,
-          transcript: p.transcript,
+          // Prefer the side-table; fall back to the legacy columns on the history row itself.
+          recording:  ((rec && rec.recording_url)  || p.recording  || "").trim(),
+          transcript: ((rec && rec.transcript_url) || p.transcript || "").trim(),
           call_sid:   p.callSid,
+          row_id:     p.rowId,
         });
       });
       Object.values(histMap).forEach(arr => arr.sort((a,b) => parseTs(b.timestamp) - parseTs(a.timestamp)));
@@ -2061,7 +2092,11 @@ export default function HarmoniaOS() {
     setPhoneMenuOpen(false);
     setLastDialedPhone(num);
     setStats(s=>({...s,dials:s.dials+1}));
-    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(e164)}`;
+    // Mint the call's row_id up front so Twilio's recording callback and this call's
+    // history row land on the same key (confirmOutcome sends the same id).
+    const rid = newRowId(lead.id);
+    setCallRowId(rid);
+    const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(e164)}&row_id=${encodeURIComponent(rid)}`;
     try{ await fetch(url,{method:"GET",mode:"no-cors"}); }
     catch(e){ console.log("Call fired:",e164); }
   }
@@ -2225,7 +2260,13 @@ export default function HarmoniaOS() {
     setTimeout(()=>setFlash(null),5000);
 
     try {
+      // Reuse the id minted when this lead was dialed so Twilio's recording joins to this row.
+      // Only if it was minted for THIS lead — otherwise (manual dial, or a stale id from the
+      // previously-selected lead) mint a fresh one. Never blank: blank ids would all collide.
+      const rowId = (callRowId && callRowId.startsWith(`${active.id}-`)) ? callRowId : newRowId(active.id);
+      setCallRowId("");   // consumed — a later log on this lead mints its own id
       const payload = {
+        row_id:rowId,
         lead_id:active.id, biz:active.biz, owner:active.owner, phone:lastDialedPhone||active.mobile_phone||active.corporate_phone||active.home_phone||active.phone,
         city:active.city, state:active.state, icp:active.icp,
         disposition:outcome, status:meta.ghl||"called",
@@ -2842,7 +2883,9 @@ export default function HarmoniaOS() {
                                   <button key={i} onClick={()=>{
                                       if(!p.callable) return;
                                       setLastDialedPhone(p.number);setPhoneMenuOpen(false);
-                                      const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.e164)}`;
+                                      const rid=newRowId(active?.id);
+                                      setCallRowId(rid);
+                                      const url=`https://infoharmonia.app.n8n.cloud/webhook/click_to_call?from=${encodeURIComponent(caller)}&to=${encodeURIComponent(p.e164)}&row_id=${encodeURIComponent(rid)}`;
                                       fetch(url,{method:"GET",mode:"no-cors"}).catch(()=>{});
                                     }}
                                     disabled={!p.callable}
