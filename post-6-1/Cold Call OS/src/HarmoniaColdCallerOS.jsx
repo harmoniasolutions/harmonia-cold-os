@@ -334,9 +334,10 @@ const newRowId = (leadId) =>
 
 // ── Call-recording playback + script decoding (used by the Call History view) ──
 // Raw Twilio recording URLs need HTTP basic-auth, so they won't play in a bare <audio> tag.
-// If an audio-proxy webhook is configured (VITE_CALL_AUDIO_PROXY), route Twilio media through
-// it; Drive / other already-public URLs are returned unchanged.
-const CALL_AUDIO_PROXY = import.meta.env.VITE_CALL_AUDIO_PROXY || "";
+// The audio-proxy webhook (n8n "Call Audio Proxy" dgq7K8purBngzHue) re-fetches the media with
+// server-side basic-auth and streams it back as audio/mpeg; Drive / other already-public URLs
+// are returned unchanged. The proxy only accepts Twilio/SignalWire Recordings URLs.
+const CALL_AUDIO_PROXY = import.meta.env.VITE_CALL_AUDIO_PROXY || "https://infoharmonia.app.n8n.cloud/webhook/call-audio";
 function playableAudioUrl(url) {
   const u = (url || "").trim();
   if (!u) return "";
