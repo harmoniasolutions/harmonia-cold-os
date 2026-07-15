@@ -1151,6 +1151,18 @@ export default function HarmoniaOS() {
     setBlankVersions(next);
     try { localStorage.setItem("harmonia-blank-versions", JSON.stringify(next)); } catch {}
   };
+  // Blank-canvas bubble ribbons — caller-authored rows of clickable bubbles that sit inside
+  // the canvas and span it horizontally. Shape: { [caller]: [{ id, bubbles:[{id,label,response}] }] }.
+  // Press a bubble → its response drops open below the ribbon. Rides the per-caller settings
+  // blob (cross-device) the same way blankVersions does.
+  const [blankRibbons, setBlankRibbons] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("harmonia-blank-ribbons") || "{}"); } catch { return {}; }
+  });
+  const saveBlankRibbons = (next) => {
+    setBlankRibbons(next);
+    try { localStorage.setItem("harmonia-blank-ribbons", JSON.stringify(next)); } catch {}
+  };
+  const [openBubble, setOpenBubble] = useState(null); // "<ribbonId>:<bubbleId>" currently pressed open
   // Blank-canvas font size (px) — per-device, applies to both the editor and the live preview
   const [blankFontSize, setBlankFontSize] = useState(() => {
     try { return Number(localStorage.getItem("harmonia-blank-font-size")) || 14; } catch { return 14; }
@@ -1481,6 +1493,15 @@ export default function HarmoniaOS() {
           return next;
         });
       }
+      // Bubble ribbons sync per-caller — same guard: a pre-feature server row can't wipe
+      // this device's locally-authored ribbons.
+      if (Array.isArray(chosen.blankRibbons)) {
+        setBlankRibbons(prev => {
+          const next = { ...prev, [name]: chosen.blankRibbons };
+          try { localStorage.setItem("harmonia-blank-ribbons", JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
       // Caller-authored dropdown options — only overwrite when the blob carries them, so a
       // pre-feature server row can't wipe this device's local custom options.
       if (chosen.customDropdownOpts && typeof chosen.customDropdownOpts === "object") {
@@ -1707,11 +1728,12 @@ export default function HarmoniaOS() {
     if (!callerName || !personalHydrated.current) return;
     const blob = { version:1, updated_at:new Date().toISOString(),
       scripts: callerScripts, phaseOrder, collapsedPhases:[...collapsedPhases], offerCollapsed,
-      blankVersions: blankVersions[callerName] || [], customDropdownOpts, hiddenTabs:[...hiddenTabs] };
+      blankVersions: blankVersions[callerName] || [], customDropdownOpts, hiddenTabs:[...hiddenTabs],
+      blankRibbons: blankRibbons[callerName] || [] };
     try { localStorage.setItem(`harmonia-settings-${callerName}`, JSON.stringify(blob)); } catch {}
     if (personalSaveTimer.current) clearTimeout(personalSaveTimer.current);
     personalSaveTimer.current = setTimeout(() => postSettings(callerName, blob), 800);
-  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, blankVersions, customDropdownOpts, hiddenTabs, callerName]);
+  }, [callerScripts, phaseOrder, collapsedPhases, offerCollapsed, blankVersions, customDropdownOpts, hiddenTabs, blankRibbons, callerName]);
 
   useEffect(() => {
     if (!objectionsHydrated.current) return;
@@ -3643,6 +3665,35 @@ export default function HarmoniaOS() {
                       const deleteVersion = (id) => {
                         saveBlankVersions({ ...blankVersions, [key]: versions.filter(v => v.id !== id) });
                       };
+                      // ── Bubble ribbons ── caller-authored rows of press-to-reveal bubbles that live
+                      // inside the canvas. Editable in Variables mode; press-only in Values mode.
+                      const ribbons = blankRibbons[key] || [];
+                      const commitRibbons = (list) => saveBlankRibbons({ ...blankRibbons, [key]: list });
+                      const uid = (p) => `${p}${Date.now()}${Math.floor(Math.random()*1e4)}`;
+                      const addRibbon = () => {
+                        const b = { id: uid("b"), label: "", response: "" };
+                        const r = { id: uid("r"), bubbles: [b] };
+                        commitRibbons([...ribbons, r]);
+                        setOpenBubble(`${r.id}:${b.id}`);   // open the new bubble so it's obvious where to fill in
+                      };
+                      const removeRibbon = (rid) => {
+                        if (!window.confirm("Remove this whole ribbon and its bubbles?")) return;
+                        commitRibbons(ribbons.filter(r => r.id !== rid));
+                      };
+                      const addBubble = (rid) => {
+                        const b = { id: uid("b"), label: "", response: "" };
+                        commitRibbons(ribbons.map(r => r.id === rid ? { ...r, bubbles: [...r.bubbles, b] } : r));
+                        setOpenBubble(`${rid}:${b.id}`);
+                      };
+                      const removeBubble = (rid, bid) => {
+                        commitRibbons(ribbons.map(r => r.id === rid ? { ...r, bubbles: r.bubbles.filter(b => b.id !== bid) } : r));
+                        setOpenBubble(o => o === `${rid}:${bid}` ? null : o);
+                      };
+                      const updateBubble = (rid, bid, field, val) => {
+                        commitRibbons(ribbons.map(r => r.id === rid
+                          ? { ...r, bubbles: r.bubbles.map(b => b.id === bid ? { ...b, [field]: val } : b) }
+                          : r));
+                      };
                       return (
                         <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
                           <div style={{flex:1,minWidth:0}}>
@@ -3767,6 +3818,121 @@ export default function HarmoniaOS() {
                                   outline:"none",resize:"none",fontFamily:blankFontFamily}}
                               />
                             )}
+
+                            {/* ── BUBBLE RIBBONS ── caller-authored rows of press-to-reveal bubbles that
+                                 span the canvas. Variables mode = author them; Values mode = press only. ── */}
+                            <div style={{marginTop:10}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:ribbons.length?8:0}}>
+                                <span style={{fontSize:10,fontWeight:600,color:C.t3,textTransform:"uppercase",
+                                  letterSpacing:".05em"}}>Bubble ribbons</span>
+                                {!blankShowValues && (
+                                  <button onClick={addRibbon} title="Add a new ribbon of bubbles"
+                                    style={{padding:"3px 10px",borderRadius:100,fontSize:10,fontWeight:500,cursor:"pointer",
+                                      border:`0.75px solid ${C.borderMd}`,background:C.bg,color:C.t2,fontFamily:F,
+                                      transition:"all 0.15s"}}
+                                    onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent;}}
+                                    onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderMd;e.currentTarget.style.color=C.t2;}}>
+                                    + Add ribbon
+                                  </button>
+                                )}
+                                {ribbons.length===0 && (
+                                  <span style={{fontSize:10,color:C.t3}}>
+                                    {blankShowValues ? "None yet — add them in Variables mode." : "Rows of clickable bubbles that live in your canvas"}
+                                  </span>
+                                )}
+                              </div>
+                              {ribbons.map(r=>{
+                                const openB = r.bubbles.find(b => openBubble === `${r.id}:${b.id}`) || null;
+                                return (
+                                  <div key={r.id} style={{border:`0.75px solid ${C.border}`,borderRadius:10,
+                                    padding:"8px 10px",marginBottom:8,background:C.surface}}>
+                                    <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:6,width:"100%"}}>
+                                      {r.bubbles.map(b=>{
+                                        const bk = `${r.id}:${b.id}`, isOpen = openBubble === bk;
+                                        const shown = b.label.trim()
+                                          ? (blankShowValues ? fillPlaceholdersPlain(b.label, ctx) : b.label)
+                                          : "New bubble";
+                                        return (
+                                          <button key={b.id} onClick={()=>setOpenBubble(o => o===bk ? null : bk)}
+                                            title={b.response.trim() ? "Press to see what comes out" : "No response set yet"}
+                                            style={{padding:"5px 12px",borderRadius:100,fontSize:11,fontWeight:500,
+                                              cursor:"pointer",fontFamily:F,transition:"all 0.15s",
+                                              border:`0.75px solid ${isOpen?C.accent:C.borderMd}`,
+                                              background:isOpen?C.accent:C.bg,
+                                              color:isOpen?"#fff":(b.label.trim()?C.t1:C.t3)}}>
+                                            {shown}
+                                          </button>
+                                        );
+                                      })}
+                                      {!blankShowValues && (
+                                        <>
+                                          <button onClick={()=>addBubble(r.id)} title="Add a bubble to this ribbon"
+                                            style={{width:24,height:24,borderRadius:"50%",fontSize:13,lineHeight:1,
+                                              cursor:"pointer",border:`0.75px dashed ${C.borderMd}`,background:"transparent",
+                                              color:C.t3,fontFamily:F,display:"flex",alignItems:"center",justifyContent:"center"}}
+                                            onMouseEnter={e=>{e.currentTarget.style.borderColor=C.accent;e.currentTarget.style.color=C.accent;}}
+                                            onMouseLeave={e=>{e.currentTarget.style.borderColor=C.borderMd;e.currentTarget.style.color=C.t3;}}>
+                                            +
+                                          </button>
+                                          <div style={{flex:1}} />
+                                          <button onClick={()=>removeRibbon(r.id)} title="Remove this ribbon"
+                                            style={{border:"none",background:"transparent",color:C.t3,cursor:"pointer",
+                                              fontSize:13,lineHeight:1,padding:"2px 4px",fontFamily:F}}
+                                            onMouseEnter={e=>{e.currentTarget.style.color=C.red;}}
+                                            onMouseLeave={e=>{e.currentTarget.style.color=C.t3;}}>
+                                            ×
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                    {openB && (
+                                      <div style={{marginTop:8,borderTop:`0.75px solid ${C.border}`,paddingTop:8}}>
+                                        {blankShowValues ? (
+                                          <div style={{fontSize:blankFontSize,color:blankFontColor,lineHeight:1.7,
+                                            whiteSpace:"pre-wrap",fontFamily:blankFontFamily}}>
+                                            {openB.response.trim()
+                                              ? fillPlaceholders(formatScriptLines(openB.response), ctx)
+                                              : <span style={{color:C.t3,fontSize:12}}>Nothing set for this bubble yet — add it in Variables mode.</span>}
+                                          </div>
+                                        ) : (
+                                          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                                            <input value={openB.label}
+                                              onChange={e=>updateBubble(r.id,openB.id,"label",e.target.value)}
+                                              placeholder="What's written on the bubble — e.g. “I'm busy”"
+                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,
+                                                padding:"7px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",
+                                                fontFamily:F}}
+                                            />
+                                            <textarea value={openB.response}
+                                              onChange={e=>updateBubble(r.id,openB.id,"response",e.target.value)}
+                                              onDragOver={e=>e.preventDefault()}
+                                              onDrop={e=>{e.preventDefault();const t=e.dataTransfer.getData("text/plain");
+                                                if(t) updateBubble(r.id,openB.id,"response",(openB.response||"")+t);}}
+                                              placeholder={"What comes out when this bubble is pressed…\n\ne.g. Totally get it {owner} — 20 seconds and I'm gone."}
+                                              rows={3}
+                                              style={{width:"100%",border:`0.75px solid ${C.border}`,borderRadius:8,
+                                                padding:"8px 10px",fontSize:12,background:C.bg,color:C.t1,outline:"none",
+                                                resize:"vertical",lineHeight:1.6,fontFamily:F}}
+                                            />
+                                            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                                              <span style={{fontSize:9,color:C.t3}}>Variables like {"{owner}"} work here too</span>
+                                              <button onClick={()=>removeBubble(r.id,openB.id)}
+                                                style={{padding:"3px 9px",borderRadius:100,fontSize:10,fontWeight:500,
+                                                  cursor:"pointer",border:`0.75px solid ${C.border}`,background:"transparent",
+                                                  color:C.t3,fontFamily:F,transition:"all 0.15s"}}
+                                                onMouseEnter={e=>{e.currentTarget.style.borderColor=C.red;e.currentTarget.style.color=C.red;}}
+                                                onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.t3;}}>
+                                                Remove bubble
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                           {!blankShowValues && (
                           <div style={{width:200,flexShrink:0,border:`0.75px solid ${C.border}`,borderRadius:10,
